@@ -1,0 +1,41 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "boileroom"
+version = "0.1.0"
+authors = [
+    { name="Jakub Lála", email="jakublala@gmail.com" },
+]
+description = "Protein prediction models with Modal"
+readme = "README.md"
+requires-python = ">=3.12"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "modal>=0.73.12",
+    "numpy>=2.2.2",
+    "biotite>=1.0.1",
+    "torch>=2.5.1,<2.7.0",
+    "deprecated>=1.2.14",
+]
+[project.optional-dependencies]
+dev = [
+    "pre-commit>=4.1.0",
+    "pytest>=8.3.4",
+    "pytest-xdist>=3.6.1",
+    "pytest-mock>=3.14.0",
+]
+local = [
+    "transformers @ git+https://github.com/jakublala/my_transformers.git"
+]
+
+[project.urls]
+Homepage = "https://github.com/jakublala/boileroom"
+
+[tool.hatch.metadata]
+allow-direct-references = true

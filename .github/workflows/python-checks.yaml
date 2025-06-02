@@ -1,0 +1,58 @@
+name: Python Checks
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  lint-checks:
+    runs-on: "ubuntu-latest"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Run pre-commit
+        run: uv run pre-commit run --all-files
+
+  unit-tests:
+    runs-on: "ubuntu-latest"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Install the package
+        run: uv pip install -e .
+
+      - name: Authenticate Modal
+        shell: bash -l {0}
+        run: uv run modal token set --token-id ${{ secrets.MODAL_API_TOKEN_ID }} --token-secret ${{ secrets.MODAL_API_TOKEN_SECRET }}
+
+      - name: Run tests
+        shell: bash -l {0}
+        run: uv run pytest -n auto
