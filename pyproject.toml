@@ -30,9 +30,6 @@ dev = [
     "pytest-xdist>=3.6.1",
     "pytest-mock>=3.14.0",
 ]
-local = [
-    "transformers @ git+https://github.com/jakublala/my_transformers.git"
-]
 
 [project.urls]
 Homepage = "https://github.com/jakublala/boileroom"
