@@ -30,6 +30,9 @@ dev = [
     "pytest-xdist>=3.6.1",
     "pytest-mock>=3.14.0",
 ]
+local = [
+    "transformers>=4.49.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/jakublala/boileroom"
