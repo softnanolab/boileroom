@@ -439,7 +439,7 @@ class ESMFold(FoldingAlgorithm):
                         chain_id=chain_id,
                         atom_name=atom_types[atom_idx],
                         res_name=res_name,
-                        res_id=1 + outputs["residue_index"][b, res_idx],  # 1-indexed
+                        res_id=outputs["residue_index"][b, res_idx],  # 0-indexed
                         element=atom_types[atom_idx][0],
                         # we only support C, N, O, S, [according to OpenFold Protein class]
                         # element is thus the first character of any atom name (according to PDB nomenclature)
