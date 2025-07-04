@@ -55,7 +55,7 @@ with esm_image.imports():
         recycle_s = torch.zeros_like(s_s)
         recycle_z = torch.zeros_like(s_z)
         recycle_bins = torch.zeros(*s_z.shape[:-1], device=device, dtype=torch.int64)
-        
+
         for recycle_idx in range(no_recycles):
             with torch.no_grad():
                 # === Recycling ===
@@ -92,6 +92,7 @@ with esm_image.imports():
 # Set up basic logging configuration
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
 
 # TODO: turn this into a Pydantic model instead
 @dataclass
@@ -132,11 +133,12 @@ class ESMFoldOutput(StructurePrediction):
     # TODO: maybe add this to the output to clearly indicate padded residues
     atom_array: Optional[AtomArray] = None  # 0-indexed
     pdb: Optional[list[str]] = None  # 0-indexed
-    cif: Optional[list[str]] = None # 0-indexed
+    cif: Optional[list[str]] = None  # 0-indexed
 
     # TODO: can add a save method here (to a pickle and a pdb file) that can be run locally
     # TODO: add verification of the outputs, and primarily the shape of all the arrays
     # (see test_esmfold_batch_multimer_linkers for the exact batched shapes)
+
 
 GPU_TO_USE = os.environ.get("BOILEROOM_GPU", "T4")
 
