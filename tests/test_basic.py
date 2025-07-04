@@ -386,11 +386,11 @@ def test_esmfold_output_pdb_cif():
     # Short protein checks
     num_residues = len(sequences[0])
     assert np.all(
-        np.unique(short_atomarray.res_id) == np.arange(1, num_residues + 1)
+        np.unique(short_atomarray.res_id) == np.arange(0, num_residues)
     ), "AtomArray residues should be 1-indexed"
     recovered_seq = recover_sequence(short_atomarray)
     assert recovered_seq == sequences[0], "Recovered sequence should be equal to the input sequence"
-    assert np.all(np.unique(short_pdb.res_id) == np.arange(1, num_residues + 1)), "Residues should be 1-indexed"
+    assert np.all(np.unique(short_pdb.res_id) == np.arange(0, num_residues)), "Residues should be 0-indexed"
     # Compare coordinates with tolerance
     assert np.allclose(
         short_pdb.coord, short_atomarray.coord, atol=0.1
@@ -404,11 +404,11 @@ def test_esmfold_output_pdb_cif():
     # Medium protein checks
     num_residues = len(sequences[1])
     assert np.all(
-        np.unique(medium_atomarray.res_id) == np.arange(1, num_residues + 1)
+        np.unique(medium_atomarray.res_id) == np.arange(0, num_residues)
     ), "AtomArray residues should be 1-indexed"
     recovered_seq = recover_sequence(medium_atomarray)
     assert recovered_seq == sequences[1], "Recovered sequence should be equal to the input sequence"
-    assert np.all(np.unique(medium_pdb.res_id) == np.arange(1, num_residues + 1)), "Residues should be 1-indexed"
+    assert np.all(np.unique(medium_pdb.res_id) == np.arange(0, num_residues)), "Residues should be 0-indexed"
 
     # Compare coordinates with tolerance
     assert np.allclose(
@@ -659,7 +659,7 @@ def test_esmfold_multimer_reference():
         assert np.array_equal(pdb_structure.res_id, cif_structure.res_id), "PDB and CIF residue IDs should match"
         assert np.array_equal(pdb_structure.res_id, atom_array.res_id), "PDB and atom array residue IDs should match"
         assert np.array_equal(
-            pdb_structure.res_id, reference_structure.res_id
+            1 + pdb_structure.res_id, reference_structure.res_id
         ), "PDB and reference residue IDs should match"
 
         assert np.array_equal(pdb_structure.res_name, cif_structure.res_name), "PDB and CIF residue names should match"

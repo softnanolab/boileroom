@@ -17,6 +17,78 @@ from .utils import Timer
 from .linker import compute_position_ids, store_multimer_properties
 
 
+with esm_image.imports():
+    import torch
+    from transformers import EsmForProteinFolding, AutoTokenizer
+    from transformers.models.esm.modeling_esmfold import EsmFoldingTrunk
+
+    def always_no_grad_forward(self, seq_feats, pair_feats, true_aa, residx, mask, no_recycles):
+        """
+        Inputs:
+            seq_feats: B x L x C tensor of sequence features pair_feats: B x L x L x C tensor of pair features residx: B
+            x L long tensor giving the position in the sequence mask: B x L boolean tensor indicating valid residues
+
+        Output:
+            predicted_structure: B x L x (num_atoms_per_residue * 3) tensor wrapped in a Coordinates object
+        """
+
+        device = seq_feats.device
+        s_s_0 = seq_feats
+        s_z_0 = pair_feats
+
+        if no_recycles is None:
+            no_recycles = self.config.max_recycles
+        else:
+            if no_recycles < 0:
+                raise ValueError("Number of recycles must not be negative.")
+            no_recycles += 1  # First 'recycle' is just the standard forward pass through the model.
+
+        def trunk_iter(s, z, residx, mask):
+            z = z + self.pairwise_positional_embedding(residx, mask=mask)
+
+            for block in self.blocks:
+                s, z = block(s, z, mask=mask, residue_index=residx, chunk_size=self.chunk_size)
+            return s, z
+
+        s_s = s_s_0
+        s_z = s_z_0
+        recycle_s = torch.zeros_like(s_s)
+        recycle_z = torch.zeros_like(s_z)
+        recycle_bins = torch.zeros(*s_z.shape[:-1], device=device, dtype=torch.int64)
+
+        for recycle_idx in range(no_recycles):
+            with torch.no_grad():
+                # === Recycling ===
+                recycle_s = self.recycle_s_norm(recycle_s.detach()).to(device)
+                recycle_z = self.recycle_z_norm(recycle_z.detach()).to(device)
+                recycle_z += self.recycle_disto(recycle_bins.detach()).to(device)
+
+                s_s, s_z = trunk_iter(s_s_0 + recycle_s, s_z_0 + recycle_z, residx, mask)
+
+                # === Structure module ===
+                structure = self.structure_module(
+                    {"single": self.trunk2sm_s(s_s), "pair": self.trunk2sm_z(s_z)},
+                    true_aa,
+                    mask.float(),
+                )
+
+                recycle_s = s_s
+                recycle_z = s_z
+                # Distogram needs the N, CA, C coordinates, and bin constants same as alphafold.
+                recycle_bins = EsmFoldingTrunk.distogram(
+                    structure["positions"][-1][:, :, :3],
+                    3.375,
+                    21.375,
+                    self.recycle_bins,
+                )
+
+        structure["s_s"] = s_s
+        structure["s_z"] = s_z
+
+        return structure
+
+    EsmFoldingTrunk.forward = always_no_grad_forward
+
 # Set up basic logging configuration
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -60,17 +132,13 @@ class ESMFoldOutput(StructurePrediction):
     chain_index: np.ndarray  # (batch_size, residue)
     # TODO: maybe add this to the output to clearly indicate padded residues
     atom_array: Optional[AtomArray] = None  # 0-indexed
-    pdb: Optional[list[str]] = None  # 1-indexed
-    cif: Optional[list[str]] = None
+    pdb: Optional[list[str]] = None  # 0-indexed
+    cif: Optional[list[str]] = None  # 0-indexed
 
     # TODO: can add a save method here (to a pickle and a pdb file) that can be run locally
     # TODO: add verification of the outputs, and primarily the shape of all the arrays
     # (see test_esmfold_batch_multimer_linkers for the exact batched shapes)
 
-
-with esm_image.imports():
-    import torch
-    from transformers import EsmForProteinFolding, AutoTokenizer
 
 GPU_TO_USE = os.environ.get("BOILEROOM_GPU", "T4")
 
@@ -439,7 +507,7 @@ class ESMFold(FoldingAlgorithm):
                         chain_id=chain_id,
                         atom_name=atom_types[atom_idx],
                         res_name=res_name,
-                        res_id=1 + outputs["residue_index"][b, res_idx],  # 1-indexed
+                        res_id=outputs["residue_index"][b, res_idx],  # 0-indexed
                         element=atom_types[atom_idx][0],
                         # we only support C, N, O, S, [according to OpenFold Protein class]
                         # element is thus the first character of any atom name (according to PDB nomenclature)

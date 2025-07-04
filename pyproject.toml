@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "boileroom"
-version = "0.1.0"
+version = "0.1.1"
 authors = [
     { name="Jakub Lála", email="jakublala@gmail.com" },
 ]
@@ -29,6 +29,9 @@ dev = [
     "pytest>=8.3.4",
     "pytest-xdist>=3.6.1",
     "pytest-mock>=3.14.0",
+]
+local = [
+    "transformers>=4.49.0",
 ]
 
 [project.urls]

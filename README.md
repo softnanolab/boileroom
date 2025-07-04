@@ -29,7 +29,7 @@ modal token new
 ## Quick Start
 
 ```python
-from boileroom import ESMFold
+from boileroom.esmfold import ESMFold
 
 # Initialize the model
 model = ESMFold()
@@ -48,8 +48,8 @@ confidence = result.plddt
 
 | Model      | Status | Description                                    | Reference                                              |
 |------------|--------|------------------------------------------------|--------------------------------------------------------|
-| ESMFold    | ✅      | Fast protein structure prediction   | [Meta AI](https://github.com/facebookresearch/esm)     |
-| ESM-2    | ✅      | MSA-free embedding model   | [Meta AI](https://github.com/facebookresearch/esm)     |
+| ESMFold    | ✅      | Fast protein structure prediction   | [Facebook (now Meta)](https://github.com/facebookresearch/esm)     |
+| ESM-2    | ✅      | MSA-free embedding model   | [Facebook (now Meta)](https://github.com/facebookresearch/esm)     |
 
 ## Development
 
