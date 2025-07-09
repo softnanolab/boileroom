@@ -2,6 +2,9 @@
 
 [![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![PyPI version](https://img.shields.io/pypi/v/boileroom.svg)](https://pypi.org/project/boileroom/)
+[![GitHub last commit](https://img.shields.io/github/last-commit/jakublala/boileroom.svg)](https://github.com/jakublala/boileroom/commits/main)
+[![GitHub issues](https://img.shields.io/github/issues/jakublala/boileroom.svg)](https://github.com/jakublala/boileroom/issues)
 
 `boileroom` is a Python package that provides a unified interface to various protein prediction models, running them efficiently on Modal's serverless infrastructure.
 
