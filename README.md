@@ -32,6 +32,7 @@ modal token new
 ## Quick Start
 
 ```python
+from boileroom import app
 from boileroom.esmfold import ESMFold
 
 # Initialize the model
@@ -39,7 +40,7 @@ model = ESMFold()
 
 # Predict structure for a protein sequence
 sequence = "MLKNVHVLVLGAGDVGSVVVRLLEK"
-with model.run():
+with app.run():
     result = model.fold([sequence])
 
 # Access prediction results
