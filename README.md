@@ -41,7 +41,7 @@ model = ESMFold()
 # Predict structure for a protein sequence
 sequence = "MLKNVHVLVLGAGDVGSVVVRLLEK"
 with app.run():
-    result = model.fold([sequence])
+    result = model.fold.remote([sequence])
 
 # Access prediction results
 coordinates = result.positions
