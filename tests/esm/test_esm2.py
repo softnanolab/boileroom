@@ -5,6 +5,7 @@ from boileroom import app
 from boileroom.models.esm.esm2 import get_esm2
 from conftest import TEST_SEQUENCES
 
+
 @pytest.fixture
 def esm2_model_factory():
     def _make_model(**kwargs):

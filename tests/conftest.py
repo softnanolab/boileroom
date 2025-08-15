@@ -6,8 +6,9 @@ TEST_SEQUENCES = {
     "medium": "MALWMRLLPLLALLALWGPDPAAAFVNQHLCGSHLVEALYLVCGERGFFYTPKT",
     "invalid": "MALWMRLLPX123LLALWGPD",
     "multimer": "MALWMRLLPLLALLALWGPDPAAAFVNQHLCGSHLVEALYLVCGERGFFYTPKT:"
-                "MALWMRLLPLLALLALWGPDPAAAFVNQHLCGSHLVEALYLVCGERGFFYTPKT",
+    "MALWMRLLPLLALLALWGPDPAAAFVNQHLCGSHLVEALYLVCGERGFFYTPKT",
 }
+
 
 @pytest.fixture
 def data_dir() -> pathlib.Path:
@@ -17,4 +18,3 @@ def data_dir() -> pathlib.Path:
 @pytest.fixture(params=[10, 25, 50])
 def glycine_linker(request) -> str:
     return "G" * request.param
-

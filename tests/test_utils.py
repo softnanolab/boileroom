@@ -4,6 +4,7 @@ from boileroom.utils import validate_sequence, format_time
 
 from conftest import TEST_SEQUENCES
 
+
 def test_validate_sequence():
     """Test sequence validation."""
     # Valid sequences

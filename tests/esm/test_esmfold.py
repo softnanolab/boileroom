@@ -14,13 +14,15 @@ from biotite.structure import AtomArray, rmsd
 from io import StringIO
 from biotite.structure.io.pdb import PDBFile
 
-from conftest import TEST_SEQUENCES, data_dir
+from conftest import TEST_SEQUENCES
+
 
 @pytest.fixture
 def esmfold_model(config={}) -> ESMFold:
     with enable_output():
         with app.run():
             yield ESMFold(config=config)
+
 
 @pytest.fixture
 def esm2_model_factory():
@@ -32,6 +34,7 @@ def esm2_model_factory():
             return get_esm2(gpu_type="A100-40GB", config=config)
         else:
             return get_esm2(gpu_type="T4", config=config)
+
     return _make_model
 
 
@@ -168,6 +171,7 @@ def test_esmfold_chain_indices():
         ]
     )
     assert np.array_equal(chain_indices[0], expected_chain_indices), "Chain indices mismatch"
+
 
 def test_esmfold_batch(esmfold_model: ESMFold):
     """Test ESMFold batch prediction."""

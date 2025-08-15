@@ -175,6 +175,7 @@ if GPU_TO_USE not in GPUS_AVAIL_ON_MODAL:
 
 from ... import app
 
+
 @app.cls(
     image=esm_image,
     gpu=GPU_TO_USE,

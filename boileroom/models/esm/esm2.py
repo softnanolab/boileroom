@@ -37,6 +37,7 @@ with esm_image.imports():
 
 from ... import app
 
+
 @app.cls(
     image=esm_image,
     gpu="T4",
