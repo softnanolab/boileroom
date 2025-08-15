@@ -32,8 +32,7 @@ modal token new
 ## Quick Start
 
 ```python
-from boileroom import app
-from boileroom.esmfold import ESMFold
+from boileroom import app, ESMFold
 
 # Initialize the model
 model = ESMFold()
