@@ -9,6 +9,7 @@ import modal
 import numpy as np
 from biotite.structure import AtomArray
 
+from ... import app
 from ...base import FoldingAlgorithm, StructurePrediction, PredictionMetadata
 from ...images import esm_image
 from ...images.volumes import model_weights
@@ -171,9 +172,6 @@ if GPU_TO_USE not in GPUS_AVAIL_ON_MODAL:
         f"GPU specified in BOILEROOM_GPU environment variable ('{GPU_TO_USE}') not available on "
         f"Modal. Please choose from: {GPUS_AVAIL_ON_MODAL}"
     )
-
-
-from ... import app
 
 
 @app.cls(

@@ -2,6 +2,7 @@ import pytest
 import pathlib
 import numpy as np
 import torch
+from typing import Generator
 from modal import enable_output
 
 from boileroom import app
@@ -18,7 +19,7 @@ from conftest import TEST_SEQUENCES
 
 
 @pytest.fixture
-def esmfold_model(config={}) -> ESMFold:
+def esmfold_model(config={}) -> Generator[ESMFold, None, None]:
     with enable_output():
         with app.run():
             yield ESMFold(config=config)

@@ -5,7 +5,7 @@ from typing import List, Union, Optional, TYPE_CHECKING
 
 import logging
 
-
+from ... import app
 from ...base import EmbeddingAlgorithm, EmbeddingPrediction, PredictionMetadata
 from ...images import esm_image
 from ...utils import MINUTES, MODEL_DIR, Timer
@@ -33,9 +33,6 @@ class ESM2Output(EmbeddingPrediction):
 with esm_image.imports():
     import torch
     from transformers import EsmModel, AutoTokenizer
-
-
-from ... import app
 
 
 @app.cls(
