@@ -8,12 +8,12 @@ from typing import Optional, List, Union
 import modal
 import numpy as np
 from biotite.structure import AtomArray
-from . import app
-from .base import FoldingAlgorithm, StructurePrediction, PredictionMetadata
-from .images import esm_image
-from .images.volumes import model_weights
-from .utils import MINUTES, MODEL_DIR, GPUS_AVAIL_ON_MODAL
-from .utils import Timer
+
+from ...base import FoldingAlgorithm, StructurePrediction, PredictionMetadata
+from ...images import esm_image
+from ...images.volumes import model_weights
+from ...utils import MINUTES, MODEL_DIR, GPUS_AVAIL_ON_MODAL
+from ...utils import Timer
 from .linker import compute_position_ids, store_multimer_properties
 
 # ESMFold-Specific: A list of atoms (excluding hydrogen) for each AA type. PDB naming convention.
@@ -172,6 +172,8 @@ if GPU_TO_USE not in GPUS_AVAIL_ON_MODAL:
         f"Modal. Please choose from: {GPUS_AVAIL_ON_MODAL}"
     )
 
+
+from ... import app
 
 @app.cls(
     image=esm_image,

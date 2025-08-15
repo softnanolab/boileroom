@@ -5,12 +5,11 @@ from typing import List, Union, Optional, TYPE_CHECKING
 
 import logging
 
-from . import app
-from .base import EmbeddingAlgorithm, EmbeddingPrediction, PredictionMetadata
-from .images import esm_image
-from .utils import MINUTES, MODEL_DIR
-from .images.volumes import model_weights
-from .utils import Timer
+
+from ...base import EmbeddingAlgorithm, EmbeddingPrediction, PredictionMetadata
+from ...images import esm_image
+from ...utils import MINUTES, MODEL_DIR, Timer
+from ...images.volumes import model_weights
 from .linker import compute_position_ids, store_multimer_properties, replace_glycine_linkers
 
 logger = logging.getLogger(__name__)
@@ -35,6 +34,8 @@ with esm_image.imports():
     import torch
     from transformers import EsmModel, AutoTokenizer
 
+
+from ... import app
 
 @app.cls(
     image=esm_image,
