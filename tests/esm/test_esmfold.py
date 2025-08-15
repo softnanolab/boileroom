@@ -14,7 +14,7 @@ from biotite.structure import AtomArray, rmsd
 from io import StringIO
 from biotite.structure.io.pdb import PDBFile
 
-from conftest import TEST_SEQUENCES
+from conftest import TEST_SEQUENCES, data_dir
 
 @pytest.fixture
 def esmfold_model(config={}) -> ESMFold:
@@ -262,7 +262,7 @@ def test_sequence_validation(esmfold_model: ESMFold):
     assert "Invalid amino acid" in str(exc_info.value), f"Expected 'Invalid amino acid', got {str(exc_info.value)}"
 
 
-def test_esmfold_output_pdb_cif():
+def test_esmfold_output_pdb_cif(data_dir: pathlib.Path):
     """Test ESMFold output PDB and CIF."""
 
     def recover_sequence(atomarray: AtomArray) -> str:
@@ -328,10 +328,7 @@ def test_esmfold_output_pdb_cif():
     assert np.array_equal(medium_pdb.res_name, medium_atomarray.res_name), "Residue names should match exactly"
     assert np.array_equal(medium_pdb.atom_name, medium_atomarray.atom_name), "Atom names should match exactly"
 
-    # also load the PDB file and compare
-    current_file = pathlib.Path(__file__).parent
-
-    short_pdbfile = PDBFile().read(current_file / "data/esmfold_server_short.pdb")
+    short_pdbfile = PDBFile().read(data_dir / "esmfold_server_short.pdb")
     saved_short_pdb = short_pdbfile.get_structure(model=1)
     saved_short_bfactor = short_pdbfile.get_b_factor()
     rmsd_value = rmsd(short_pdb, saved_short_pdb)
@@ -339,7 +336,7 @@ def test_esmfold_output_pdb_cif():
         rmsd_value < 1.5
     ), "PDB file should be almost equal to the saved ESMFold Server PDB file. Difference comes from HF vs. Meta implementation differences."
 
-    medium_pdbfile = PDBFile().read(current_file / "data/esmfold_server_medium.pdb")
+    medium_pdbfile = PDBFile().read(data_dir / "esmfold_server_medium.pdb")
     saved_medium_pdb = medium_pdbfile.get_structure(model=1)
     saved_medium_bfactor = medium_pdbfile.get_b_factor()
     rmsd_value = rmsd(medium_pdb, saved_medium_pdb)
