@@ -1,5 +1,6 @@
 import modal
 import numpy as np
+import os
 from dataclasses import dataclass
 from typing import List, Union, Optional, TYPE_CHECKING
 
@@ -89,14 +90,16 @@ class ESM2(EmbeddingAlgorithm):
 
     @modal.enter()
     def _initialize(self) -> None:
-        self.model_dir = MODEL_DIR
+        self.model_dir = os.environ.get("MODEL_DIR", MODEL_DIR)
         self._load()
 
     def _load(self) -> None:
         if self.tokenizer is None:
-            self.tokenizer = AutoTokenizer.from_pretrained(f"facebook/{self.config['model_name']}")
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                f"facebook/{self.config['model_name']}", cache_dir=self.model_dir
+            )
         if self.model is None:
-            self.model = EsmModel.from_pretrained(f"facebook/{self.config['model_name']}")
+            self.model = EsmModel.from_pretrained(f"facebook/{self.config['model_name']}", cache_dir=self.model_dir)
         self.device = "cuda"
         self.model = self.model.cuda()
         self.model.eval()

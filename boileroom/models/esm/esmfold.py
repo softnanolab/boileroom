@@ -214,7 +214,7 @@ class ESMFold(FoldingAlgorithm):
     @modal.enter()
     def _initialize(self) -> None:
         """Initialize the model during container startup. This helps us determine whether we run locally or remotely."""
-        self.model_dir = os.environ.get("HF_MODEL_DIR", MODEL_DIR)
+        self.model_dir = os.environ.get("MODEL_DIR", MODEL_DIR)
         self._load()
 
     def _load(self) -> None:
