@@ -2,18 +2,16 @@ import pytest
 
 from boileroom.utils import validate_sequence, format_time
 
-from conftest import TEST_SEQUENCES
 
-
-def test_validate_sequence():
+def test_validate_sequence(test_sequences: dict[str, str]):
     """Test sequence validation."""
     # Valid sequences
-    assert validate_sequence(TEST_SEQUENCES["short"]) is True
-    assert validate_sequence(TEST_SEQUENCES["medium"]) is True
+    assert validate_sequence(test_sequences["short"]) is True
+    assert validate_sequence(test_sequences["medium"]) is True
 
     # Invalid sequences
     with pytest.raises(ValueError):
-        validate_sequence(TEST_SEQUENCES["invalid"])
+        validate_sequence(test_sequences["invalid"])
     with pytest.raises(ValueError):
         validate_sequence("NOT A SEQUENCE")
 

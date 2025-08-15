@@ -1,9 +1,7 @@
 import pytest
 import numpy as np
 
-from boileroom import app
-from boileroom.esm2 import get_esm2
-from conftest import TEST_SEQUENCES
+from boileroom import app, get_esm2
 
 
 @pytest.fixture
@@ -64,7 +62,7 @@ def test_esm2_embed_hidden_states(esm2_model_factory):
         del model
 
 
-def test_esm2_embed_multimer(esm2_model_factory):
+def test_esm2_embed_multimer(esm2_model_factory, test_sequences):
     """Test ESM2 embedding multimer functionality.
 
     Tests various aspects of multimer handling:
@@ -85,7 +83,7 @@ def test_esm2_embed_multimer(esm2_model_factory):
             )
 
             # Test with a simple multimer sequence
-            sequence = TEST_SEQUENCES["multimer"]
+            sequence = test_sequences["multimer"]
             result = model.embed.remote([sequence])
 
             # Check basic shape
@@ -138,7 +136,7 @@ def test_esm2_embed_multimer(esm2_model_factory):
             # Last test for a batched multimer, each sequence has different number of chains and length
             sequences = [
                 "AAA:CCC",  # Very short 2-chain multimer
-                TEST_SEQUENCES["short"],  # Monomer (25 residues)
+                test_sequences["short"],  # Monomer (25 residues)
                 "A" * 50 + ":" + "C" * 100 + ":" + "D" * 75,  # Long 3-chain multimer with different chain lengths
                 "M" * 10 + ":" + "K" * 10,  # Small symmetric 2-chain multimer
                 "M" * 1 + ":" + "Y" * 1,  # Edge case: minimal 2-chain multimer (1 residue each)

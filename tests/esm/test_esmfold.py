@@ -5,8 +5,8 @@ import torch
 from typing import Generator
 from modal import enable_output
 
-from boileroom import app
-from boileroom.esmfold import ESMFold, ESMFoldOutput
+from boileroom import app, ESMFold
+from boileroom.models.esm.esmfold import ESMFoldOutput
 from boileroom.models.esm.linker import store_multimer_properties
 from boileroom.convert import pdb_string_to_atomarray
 from boileroom.constants import restype_3to1
@@ -14,26 +14,23 @@ from biotite.structure import AtomArray, rmsd
 from io import StringIO
 from biotite.structure.io.pdb import PDBFile
 
-from conftest import TEST_SEQUENCES
-
 
 @pytest.fixture
 def esmfold_model(config={}) -> Generator[ESMFold, None, None]:
-    with enable_output():
-        with app.run():
-            yield ESMFold(config=config)
+    with enable_output(), app.run():
+        yield ESMFold(config=config)
 
 
-def test_esmfold_basic():
+def test_esmfold_basic(test_sequences: dict[str, str]):
     """Test basic ESMFold functionality."""
     with enable_output():
         with app.run():
             model = ESMFold()
-            result = model.fold.remote(TEST_SEQUENCES["short"])
+            result = model.fold.remote(test_sequences["short"])
 
             assert isinstance(result, ESMFoldOutput), "Result should be an ESMFoldOutput"
 
-            seq_len = len(TEST_SEQUENCES["short"])
+            seq_len = len(test_sequences["short"])
             positions_shape = result.positions.shape
 
             assert positions_shape[-1] == 3, "Coordinate dimension mismatch. Expected: 3, Got: {positions_shape[-1]}"
@@ -44,15 +41,15 @@ def test_esmfold_basic():
             assert np.all(result.plddt <= 100), "pLDDT scores should be less than or equal to 100"
 
 
-def test_esmfold_multimer():
+def test_esmfold_multimer(test_sequences):
     """Test ESMFold multimer functionality."""
     with enable_output():
         with app.run():
             model = ESMFold(config={"output_pdb": True})
-            result = model.fold.remote(TEST_SEQUENCES["multimer"])
+            result = model.fold.remote(test_sequences["multimer"])
 
     assert result.pdb is not None, "PDB output should be generated"
-    assert result.positions.shape[2] == len(TEST_SEQUENCES["multimer"].replace(":", "")), "Number of residues mismatch"
+    assert result.positions.shape[2] == len(test_sequences["multimer"].replace(":", "")), "Number of residues mismatch"
     assert np.all(result.residue_index[0][:54] == np.arange(0, 54)), "First chain residue index mismatch"
     assert np.all(result.residue_index[0][54:] == np.arange(0, 54)), "Second chain residue index mismatch"
     assert np.all(result.chain_index[0][:54] == 0), "First chain index mismatch"
@@ -60,9 +57,9 @@ def test_esmfold_multimer():
 
     structure = pdb_string_to_atomarray(result.pdb[0])
 
-    n_residues = len(set((chain, res) for chain, res in zip(structure.chain_id, structure.res_id)))
+    n_residues = len(set((chain, res) for chain, res in zip(structure.chain_id, structure.res_id, strict=True)))
 
-    assert n_residues == len(TEST_SEQUENCES["multimer"].replace(":", "")), "Number of residues mismatch"
+    assert n_residues == len(test_sequences["multimer"].replace(":", "")), "Number of residues mismatch"
     assert len(result.chain_index[0]) == n_residues, "Chain index length mismatch"
     assert len(result.residue_index[0]) == n_residues, "Residue index length mismatch"
 
@@ -111,7 +108,7 @@ def test_esmfold_linker_map():
     assert torch.all(linker_map == gt_map), "Linker map mismatch"
 
 
-def test_esmfold_no_glycine_linker():
+def test_esmfold_no_glycine_linker(test_sequences):
     """Test ESMFold no glycine linker."""
     model = ESMFold(
         config={
@@ -121,10 +118,10 @@ def test_esmfold_no_glycine_linker():
 
     with enable_output():
         with app.run():
-            result = model.fold.remote(TEST_SEQUENCES["multimer"])
+            result = model.fold.remote(test_sequences["multimer"])
 
     assert result.positions is not None, "Positions should be generated"
-    assert result.positions.shape[2] == len(TEST_SEQUENCES["multimer"].replace(":", "")), "Number of residues mismatch"
+    assert result.positions.shape[2] == len(test_sequences["multimer"].replace(":", "")), "Number of residues mismatch"
 
     assert result.residue_index is not None, "Residue index should be generated"
     assert result.plddt is not None, "pLDDT should be generated"
@@ -159,11 +156,11 @@ def test_esmfold_chain_indices():
     assert np.array_equal(chain_indices[0], expected_chain_indices), "Chain indices mismatch"
 
 
-def test_esmfold_batch(esmfold_model: ESMFold):
+def test_esmfold_batch(esmfold_model: ESMFold, test_sequences: dict[str, str]):
     """Test ESMFold batch prediction."""
 
     # Define input sequences
-    sequences = [TEST_SEQUENCES["short"], TEST_SEQUENCES["medium"]]
+    sequences = [test_sequences["short"], test_sequences["medium"]]
 
     # Make prediction
     result = esmfold_model.fold.remote(sequences)
@@ -224,18 +221,18 @@ def test_esmfold_batch(esmfold_model: ESMFold):
 #     assert set(tokenized_input.keys()) >= {"input_ids", "attention_mask", "position_ids"}
 
 
-def test_sequence_validation(esmfold_model: ESMFold):
+def test_sequence_validation(esmfold_model: ESMFold, test_sequences: dict[str, str]):
     """Test sequence validation in FoldingAlgorithm."""
 
     # Test single sequence
-    single_seq = TEST_SEQUENCES["short"]
+    single_seq = test_sequences["short"]
     validated = esmfold_model._validate_sequences(single_seq)
     assert isinstance(validated, list), "Single sequence should be converted to list"
     assert len(validated) == 1, "Should contain one sequence"
     assert validated[0] == single_seq, "Sequence should be unchanged"
 
     # Test sequence list
-    seq_list = [TEST_SEQUENCES["short"], TEST_SEQUENCES["medium"]]
+    seq_list = [test_sequences["short"], test_sequences["medium"]]
     validated = esmfold_model._validate_sequences(seq_list)
     assert isinstance(validated, list), "Should return a list"
     assert len(validated) == 2, "Should contain two sequences"
@@ -243,16 +240,16 @@ def test_sequence_validation(esmfold_model: ESMFold):
 
     # Test invalid sequence
     with pytest.raises(ValueError) as exc_info:
-        esmfold_model._validate_sequences(TEST_SEQUENCES["invalid"])
+        esmfold_model._validate_sequences(test_sequences["invalid"])
     assert "Invalid amino acid" in str(exc_info.value), f"Expected 'Invalid amino acid', got {str(exc_info.value)}"
 
     # Test that fold method uses validation
     with pytest.raises(ValueError) as exc_info:
-        esmfold_model.fold.remote(TEST_SEQUENCES["invalid"])
+        esmfold_model.fold.remote(test_sequences["invalid"])
     assert "Invalid amino acid" in str(exc_info.value), f"Expected 'Invalid amino acid', got {str(exc_info.value)}"
 
 
-def test_esmfold_output_pdb_cif(data_dir: pathlib.Path):
+def test_esmfold_output_pdb_cif(data_dir: pathlib.Path, test_sequences: dict[str, str]):
     """Test ESMFold output PDB and CIF."""
 
     def recover_sequence(atomarray: AtomArray) -> str:
@@ -265,7 +262,7 @@ def test_esmfold_output_pdb_cif(data_dir: pathlib.Path):
         with app.run():
             model = ESMFold(config={"output_pdb": True, "output_cif": False, "output_atomarray": True})
             # Define input sequences
-            sequences = [TEST_SEQUENCES["short"], TEST_SEQUENCES["medium"]]
+            sequences = [test_sequences["short"], test_sequences["medium"]]
             result = model.fold.remote(sequences)
 
     assert result.pdb is not None, "PDB output should be generated"
@@ -285,7 +282,7 @@ def test_esmfold_output_pdb_cif(data_dir: pathlib.Path):
     num_residues = len(sequences[0])
     assert np.all(
         np.unique(short_atomarray.res_id) == np.arange(0, num_residues)
-    ), "AtomArray residues should be 1-indexed"
+    ), "AtomArray residues should be 0-indexed"
     recovered_seq = recover_sequence(short_atomarray)
     assert recovered_seq == sequences[0], "Recovered sequence should be equal to the input sequence"
     assert np.all(np.unique(short_pdb.res_id) == np.arange(0, num_residues)), "Residues should be 0-indexed"
@@ -303,7 +300,7 @@ def test_esmfold_output_pdb_cif(data_dir: pathlib.Path):
     num_residues = len(sequences[1])
     assert np.all(
         np.unique(medium_atomarray.res_id) == np.arange(0, num_residues)
-    ), "AtomArray residues should be 1-indexed"
+    ), "AtomArray residues should be 0-indexed"
     recovered_seq = recover_sequence(medium_atomarray)
     assert recovered_seq == sequences[1], "Recovered sequence should be equal to the input sequence"
     assert np.all(np.unique(medium_pdb.res_id) == np.arange(0, num_residues)), "Residues should be 0-indexed"

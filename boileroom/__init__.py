@@ -19,6 +19,10 @@ def __getattr__(name):
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
+def __dir__():
+    return sorted(list(globals().keys()) + ["ESMFold", "ESM2", "get_esmfold", "get_esm2"])
+
+
 __all__ = [
     "ESMFold",
     "ESM2",
