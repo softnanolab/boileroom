@@ -6,8 +6,7 @@ from typing import Generator
 from modal import enable_output
 
 from boileroom import app
-from boileroom.models.esm.esmfold import ESMFold, ESMFoldOutput
-from boileroom.models.esm.esm2 import get_esm2
+from boileroom.esmfold import ESMFold, ESMFoldOutput
 from boileroom.models.esm.linker import store_multimer_properties
 from boileroom.convert import pdb_string_to_atomarray
 from boileroom.constants import restype_3to1
@@ -23,20 +22,6 @@ def esmfold_model(config={}) -> Generator[ESMFold, None, None]:
     with enable_output():
         with app.run():
             yield ESMFold(config=config)
-
-
-@pytest.fixture
-def esm2_model_factory():
-    def _make_model(**kwargs):
-        config = {**kwargs}
-        if "15B" in config["model_name"]:
-            return get_esm2(gpu_type="A100-80GB", config=config)
-        elif "3B" in config["model_name"]:
-            return get_esm2(gpu_type="A100-40GB", config=config)
-        else:
-            return get_esm2(gpu_type="T4", config=config)
-
-    return _make_model
 
 
 def test_esmfold_basic():
