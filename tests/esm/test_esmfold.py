@@ -112,9 +112,8 @@ def test_esmfold_no_glycine_linker(test_sequences, run_backend):
         }
     )
 
-    with enable_output():
-        with app.run():
-            result = run_backend(model.fold)(test_sequences["multimer"])
+    with enable_output(), app.run():
+        result = run_backend(model.fold)(test_sequences["multimer"])
 
     assert result.positions is not None, "Positions should be generated"
     assert result.positions.shape[2] == len(test_sequences["multimer"].replace(":", "")), "Number of residues mismatch"
@@ -254,12 +253,11 @@ def test_esmfold_output_pdb_cif(data_dir: pathlib.Path, test_sequences: dict[str
         one_letter_codes = [restype_3to1[three_letter_code] for three_letter_code in three_letter_codes]
         return "".join(one_letter_codes)
 
-    with enable_output():
-        with app.run():
-            model = ESMFold(config={"output_pdb": True, "output_cif": False, "output_atomarray": True})
-            # Define input sequences
-            sequences = [test_sequences["short"], test_sequences["medium"]]
-            result = run_backend(model.fold)(sequences)
+    with enable_output(), app.run():
+        model = ESMFold(config={"output_pdb": True, "output_cif": False, "output_atomarray": True})
+        # Define input sequences
+        sequences = [test_sequences["short"], test_sequences["medium"]]
+        result = run_backend(model.fold)(sequences)
 
     assert result.pdb is not None, "PDB output should be generated"
     assert result.cif is None, "CIF output should be None"
