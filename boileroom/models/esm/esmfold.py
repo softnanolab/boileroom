@@ -207,14 +207,13 @@ class ESMFold(FoldingAlgorithm):
             model_name="ESMFold",
             model_version="v4.49.0",  # HuggingFace transformers version
         )
-        self.model_dir: Optional[str] = None
+        self.model_dir: Optional[str] = os.environ.get("MODEL_DIR", MODEL_DIR)
         self.tokenizer: Optional[AutoTokenizer] = None
         self.model: Optional[EsmForProteinFolding] = None
 
     @modal.enter()
     def _initialize(self) -> None:
         """Initialize the model during container startup. This helps us determine whether we run locally or remotely."""
-        self.model_dir = os.environ.get("HF_MODEL_DIR", MODEL_DIR)
         self._load()
 
     def _load(self) -> None:
@@ -223,8 +222,8 @@ class ESMFold(FoldingAlgorithm):
             self.tokenizer = AutoTokenizer.from_pretrained("facebook/esmfold_v1", cache_dir=self.model_dir)
         if self.model is None:
             self.model = EsmForProteinFolding.from_pretrained("facebook/esmfold_v1", cache_dir=self.model_dir)
-        self.device = "cuda"
-        self.model = self.model.cuda()
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.model = self.model.to(self.device)
         self.model.eval()
         self.model.trunk.set_chunk_size(64)
         self.ready = True

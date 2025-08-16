@@ -32,13 +32,13 @@ def esm2_model_factory():
         # {"model_name": "esm2_t48_15B_UR50D", "latent_dim": 5120, "num_layers": 48},
     ],
 )
-def test_esm2_embed_basic(esm2_model_factory, model_config):
+def test_esm2_embed_basic(esm2_model_factory, model_config, run_backend):
     """Test ESM2 embedding."""
     sequence = "MALWMRLLPLLALLALWGPDPAAA"
 
     with app.run():
         model = esm2_model_factory(model_name=model_config["model_name"])
-        result = model.embed.remote([sequence])
+        result = run_backend(model.embed)([sequence])
         # +2 for the two extra tokens (start of sequence and end of sequence)
         assert result.embeddings.shape == (1, len(sequence), model_config["latent_dim"])
         assert result.hidden_states is not None
@@ -52,17 +52,17 @@ def test_esm2_embed_basic(esm2_model_factory, model_config):
         del model
 
 
-def test_esm2_embed_hidden_states(esm2_model_factory):
+def test_esm2_embed_hidden_states(esm2_model_factory, run_backend):
     """Test ESM2 embedding hidden states."""
     with app.run():
         sequence = "MALWMRLLPLLALLALWGPDPAAA"
         model = esm2_model_factory(model_name="esm2_t33_650M_UR50D", output_hidden_states=False)
-        result = model.embed.remote([sequence])
+        result = run_backend(model.embed)([sequence])
         assert result.hidden_states is None
         del model
 
 
-def test_esm2_embed_multimer(esm2_model_factory, test_sequences):
+def test_esm2_embed_multimer(esm2_model_factory, test_sequences, run_backend):
     """Test ESM2 embedding multimer functionality.
 
     Tests various aspects of multimer handling:
@@ -84,7 +84,7 @@ def test_esm2_embed_multimer(esm2_model_factory, test_sequences):
 
             # Test with a simple multimer sequence
             sequence = test_sequences["multimer"]
-            result = model.embed.remote([sequence])
+            result = run_backend(model.embed)([sequence])
 
             # Check basic shape
             expected_length = len(sequence.replace(":", ""))
@@ -109,7 +109,7 @@ def test_esm2_embed_multimer(esm2_model_factory, test_sequences):
 
             # Test with a more complex multimer sequence
             complex_sequence = "MALWMRLLPLLALLALLAADASDASLLALWGPDPAAA:MADLLALWGPDPAAA:MALWMRLLPLLAADLLALWGPDPWGPDPAAA"
-            result = model.embed.remote([complex_sequence])
+            result = run_backend(model.embed)([complex_sequence])
 
             # Check basic shape for complex sequence
             expected_length = len(complex_sequence.replace(":", ""))
@@ -141,7 +141,7 @@ def test_esm2_embed_multimer(esm2_model_factory, test_sequences):
                 "M" * 10 + ":" + "K" * 10,  # Small symmetric 2-chain multimer
                 "M" * 1 + ":" + "Y" * 1,  # Edge case: minimal 2-chain multimer (1 residue each)
             ]
-            result = model.embed.remote(sequences)
+            result = run_backend(model.embed)(sequences)
             assert result.embeddings.shape == (
                 len(sequences),
                 max(len(seq.replace(":", "")) for seq in sequences),

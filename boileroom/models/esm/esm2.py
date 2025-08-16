@@ -1,5 +1,6 @@
 import modal
 import numpy as np
+import os
 from dataclasses import dataclass
 from typing import List, Union, Optional, TYPE_CHECKING
 
@@ -59,7 +60,7 @@ class ESM2(EmbeddingAlgorithm):
             model_name="ESM-2",
             model_version="v4.49.0",  # HuggingFace transformers version
         )
-        self.model_dir: Optional[str] = None
+        self.model_dir: Optional[str] = os.environ.get("MODEL_DIR", MODEL_DIR)
         self.tokenizer: Optional[AutoTokenizer] = None
         self.model: Optional[EsmModel] = None
         self.assert_valid_model(config)
@@ -89,22 +90,23 @@ class ESM2(EmbeddingAlgorithm):
 
     @modal.enter()
     def _initialize(self) -> None:
-        self.model_dir = MODEL_DIR
         self._load()
 
     def _load(self) -> None:
         if self.tokenizer is None:
-            self.tokenizer = AutoTokenizer.from_pretrained(f"facebook/{self.config['model_name']}")
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                f"facebook/{self.config['model_name']}", cache_dir=self.model_dir
+            )
         if self.model is None:
-            self.model = EsmModel.from_pretrained(f"facebook/{self.config['model_name']}")
-        self.device = "cuda"
-        self.model = self.model.cuda()
+            self.model = EsmModel.from_pretrained(f"facebook/{self.config['model_name']}", cache_dir=self.model_dir)
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.model = self.model.to(self.device)
         self.model.eval()
         self.ready = True
 
     @modal.method()
     def embed(self, sequences: Union[str, List[str]]) -> ESM2Output:
-        if self.tokenizer is None and self.model is None:
+        if self.tokenizer is None or self.model is None:
             logger.warning("Model not loaded. Forcing the model to load... Next time call _load() first.")
             self._load()
         assert self.tokenizer is not None and self.model is not None, "Model not loaded"
