@@ -5,6 +5,8 @@ import logging
 from dataclasses import dataclass
 from typing import Optional, List, Union
 from pathlib import Path
+from tempfile import NamedTemporaryFile
+from uuid import uuid4
 
 import modal
 import numpy as np
@@ -20,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 with chai1_image.imports():
     import torch
-    from chai_lab.chai1 import run_inference
+    from chai_lab import chai1
 
 @dataclass
 class Chai1Output(StructurePrediction):
@@ -81,6 +83,12 @@ class Chai1(FoldingAlgorithm):
 
     def _load(self) -> None:
         """Load the Chai-1 model."""
+        # TODO: potentially move to chai1.py
+        # TODO: add loading of the model? or is this taken care of elsewhere?#
+        # We need to load/download the model by using the logic
+        # given in the Modal example
+        
+
         # Set up the environment for Chai-1
         chai_downloads_dir = os.path.join(self.model_dir, "chai1")
         os.environ["CHAI_DOWNLOADS_DIR"] = chai_downloads_dir
@@ -110,10 +118,6 @@ class Chai1(FoldingAlgorithm):
             raise ValueError("Chai-1 implementation currently supports only single sequences")
         
         sequence = sequences[0]
-        
-        # Check for multimers (not supported in this simplified implementation)
-        if ":" in sequence:
-            raise ValueError("Multimer sequences are not supported in this simplified Chai-1 implementation")
 
         with Timer("Chai-1 Inference") as timer:
             outputs = self._run_chai1_inference(sequence)
@@ -121,28 +125,54 @@ class Chai1(FoldingAlgorithm):
         result = self._convert_outputs(outputs, timer.duration)
         return result
 
-    def _run_chai1_inference(self, sequence: str) -> dict:
-        """Run Chai-1 inference on a single protein sequence."""
-        # Prepare FASTA content
-        fasta_content = f">protein_sequence\n{sequence}"
-        
-        # Set up output directory
-        output_dir = Path(self.config["output_dir"])
-        output_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Run Chai-1 inference
+    def _run_chai1_inference(self, sequence: str):
+        """Run Chai-1 inference on a single monomer or multimer (chains separated by ":").
+
+        Creates a temporary FASTA file with headers of the form:
+        >protein|name=ChainA\nSEQUENCE_A\n>protein|name=ChainB\nSEQUENCE_B
+        and passes its path to chai1.run_inference.
+        """
+        # Build FASTA content with chain headers
+        chains = sequence.split(":") if ":" in sequence else [sequence]
+        fasta_lines: list[str] = []
+        for idx, chain_seq in enumerate(chains):
+            chain_name = chr(ord("A") + idx)
+            fasta_lines.append(f">protein|name=Chain{chain_name}")
+            fasta_lines.append(chain_seq)
+        fasta_str = "\n".join(fasta_lines) + "\n"
+
+        # Prepare a unique empty output directory per run
+        base_output_dir = Path(self.config["output_dir"]).expanduser()
+        base_output_dir.mkdir(parents=True, exist_ok=True)
+        run_output_dir = base_output_dir / f"run_{uuid4().hex}"
+        run_output_dir.mkdir(parents=True, exist_ok=False)
+
+        tmp_path: Path | None = None
         try:
-            # This is the main Chai-1 inference call
-            output = run_inference(
-                fasta_content,
-                output_dir=output_dir,
-                num_steps=self.config["num_steps"],
-                use_msa_server=False,  # Simplified for protein-only case
+            # Write temporary FASTA file
+            with NamedTemporaryFile(mode="w", suffix=".fasta", delete=False) as tmp:
+                tmp.write(fasta_str)
+                tmp.flush()
+                tmp_path = Path(tmp.name)
+
+            # Call Chai-1 inference with the FASTA file path
+            output = chai1.run_inference(
+                tmp_path,
+                output_dir=run_output_dir,
+                use_msa_server=False,
+                num_diffn_timesteps=self.config.get("num_steps", 200),
+                device=self.device,
             )
             return output
         except Exception as e:
             logger.error(f"Chai-1 inference failed: {e}")
             raise RuntimeError(f"Chai-1 inference failed: {e}")
+        finally:
+            if tmp_path is not None:
+                try:
+                    tmp_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
 
     def _convert_outputs(self, chai_outputs: dict, inference_time: float) -> Chai1Output:
         """Convert Chai-1 outputs to the standardized format."""

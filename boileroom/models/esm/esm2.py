@@ -18,7 +18,6 @@ logger = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from transformers.modeling_outputs import BaseModelOutputWithPoolingAndCrossAttentions
 
-
 # TODO: turn this into a Pydantic model instead
 @dataclass
 class ESM2Output(EmbeddingPrediction):
