@@ -9,7 +9,6 @@ import modal
 import numpy as np
 from biotite.structure import AtomArray
 
-from ... import app
 from ...base import FoldingAlgorithm, StructurePrediction, PredictionMetadata
 from ...images import esm_image
 from ...images.volumes import model_weights
@@ -164,23 +163,28 @@ class ESMFoldOutput(StructurePrediction):
     # (see test_esmfold_batch_multimer_linkers for the exact batched shapes)
 
 
-GPU_TO_USE = os.environ.get("BOILEROOM_GPU", "T4")
+from ...base import ModelWrapper
+from ...backend.modal import ModalBackend
 
-if GPU_TO_USE not in GPUS_AVAIL_ON_MODAL:
-    raise ValueError(
-        f"GPU specified in BOILEROOM_GPU environment variable ('{GPU_TO_USE}') not available on "
-        f"Modal. Please choose from: {GPUS_AVAIL_ON_MODAL}"
-    )
+class ESMFold(ModelWrapper):
+    """
+    Interface for ESMFold protein structure prediction model.
+    # TODO: This is the user-facing interface. It should give all the relevant details possible.
+    # with proper documentation.
+    """
+    def __init__(self, backend: str = "modal", config: dict = {}) -> None:
+        super().__init__(backend, config)
+        self._model = ESMFoldCore(config)
+        if backend == "modal":
+            self._backend = ModalBackend(self._model)
+        else:
+            raise ValueError(f"Backend {backend} not supported")
+    
+    def fold(self, sequences: Union[str, List[str]]) -> ESMFoldOutput:
+        return self._backend.model.fold.remote(sequences)
 
 
-@app.cls(
-    image=esm_image,
-    gpu=GPU_TO_USE,
-    timeout=20 * MINUTES,
-    container_idle_timeout=10 * MINUTES,
-    volumes={MODEL_DIR: model_weights},
-)
-class ESMFold(FoldingAlgorithm):
+class ESMFoldCore(FoldingAlgorithm):
     """ESMFold protein structure prediction model."""
 
     # TODO: maybe this config should be input to the fold function, so that it can

@@ -1,8 +1,3 @@
-import modal
-
-app = modal.App("boileroom")
-
-
 # Lazy import to avoid circular import
 def _import_models():
     from .models import ESMFold, ESM2, get_esmfold, get_esm2

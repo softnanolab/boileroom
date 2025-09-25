@@ -35,14 +35,6 @@ with esm_image.imports():
     import torch
     from transformers import EsmModel, AutoTokenizer
 
-
-@app.cls(
-    image=esm_image,
-    gpu="T4",
-    timeout=20 * MINUTES,
-    container_idle_timeout=10 * MINUTES,
-    volumes={MODEL_DIR: model_weights},
-)
 class ESM2(EmbeddingAlgorithm):
     """ESM2 protein language model."""
 

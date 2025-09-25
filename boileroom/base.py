@@ -200,3 +200,17 @@ class EmbeddingAlgorithm(Algorithm):
             RuntimeError: If embedding generation fails
         """
         raise NotImplementedError
+
+from .backend.base import Backend
+
+class ModelWrapper(Protocol):
+
+    def __init__(self, backend: Backend, config: dict = {}) -> None:
+        """Initialize the model wrapper."""
+        self.backend = backend
+        self.config = config
+
+    @abstractmethod
+    def __call__(self, sequences: Union[str, Sequence[str]]) -> StructurePrediction | EmbeddingPrediction:
+        """Call the model wrapper."""
+        raise NotImplementedError

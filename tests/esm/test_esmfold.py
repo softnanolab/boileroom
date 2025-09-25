@@ -17,13 +17,13 @@ from biotite.structure.io.pdb import PDBFile
 
 @pytest.fixture
 def esmfold_model(config={}) -> Generator[ESMFold, None, None]:
-    with enable_output(), app.run():
-        yield ESMFold(config=config)
+    with enable_output():
+        yield ESMFold(backend="modal", config=config)
 
 
-def test_esmfold_basic(test_sequences: dict[str, str], esmfold_model: ESMFold, run_backend):
+def test_esmfold_basic(test_sequences: dict[str, str], esmfold_model: ESMFold):
     """Test basic ESMFold functionality."""
-    result = run_backend(esmfold_model.fold)(test_sequences["short"])
+    result = esmfold_model.fold(test_sequences["short"])
 
     assert isinstance(result, ESMFoldOutput), "Result should be an ESMFoldOutput"
 
@@ -38,11 +38,11 @@ def test_esmfold_basic(test_sequences: dict[str, str], esmfold_model: ESMFold, r
     assert np.all(result.plddt <= 100), "pLDDT scores should be less than or equal to 100"
 
 
-def test_esmfold_multimer(test_sequences, run_backend):
+def test_esmfold_multimer(test_sequences):
     """Test ESMFold multimer functionality."""
-    with enable_output(), app.run():  # TODO: make this better with a fixture, re-using the logic
+    with enable_output():  # TODO: make this better with a fixture, re-using the logic
         model = ESMFold(config={"output_pdb": True})
-        result = run_backend(model.fold)(test_sequences["multimer"])
+        result = model.fold(test_sequences["multimer"])
 
     assert result.pdb is not None, "PDB output should be generated"
     assert result.positions.shape[2] == len(test_sequences["multimer"].replace(":", "")), "Number of residues mismatch"
@@ -104,7 +104,7 @@ def test_esmfold_linker_map():
     assert torch.all(linker_map == gt_map), "Linker map mismatch"
 
 
-def test_esmfold_no_glycine_linker(test_sequences, run_backend):
+def test_esmfold_no_glycine_linker(test_sequences):
     """Test ESMFold no glycine linker."""
     model = ESMFold(
         config={
@@ -112,8 +112,8 @@ def test_esmfold_no_glycine_linker(test_sequences, run_backend):
         }
     )
 
-    with enable_output(), app.run():
-        result = run_backend(model.fold)(test_sequences["multimer"])
+    with enable_output():
+        result = model.fold(test_sequences["multimer"])
 
     assert result.positions is not None, "Positions should be generated"
     assert result.positions.shape[2] == len(test_sequences["multimer"].replace(":", "")), "Number of residues mismatch"
@@ -151,14 +151,14 @@ def test_esmfold_chain_indices():
     assert np.array_equal(chain_indices[0], expected_chain_indices), "Chain indices mismatch"
 
 
-def test_esmfold_batch(esmfold_model: ESMFold, test_sequences: dict[str, str], run_backend):
+def test_esmfold_batch(esmfold_model: ESMFold, test_sequences: dict[str, str]):
     """Test ESMFold batch prediction."""
 
     # Define input sequences
     sequences = [test_sequences["short"], test_sequences["medium"]]
 
     # Make prediction
-    result = run_backend(esmfold_model.fold)(sequences)
+    result = esmfold_model.fold(sequences)
 
     max_seq_length = max(len(seq) for seq in sequences)
     assert (
@@ -216,7 +216,7 @@ def test_esmfold_batch(esmfold_model: ESMFold, test_sequences: dict[str, str], r
 #     assert set(tokenized_input.keys()) >= {"input_ids", "attention_mask", "position_ids"}
 
 
-def test_sequence_validation(esmfold_model: ESMFold, test_sequences: dict[str, str], run_backend):
+def test_sequence_validation(esmfold_model: ESMFold, test_sequences: dict[str, str]):
     """Test sequence validation in FoldingAlgorithm."""
 
     # Test single sequence
@@ -240,11 +240,11 @@ def test_sequence_validation(esmfold_model: ESMFold, test_sequences: dict[str, s
 
     # Test that fold method uses validation
     with pytest.raises(ValueError) as exc_info:
-        run_backend(esmfold_model.fold)(test_sequences["invalid"])
+        esmfold_model.fold(test_sequences["invalid"])
     assert "Invalid amino acid" in str(exc_info.value), f"Expected 'Invalid amino acid', got {str(exc_info.value)}"
 
 
-def test_esmfold_output_pdb_cif(data_dir: pathlib.Path, test_sequences: dict[str, str], run_backend):
+def test_esmfold_output_pdb_cif(data_dir: pathlib.Path, test_sequences: dict[str, str]):
     """Test ESMFold output PDB and CIF."""
 
     def recover_sequence(atomarray: AtomArray) -> str:
@@ -253,11 +253,11 @@ def test_esmfold_output_pdb_cif(data_dir: pathlib.Path, test_sequences: dict[str
         one_letter_codes = [restype_3to1[three_letter_code] for three_letter_code in three_letter_codes]
         return "".join(one_letter_codes)
 
-    with enable_output(), app.run():
+    with enable_output():
         model = ESMFold(config={"output_pdb": True, "output_cif": False, "output_atomarray": True})
         # Define input sequences
         sequences = [test_sequences["short"], test_sequences["medium"]]
-        result = run_backend(model.fold)(sequences)
+        result = model.fold(sequences)
 
     assert result.pdb is not None, "PDB output should be generated"
     assert result.cif is None, "CIF output should be None"
