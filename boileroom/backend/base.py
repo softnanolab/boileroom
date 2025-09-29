@@ -6,20 +6,23 @@ class Backend(ABC):
     """Base class for all backends."""
 
     def __init__(self) -> None:
-        """Initialize the backend."""
-        pass
-
-    def __post_init__(self) -> None:
-        """Post-initialize the backend."""
-        self.startup()
+        self._is_running = False
         atexit.register(self.shutdown)
+
+    def start(self) -> None:
+        if not self._is_running:
+            self.startup()
+            self._is_running = True
+
+    def stop(self) -> None:
+        if self._is_running:
+            self.shutdown()
+            self._is_running = False
 
     @abstractmethod
     def startup(self) -> None:
-        """Startup the backend."""
         raise NotImplementedError
 
     @abstractmethod
     def shutdown(self) -> None:
-        """Shutdown the backend."""
         raise NotImplementedError

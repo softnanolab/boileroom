@@ -1,7 +1,9 @@
 """ESMFold implementation for protein structure prediction using Meta AI's ESM-2 model."""
 
 import os
+import atexit
 import logging
+import json
 from dataclasses import dataclass
 from typing import Optional, List, Union
 
@@ -164,7 +166,30 @@ class ESMFoldOutput(StructurePrediction):
 
 
 from ...base import ModelWrapper
-from ...backend.modal import ModalBackend
+from ...backend.modal import ModalBackend, app
+
+@app.cls(
+    image=esm_image,
+    gpu="T4",
+    timeout=20 * MINUTES,
+    scaledown_window=10 * MINUTES,
+    volumes={MODEL_DIR: model_weights},
+)
+class ModalESMFold:
+    """
+    Modal-specific wrapper around `ESMFoldCore`.
+    """
+    config: bytes = modal.parameter(default=b"{}")
+    
+    @modal.enter()
+    def _initialize(self) -> None:
+        self._core = ESMFoldCore(json.loads(self.config.decode("utf-8")))
+        self._core._initialize()
+
+    @modal.method()
+    def fold(self, sequences: Union[str, List[str]]) -> ESMFoldOutput:
+        return self._core.fold(sequences)
+
 
 class ESMFold(ModelWrapper):
     """
@@ -172,16 +197,25 @@ class ESMFold(ModelWrapper):
     # TODO: This is the user-facing interface. It should give all the relevant details possible.
     # with proper documentation.
     """
-    def __init__(self, backend: str = "modal", config: dict = {}) -> None:
-        super().__init__(backend, config)
-        self._model = ESMFoldCore(config)
+    def __init__(
+        self, backend: str = "modal", device: Optional[str] = None, config: Optional[dict] = None
+    ) -> None:
+        if config is None:
+            config = {}
+        self.config = config
+        self.device = device
         if backend == "modal":
-            self._backend = ModalBackend(self._model)
+            self._backend = ModalBackend(ModalESMFold, config, device=device)
         else:
             raise ValueError(f"Backend {backend} not supported")
+        self._backend.startup()
+        atexit.register(self._backend.shutdown)
     
     def fold(self, sequences: Union[str, List[str]]) -> ESMFoldOutput:
-        return self._backend.model.fold.remote(sequences)
+        if isinstance(self._backend, ModalBackend):
+            return self._backend.model.fold.remote(sequences)
+        else:
+            raise ValueError(f"Backend {self._backend} not supported yet.")
 
 
 class ESMFoldCore(FoldingAlgorithm):
@@ -215,7 +249,6 @@ class ESMFoldCore(FoldingAlgorithm):
         self.tokenizer: Optional[AutoTokenizer] = None
         self.model: Optional[EsmForProteinFolding] = None
 
-    @modal.enter()
     def _initialize(self) -> None:
         """Initialize the model during container startup. This helps us determine whether we run locally or remotely."""
         self._load()
@@ -232,7 +265,6 @@ class ESMFoldCore(FoldingAlgorithm):
         self.model.trunk.set_chunk_size(64)
         self.ready = True
 
-    @modal.method()
     def fold(self, sequences: Union[str, List[str]]) -> ESMFoldOutput:
         """Predict protein structure(s) using ESMFold."""
         if self.tokenizer is None or self.model is None:
@@ -571,12 +603,3 @@ class ESMFoldCore(FoldingAlgorithm):
             structure_file.write(string)
             cifs.append(string.getvalue())
         return cifs
-
-
-def get_esmfold(gpu_type="T4", config: dict = {}):
-    """
-    Note that the app will still show that's using T4, but the actual method / function call will use the correct GPU,
-    and display accordingly in the Modal dashboard.
-    """
-    Model = ESMFold.with_options(gpu=gpu_type)  # type: ignore
-    return Model(config=config)

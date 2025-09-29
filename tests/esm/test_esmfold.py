@@ -5,8 +5,8 @@ import torch
 from typing import Generator
 from modal import enable_output
 
-from boileroom import app, ESMFold
-from boileroom.models.esm.esmfold import ESMFoldOutput
+from boileroom import ESMFold
+from boileroom.models.esm.esmfold import ESMFoldCore, ESMFoldOutput
 from boileroom.models.esm.linker import store_multimer_properties
 from boileroom.convert import pdb_string_to_atomarray
 from boileroom.constants import restype_3to1
@@ -15,7 +15,7 @@ from io import StringIO
 from biotite.structure.io.pdb import PDBFile
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def esmfold_model(config={}) -> Generator[ESMFold, None, None]:
     with enable_output():
         yield ESMFold(backend="modal", config=config)
@@ -172,75 +172,75 @@ def test_esmfold_batch(esmfold_model: ESMFold, test_sequences: dict[str, str]):
     assert result.predicted_aligned_error.shape[0] == len(sequences), "Batch size mismatch in predicted_aligned_error"
 
 
-# TODO: This is not obvious to do, given the way we wrap things around in Modal
-# This shows well how fragile relying on Modal is going to be moving forward, and we should think
-# of ways to make it more managable through local execution as well
+def test_tokenize_sequences_with_mocker(mocker):
+    """Test tokenization of multimer sequences using pytest-mock."""
+    from boileroom.models.esm.esmfold import ESMFoldCore
 
-# def test_tokenize_sequences_with_mocker(mocker):
-#     """Test tokenization of multimer sequences using pytest-mock."""
-#     from boileroom.esmfold import ESMFold
+    # Test data
+    sequences = ["AAAAAA:CCCCCCCCC", "CCCCC:DDDDDDD:EEEEEEE", "HHHH"]
+    GLYCINE_LINKER = ""
+    POSITION_IDS_SKIP = 512
 
-#     # Test data
-#     sequences = ["AAAAAA:CCCCCCCCC", "CCCCC:DDDDDDD:EEEEEEE", "HHHH"]
-#     GLYCINE_LINKER = ""
-#     POSITION_IDS_SKIP = 512
+    # Create a model instance
+    model = ESMFoldCore(config={"glycine_linker": GLYCINE_LINKER, "position_ids_skip": POSITION_IDS_SKIP})
+    model.device = "cpu"
 
-#     # Create a model instance
-#     model = ESMFold(config={"glycine_linker": GLYCINE_LINKER, "position_ids_skip": POSITION_IDS_SKIP})
+    # Mock the tokenizer
+    mock_tokenizer = mocker.patch.object(model, 'tokenizer')
+    mock_tokenizer.return_value = {
+        "input_ids": torch.tensor([
+            [1, 1, 1, 1, 1, 1, 3, 3, 3, 3, 3, 3, 3, 3, 3, -1, -1, -1, -1],
+            [3, 3, 3, 3, 3, 4, 4, 4, 4, 4, 4, 4, 5, 5, 5, 5, 5, 5, 5],
+            [8, 8, 8, 8, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1]
+            ]),
+        "attention_mask": torch.ones(3, 19),
+        }
 
-#     # Mock the tokenizer
-#     mock_tokenizer = mocker.patch.object(model, 'tokenizer')
-#     mock_tokenizer.return_value = {
-#         "input_ids": torch.tensor([
-#             [1, 1, 1, 1, 1, 1, 3, 3, 3, 3, 3, 3, 3, 3, 3, -1, -1, -1, -1],
-#             [3, 3, 3, 3, 3, 4, 4, 4, 4, 4, 4, 4, 5, 5, 5, 5, 5, 5, 5],
-#             [8, 8, 8, 8, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1]
-#             ]),
-#         "attention_mask": torch.ones(3, 19),
-#         }
+    # Call the method to test
+    tokenized_input, multimer_properties = model._tokenize_sequences(sequences)
 
-#     # Call the method to test
-#     tokenized_input = model._tokenize_sequences(sequences)
+    # Assert the tokenizer was called with the expected arguments
+    expected_sequences = [seq.replace(":", GLYCINE_LINKER) for seq in sequences]
+    mock_tokenizer.assert_called_once_with(
+        expected_sequences,
+        padding=True,
+        truncation=True,
+        return_tensors="pt",
+        add_special_tokens=False
+    )
 
-#     # Assert the tokenizer was called with the expected arguments
-#     expected_sequences = [seq.replace(":", GLYCINE_LINKER) for seq in sequences]
-#     mock_tokenizer.assert_called_once_with(
-#         expected_sequences,
-#         padding=True,
-#         truncation=True,
-#         return_tensors="pt",
-#         add_special_tokens=False
-#     )
-
-#     # Verify the output contains the expected keys
-#     assert set(tokenized_input.keys()) >= {"input_ids", "attention_mask", "position_ids"}
+    # Verify the output contains the expected keys
+    assert set(tokenized_input.keys()) >= {"input_ids", "attention_mask", "position_ids"}
+    assert multimer_properties is not None
 
 
-def test_sequence_validation(esmfold_model: ESMFold, test_sequences: dict[str, str]):
+def test_sequence_validation(test_sequences: dict[str, str]):
     """Test sequence validation in FoldingAlgorithm."""
+
+    esmfold_core = ESMFoldCore(config={})
 
     # Test single sequence
     single_seq = test_sequences["short"]
-    validated = esmfold_model._validate_sequences(single_seq)
+    validated = esmfold_core._validate_sequences(single_seq)
     assert isinstance(validated, list), "Single sequence should be converted to list"
     assert len(validated) == 1, "Should contain one sequence"
     assert validated[0] == single_seq, "Sequence should be unchanged"
 
     # Test sequence list
     seq_list = [test_sequences["short"], test_sequences["medium"]]
-    validated = esmfold_model._validate_sequences(seq_list)
+    validated = esmfold_core._validate_sequences(seq_list)
     assert isinstance(validated, list), "Should return a list"
     assert len(validated) == 2, "Should contain two sequences"
     assert validated == seq_list, "Sequences should be unchanged"
 
     # Test invalid sequence
     with pytest.raises(ValueError) as exc_info:
-        esmfold_model._validate_sequences(test_sequences["invalid"])
+        esmfold_core._validate_sequences(test_sequences["invalid"])
     assert "Invalid amino acid" in str(exc_info.value), f"Expected 'Invalid amino acid', got {str(exc_info.value)}"
 
     # Test that fold method uses validation
     with pytest.raises(ValueError) as exc_info:
-        esmfold_model.fold(test_sequences["invalid"])
+        esmfold_core.fold(test_sequences["invalid"])
     assert "Invalid amino acid" in str(exc_info.value), f"Expected 'Invalid amino acid', got {str(exc_info.value)}"
 
 

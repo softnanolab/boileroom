@@ -20,17 +20,6 @@ def model_dir():
     os.environ["MODEL_DIR"] = str(pathlib.Path(__file__).parent.parent / ".model_cache")
 
 
-# @pytest.fixture
-# def run_backend(request):
-#     mode = request.config.getoption("--backend")
-
-#     def select(method):
-#         # method is e.g. model.fold or model.embed
-#         return getattr(method, "local" if mode == "local" else "remote")
-
-#     return select
-
-
 @pytest.fixture
 def test_sequences() -> dict[str, str]:
     return {

@@ -201,16 +201,12 @@ class EmbeddingAlgorithm(Algorithm):
         """
         raise NotImplementedError
 
-from .backend.base import Backend
-
 class ModelWrapper(Protocol):
 
-    def __init__(self, backend: Backend, config: dict = {}) -> None:
+    def __init__(
+        self, backend: str = "modal", device: str | None = None, config: dict | None = None
+    ) -> None:
         """Initialize the model wrapper."""
         self.backend = backend
-        self.config = config
-
-    @abstractmethod
-    def __call__(self, sequences: Union[str, Sequence[str]]) -> StructurePrediction | EmbeddingPrediction:
-        """Call the model wrapper."""
-        raise NotImplementedError
+        self.device = device
+        self.config = config or {}
