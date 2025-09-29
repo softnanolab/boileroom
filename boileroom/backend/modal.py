@@ -112,6 +112,7 @@ class ModalBackend(Backend):
         if self._context_token is not None:
             modal_app_manager.release(self._context_token)
             self._context_token = None
+        self.model = None
 
     def _instantiate_remote_model(self):
         remote_cls = self._resolve_remote_cls()

@@ -201,7 +201,7 @@ class EmbeddingAlgorithm(Algorithm):
         """
         raise NotImplementedError
 
-class ModelWrapper(Protocol):
+class ModelWrapper:
 
     def __init__(
         self, backend: str = "modal", device: str | None = None, config: dict | None = None

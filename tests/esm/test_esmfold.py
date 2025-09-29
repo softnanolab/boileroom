@@ -2,7 +2,7 @@ import pytest
 import pathlib
 import numpy as np
 import torch
-from typing import Generator
+from typing import Generator, Optional
 from modal import enable_output
 
 from boileroom import ESMFold
@@ -17,9 +17,10 @@ from biotite.structure.io.pdb import PDBFile
 
 # Module scope keeps a single Modal container alive for the duration of the suite.
 @pytest.fixture(scope="module")
-def esmfold_model(config={}) -> Generator[ESMFold, None, None]:
+def esmfold_model(config: Optional[dict] = None) -> Generator[ESMFold, None, None]:
+    model_config = dict(config) if config is not None else {}
     with enable_output():
-        yield ESMFold(backend="modal", config=config)
+        yield ESMFold(backend="modal", config=model_config)
 
 
 def test_esmfold_basic(test_sequences: dict[str, str], esmfold_model: ESMFold):
