@@ -10,7 +10,7 @@ def pytest_addoption(parser):
         "--backend",
         action="store",
         default="modal",
-        choices=("modal"),
+        choices=("modal",),
         help="Execution backend for models in tests: modal (default)",
     )
 

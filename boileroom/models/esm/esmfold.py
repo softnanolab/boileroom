@@ -1,11 +1,10 @@
 """ESMFold implementation for protein structure prediction using Meta AI's ESM-2 model."""
 
 import os
-import atexit
 import logging
 import json
 from dataclasses import dataclass
-from typing import Optional, List, Union
+from typing import Optional, Sequence, Union, List
 
 import modal
 import numpy as np
@@ -123,6 +122,7 @@ logger = logging.getLogger(__name__)
 # CORE ALGORITHM
 ############################################################
 
+
 @dataclass
 class ESMFoldOutput(StructurePrediction):
     """Output from ESMFold prediction including all model outputs."""
@@ -166,6 +166,7 @@ class ESMFoldOutput(StructurePrediction):
     # TODO: can add a save method here (to a pickle and a pdb file) that can be run locally
     # TODO: add verification of the outputs, and primarily the shape of all the arrays
     # (see test_esmfold_batch_multimer_linkers for the exact batched shapes)
+
 
 class ESMFoldCore(FoldingAlgorithm):
     """ESMFold protein structure prediction model."""
@@ -214,20 +215,17 @@ class ESMFoldCore(FoldingAlgorithm):
         self.model.trunk.set_chunk_size(64)
         self.ready = True
 
-    def fold(self, sequences: Union[str, List[str]]) -> ESMFoldOutput:
+    def fold(self, sequences: Union[str, Sequence[str]]) -> ESMFoldOutput:
         """Predict protein structure(s) using ESMFold."""
         if self.tokenizer is None or self.model is None:
             logger.warning("Model not loaded. Forcing the model to load... Next time call _load() first.")
             self._load()
         assert self.tokenizer is not None and self.model is not None, "Model not loaded"
 
-        if isinstance(sequences, str):
-            sequences = [sequences]
+        validated_sequences = self._validate_sequences(sequences)
+        self.metadata.sequence_lengths = self._compute_sequence_lengths(validated_sequences)
 
-        sequences = self._validate_sequences(sequences)
-        self.metadata.sequence_lengths = self._compute_sequence_lengths(sequences)
-
-        tokenized_input, multimer_properties = self._tokenize_sequences(sequences)
+        tokenized_input, multimer_properties = self._tokenize_sequences(validated_sequences)
 
         with Timer("Model Inference") as timer:
             with torch.inference_mode():
@@ -553,6 +551,7 @@ class ESMFoldCore(FoldingAlgorithm):
             cifs.append(string.getvalue())
         return cifs
 
+
 ############################################################
 # MODAL-SPECIFIC WRAPPER
 ############################################################
@@ -567,20 +566,23 @@ class ModalESMFold:
     """
     Modal-specific wrapper around `ESMFoldCore`.
     """
+
     config: bytes = modal.parameter(default=b"{}")
-    
+
     @modal.enter()
     def _initialize(self) -> None:
         self._core = ESMFoldCore(json.loads(self.config.decode("utf-8")))
         self._core._initialize()
 
     @modal.method()
-    def fold(self, sequences: Union[str, List[str]]) -> ESMFoldOutput:
+    def fold(self, sequences: Union[str, Sequence[str]]) -> ESMFoldOutput:
         return self._core.fold(sequences)
+
 
 ############################################################
 # HIGH-LEVEL INTERFACE
 ############################################################
+
 
 class ESMFold(ModelWrapper):
     """
@@ -588,9 +590,8 @@ class ESMFold(ModelWrapper):
     # TODO: This is the user-facing interface. It should give all the relevant details possible.
     # with proper documentation.
     """
-    def __init__(
-        self, backend: str = "modal", device: Optional[str] = None, config: Optional[dict] = None
-    ) -> None:
+
+    def __init__(self, backend: str = "modal", device: Optional[str] = None, config: Optional[dict] = None) -> None:
         if config is None:
             config = {}
         self.config = config
@@ -599,11 +600,11 @@ class ESMFold(ModelWrapper):
             self._backend = ModalBackend(ModalESMFold, config, device=device)
         else:
             raise ValueError(f"Backend {backend} not supported")
-        self._backend.startup()
-        atexit.register(self._backend.shutdown)
-    
-    def fold(self, sequences: Union[str, List[str]]) -> ESMFoldOutput:
+        self._backend.start()
+
+    def fold(self, sequences: Union[str, Sequence[str]]) -> ESMFoldOutput:
         if isinstance(self._backend, ModalBackend):
-            return self._backend.model.fold.remote(sequences)
+            backend_model = self._backend.get_model()
+            return backend_model.fold.remote(sequences)
         else:
             raise ValueError(f"Backend {self._backend} not supported yet.")

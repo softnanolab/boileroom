@@ -2,11 +2,10 @@ import modal
 import numpy as np
 import os
 from dataclasses import dataclass
-from typing import List, Union, Optional, TYPE_CHECKING
+from typing import List, Sequence, Union, Optional, TYPE_CHECKING
 
 import logging
 import json
-import atexit
 
 from ...base import ModelWrapper
 from ...base import EmbeddingAlgorithm, EmbeddingPrediction, PredictionMetadata
@@ -26,6 +25,7 @@ if TYPE_CHECKING:
 # CORE ALGORITHM
 ############################################################
 
+
 @dataclass
 class ESM2Output(EmbeddingPrediction):
     """Output from ESM2 prediction including all model outputs."""
@@ -36,9 +36,11 @@ class ESM2Output(EmbeddingPrediction):
     residue_index: np.ndarray  # (batch_size, seq_len)
     hidden_states: Optional[np.ndarray] = None  # (batch_size, hidden_state_iter, seq_len, embedding_dim)
 
+
 with esm_image.imports():
     import torch
     from transformers import EsmModel, AutoTokenizer
+
 
 class ESM2Core(EmbeddingAlgorithm):
     """ESM2 protein language model."""
@@ -60,7 +62,7 @@ class ESM2Core(EmbeddingAlgorithm):
         self.model_dir: Optional[str] = os.environ.get("MODEL_DIR", MODEL_DIR)
         self.tokenizer: Optional[AutoTokenizer] = None
         self.model: Optional[EsmModel] = None
-        self.assert_valid_model(self.config['model_name'])
+        self.assert_valid_model(self.config["model_name"])
 
     @staticmethod
     def assert_valid_model(model_name: str) -> None:
@@ -100,37 +102,39 @@ class ESM2Core(EmbeddingAlgorithm):
         self.model.eval()
         self.ready = True
 
-    def embed(self, sequences: Union[str, List[str]]) -> ESM2Output:
+    def embed(self, sequences: Union[str, Sequence[str]]) -> ESM2Output:
         if self.tokenizer is None or self.model is None:
             logger.warning("Model not loaded. Forcing the model to load... Next time call _load() first.")
             self._load()
         assert self.tokenizer is not None and self.model is not None, "Model not loaded"
 
-        logger.debug(f'Embedding {len(sequences)} sequences using {self.config["model_name"]}')
-
-        # Support for glycine linker and positional skip logic (multimer)
+        normalized_sequences: list[str]
         if isinstance(sequences, str):
-            sequences = [sequences]
+            normalized_sequences = [sequences]
+        else:
+            normalized_sequences = list(sequences)
 
-        if any(":" in seq for seq in sequences):
+        logger.debug(f'Embedding {len(normalized_sequences)} sequences using {self.config["model_name"]}')
+
+        if any(":" in seq for seq in normalized_sequences):
             # Multimer logic
             glycine_linker = self.config["glycine_linker"]
-            multimer_properties = self._store_multimer_properties(sequences, glycine_linker)
+            multimer_properties = self._store_multimer_properties(normalized_sequences, glycine_linker)
             tokenized = self.tokenizer(
-                replace_glycine_linkers(sequences, glycine_linker),
+                replace_glycine_linkers(normalized_sequences, glycine_linker),
                 return_tensors="pt",
                 padding=True,
                 truncation=True,
             )
             # Add position_ids and attention_mask
             tokenized["position_ids"] = compute_position_ids(
-                sequences, glycine_linker, self.config["position_ids_skip"]
+                normalized_sequences, glycine_linker, self.config["position_ids_skip"]
             )
             tokenized["attention_mask"] = (multimer_properties["linker_map"] == 1).to(torch.int32)
         else:
             # Monomer logic
             tokenized = self.tokenizer(
-                sequences,
+                normalized_sequences,
                 return_tensors="pt",
                 padding=True,
                 truncation=True,
@@ -270,9 +274,11 @@ class ESM2Core(EmbeddingAlgorithm):
 
         return embeddings, hidden_states, chain_index, residue_index
 
+
 ############################################################
 # MODAL-SPECIFIC WRAPPER
 ############################################################
+
 
 @app.cls(
     image=esm_image,
@@ -283,15 +289,16 @@ class ESM2Core(EmbeddingAlgorithm):
 )
 class ModalESM2:
     """Modal-specific wrapper around `ESM2`."""
+
     config: bytes = modal.parameter(default=b"{}")
-    
+
     @modal.enter()
     def _initialize(self) -> None:
         self._core = ESM2Core(config=json.loads(self.config.decode("utf-8")))
         self._core._initialize()
 
     @modal.method()
-    def embed(self, sequences: Union[str, List[str]]) -> ESM2Output:
+    def embed(self, sequences: Union[str, Sequence[str]]) -> ESM2Output:
         assert self._core is not None, "ModalESM2 has not been initialized"
         return self._core.embed(sequences)
 
@@ -302,9 +309,7 @@ class ModalESM2:
 class ESM2(ModelWrapper):
     """Interface for running ESM2 embeddings via Modal."""
 
-    def __init__(
-        self, backend: str = "modal", device: Optional[str] = None, config: Optional[dict] = None
-    ) -> None:
+    def __init__(self, backend: str = "modal", device: Optional[str] = None, config: Optional[dict] = None) -> None:
         if config is None:
             config = {}
         self.config = config
@@ -313,12 +318,11 @@ class ESM2(ModelWrapper):
             self._backend = ModalBackend(ModalESM2, config, device=device)
         else:
             raise ValueError(f"Backend {backend} not supported")
-        self._backend.startup()
-        atexit.register(self._backend.shutdown)
+        self._backend.start()
 
-    def embed(self, sequences: Union[str, List[str]]) -> ESM2Output:
+    def embed(self, sequences: Union[str, Sequence[str]]) -> ESM2Output:
         if isinstance(self._backend, ModalBackend):
-            return self._backend.model.embed.remote(sequences)
+            backend_model = self._backend.get_model()
+            return backend_model.embed.remote(sequences)
         else:
             raise ValueError(f"Backend {self._backend} not supported yet.")
-
