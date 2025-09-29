@@ -4,6 +4,7 @@ import numpy as np
 from boileroom import ESM2
 
 
+# Each test instantiates its own model; keeping function scope avoids long-lived Modal handles.
 @pytest.fixture
 def esm2_model_factory():
     def _make_model(**kwargs):

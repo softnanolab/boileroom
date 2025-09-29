@@ -15,6 +15,7 @@ from io import StringIO
 from biotite.structure.io.pdb import PDBFile
 
 
+# Module scope keeps a single Modal container alive for the duration of the suite.
 @pytest.fixture(scope="module")
 def esmfold_model(config={}) -> Generator[ESMFold, None, None]:
     with enable_output():
