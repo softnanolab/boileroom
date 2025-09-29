@@ -188,15 +188,17 @@ def test_tokenize_sequences_with_mocker(mocker):
     model.device = "cpu"
 
     # Mock the tokenizer
-    mock_tokenizer = mocker.patch.object(model, 'tokenizer')
+    mock_tokenizer = mocker.patch.object(model, "tokenizer")
     mock_tokenizer.return_value = {
-        "input_ids": torch.tensor([
-            [1, 1, 1, 1, 1, 1, 3, 3, 3, 3, 3, 3, 3, 3, 3, -1, -1, -1, -1],
-            [3, 3, 3, 3, 3, 4, 4, 4, 4, 4, 4, 4, 5, 5, 5, 5, 5, 5, 5],
-            [8, 8, 8, 8, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1]
-            ]),
+        "input_ids": torch.tensor(
+            [
+                [1, 1, 1, 1, 1, 1, 3, 3, 3, 3, 3, 3, 3, 3, 3, -1, -1, -1, -1],
+                [3, 3, 3, 3, 3, 4, 4, 4, 4, 4, 4, 4, 5, 5, 5, 5, 5, 5, 5],
+                [8, 8, 8, 8, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+            ]
+        ),
         "attention_mask": torch.ones(3, 19),
-        }
+    }
 
     # Call the method to test
     tokenized_input, multimer_properties = model._tokenize_sequences(sequences)
@@ -204,11 +206,7 @@ def test_tokenize_sequences_with_mocker(mocker):
     # Assert the tokenizer was called with the expected arguments
     expected_sequences = [seq.replace(":", GLYCINE_LINKER) for seq in sequences]
     mock_tokenizer.assert_called_once_with(
-        expected_sequences,
-        padding=True,
-        truncation=True,
-        return_tensors="pt",
-        add_special_tokens=False
+        expected_sequences, padding=True, truncation=True, return_tensors="pt", add_special_tokens=False
     )
 
     # Verify the output contains the expected keys
@@ -263,16 +261,21 @@ def test_esmfold_output_pdb_cif(data_dir: pathlib.Path, test_sequences: dict[str
 
     assert result.pdb is not None, "PDB output should be generated"
     assert result.cif is None, "CIF output should be None"
-    assert len(result.pdb) == len(result.atom_array) == len(sequences) == 2, "Batching output match!"
-    assert isinstance(result.pdb, list), "PDB output should be a list"
-    assert len(result.pdb) == len(sequences), "PDB output should have same length as input sequences"
-    assert isinstance(result.atom_array, list), "Atom array should be a list"
-    assert isinstance(result.atom_array[0], AtomArray), "Atom array should be an AtomArray"
+    assert result.atom_array is not None, "Atom array output should be generated"
 
-    short_pdb = PDBFile.read(StringIO(result.pdb[0])).get_structure(model=1)
-    medium_pdb = PDBFile.read(StringIO(result.pdb[1])).get_structure(model=1)
-    short_atomarray = result.atom_array[0]
-    medium_atomarray = result.atom_array[1]
+    pdb_outputs = result.pdb
+    atom_array_outputs = result.atom_array
+
+    assert len(pdb_outputs) == len(atom_array_outputs) == len(sequences) == 2, "Batching output match!"
+    assert isinstance(pdb_outputs, list), "PDB output should be a list"
+    assert len(pdb_outputs) == len(sequences), "PDB output should have same length as input sequences"
+    assert isinstance(atom_array_outputs, list), "Atom array should be a list"
+    assert isinstance(atom_array_outputs[0], AtomArray), "Atom array should be an AtomArray"
+
+    short_pdb = PDBFile.read(StringIO(pdb_outputs[0])).get_structure(model=1)
+    medium_pdb = PDBFile.read(StringIO(pdb_outputs[1])).get_structure(model=1)
+    short_atomarray = atom_array_outputs[0]
+    medium_atomarray = atom_array_outputs[1]
 
     # Short protein checks
     num_residues = len(sequences[0])

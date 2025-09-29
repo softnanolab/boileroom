@@ -1,15 +1,11 @@
-
 import json
 import threading
+from typing import Any
 
 import modal
 from modal.exception import InvalidError
 
-from ..images import esm_image
-from ..images.volumes import model_weights
-from ..utils import MODEL_DIR, MINUTES
 from .base import Backend
-from ..base import Algorithm
 
 
 app = modal.App("boileroom")
@@ -22,6 +18,7 @@ class _ModalAppToken:
 
     def __init__(self, token_id: int) -> None:
         self.token_id = token_id
+
 
 class ModalAppManager:
     """Manage shared access to the global Modal app context."""
@@ -86,33 +83,36 @@ class ModalBackend(Backend):
     def __init__(self, model_cls, config: dict | None = None, device: str | None = None) -> None:
         super().__init__()
         self._app = app
-        self._config = config or {}
+        self._config = dict(config) if config is not None else {}
         self._model_cls = model_cls
         self._device = device
         self._remote_cls = None
-        self.model = None
+        self.model: Any | None = None
         self._context_token: _ModalAppToken | None = None
 
     def startup(self) -> None:
         if self._context_token is None:
             token = modal_app_manager.acquire()
             try:
-                if self.model is None:
-                    self.model = self._instantiate_remote_model()
+                self._ensure_model()
             except Exception:
                 modal_app_manager.release(token)
                 raise
             self._context_token = token
             return
 
-        if self.model is None:
-            self.model = self._instantiate_remote_model()
+        self._ensure_model()
 
     def shutdown(self) -> None:
         if self._context_token is not None:
             modal_app_manager.release(self._context_token)
             self._context_token = None
         self.model = None
+
+    def get_model(self) -> Any:
+        if self.model is None:
+            raise RuntimeError("Modal backend model is not initialized. Call start() before use.")
+        return self.model
 
     def _instantiate_remote_model(self):
         remote_cls = self._resolve_remote_cls()
@@ -125,3 +125,7 @@ class ModalBackend(Backend):
                 remote_cls = remote_cls.with_options(gpu=self._device)
             self._remote_cls = remote_cls
         return self._remote_cls
+
+    def _ensure_model(self) -> None:
+        if self.model is None:
+            self.model = self._instantiate_remote_model()
