@@ -11,10 +11,11 @@ import modal
 import numpy as np
 from biotite.structure import AtomArray
 
-from ...base import FoldingAlgorithm, StructurePrediction, PredictionMetadata
+from ...backend.modal import ModalBackend, app
+from ...base import FoldingAlgorithm, StructurePrediction, PredictionMetadata, ModelWrapper
 from ...images import esm_image
 from ...images.volumes import model_weights
-from ...utils import MINUTES, MODEL_DIR, GPUS_AVAIL_ON_MODAL, Timer
+from ...utils import MINUTES, MODEL_DIR, Timer
 from .linker import compute_position_ids, store_multimer_properties
 
 # ESMFold-Specific: A list of atoms (excluding hydrogen) for each AA type. PDB naming convention.
@@ -118,8 +119,10 @@ with esm_image.imports():
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+############################################################
+# CORE ALGORITHM
+############################################################
 
-# TODO: turn this into a Pydantic model instead
 @dataclass
 class ESMFoldOutput(StructurePrediction):
     """Output from ESMFold prediction including all model outputs."""
@@ -163,60 +166,6 @@ class ESMFoldOutput(StructurePrediction):
     # TODO: can add a save method here (to a pickle and a pdb file) that can be run locally
     # TODO: add verification of the outputs, and primarily the shape of all the arrays
     # (see test_esmfold_batch_multimer_linkers for the exact batched shapes)
-
-
-from ...base import ModelWrapper
-from ...backend.modal import ModalBackend, app
-
-@app.cls(
-    image=esm_image,
-    gpu="T4",
-    timeout=20 * MINUTES,
-    scaledown_window=10 * MINUTES,
-    volumes={MODEL_DIR: model_weights},
-)
-class ModalESMFold:
-    """
-    Modal-specific wrapper around `ESMFoldCore`.
-    """
-    config: bytes = modal.parameter(default=b"{}")
-    
-    @modal.enter()
-    def _initialize(self) -> None:
-        self._core = ESMFoldCore(json.loads(self.config.decode("utf-8")))
-        self._core._initialize()
-
-    @modal.method()
-    def fold(self, sequences: Union[str, List[str]]) -> ESMFoldOutput:
-        return self._core.fold(sequences)
-
-
-class ESMFold(ModelWrapper):
-    """
-    Interface for ESMFold protein structure prediction model.
-    # TODO: This is the user-facing interface. It should give all the relevant details possible.
-    # with proper documentation.
-    """
-    def __init__(
-        self, backend: str = "modal", device: Optional[str] = None, config: Optional[dict] = None
-    ) -> None:
-        if config is None:
-            config = {}
-        self.config = config
-        self.device = device
-        if backend == "modal":
-            self._backend = ModalBackend(ModalESMFold, config, device=device)
-        else:
-            raise ValueError(f"Backend {backend} not supported")
-        self._backend.startup()
-        atexit.register(self._backend.shutdown)
-    
-    def fold(self, sequences: Union[str, List[str]]) -> ESMFoldOutput:
-        if isinstance(self._backend, ModalBackend):
-            return self._backend.model.fold.remote(sequences)
-        else:
-            raise ValueError(f"Backend {self._backend} not supported yet.")
-
 
 class ESMFoldCore(FoldingAlgorithm):
     """ESMFold protein structure prediction model."""
@@ -603,3 +552,58 @@ class ESMFoldCore(FoldingAlgorithm):
             structure_file.write(string)
             cifs.append(string.getvalue())
         return cifs
+
+############################################################
+# MODAL-SPECIFIC WRAPPER
+############################################################
+@app.cls(
+    image=esm_image,
+    gpu="T4",
+    timeout=20 * MINUTES,
+    scaledown_window=10 * MINUTES,
+    volumes={MODEL_DIR: model_weights},
+)
+class ModalESMFold:
+    """
+    Modal-specific wrapper around `ESMFoldCore`.
+    """
+    config: bytes = modal.parameter(default=b"{}")
+    
+    @modal.enter()
+    def _initialize(self) -> None:
+        self._core = ESMFoldCore(json.loads(self.config.decode("utf-8")))
+        self._core._initialize()
+
+    @modal.method()
+    def fold(self, sequences: Union[str, List[str]]) -> ESMFoldOutput:
+        return self._core.fold(sequences)
+
+############################################################
+# HIGH-LEVEL INTERFACE
+############################################################
+
+class ESMFold(ModelWrapper):
+    """
+    Interface for ESMFold protein structure prediction model.
+    # TODO: This is the user-facing interface. It should give all the relevant details possible.
+    # with proper documentation.
+    """
+    def __init__(
+        self, backend: str = "modal", device: Optional[str] = None, config: Optional[dict] = None
+    ) -> None:
+        if config is None:
+            config = {}
+        self.config = config
+        self.device = device
+        if backend == "modal":
+            self._backend = ModalBackend(ModalESMFold, config, device=device)
+        else:
+            raise ValueError(f"Backend {backend} not supported")
+        self._backend.startup()
+        atexit.register(self._backend.shutdown)
+    
+    def fold(self, sequences: Union[str, List[str]]) -> ESMFoldOutput:
+        if isinstance(self._backend, ModalBackend):
+            return self._backend.model.fold.remote(sequences)
+        else:
+            raise ValueError(f"Backend {self._backend} not supported yet.")

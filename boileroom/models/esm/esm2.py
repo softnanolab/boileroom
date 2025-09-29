@@ -6,20 +6,26 @@ from typing import List, Union, Optional, TYPE_CHECKING
 
 import logging
 import json
+import atexit
+
+from ...base import ModelWrapper
 from ...base import EmbeddingAlgorithm, EmbeddingPrediction, PredictionMetadata
-from ...images import esm_image
+from ...backend.modal import ModalBackend, app
 from ...utils import MINUTES, MODEL_DIR, Timer
+
+from ...images import esm_image
 from ...images.volumes import model_weights
 from .linker import compute_position_ids, store_multimer_properties, replace_glycine_linkers
-from ...backend.modal import ModalBackend, app
 
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from transformers.modeling_outputs import BaseModelOutputWithPoolingAndCrossAttentions
 
+############################################################
+# CORE ALGORITHM
+############################################################
 
-# TODO: turn this into a Pydantic model instead
 @dataclass
 class ESM2Output(EmbeddingPrediction):
     """Output from ESM2 prediction including all model outputs."""
@@ -30,33 +36,9 @@ class ESM2Output(EmbeddingPrediction):
     residue_index: np.ndarray  # (batch_size, seq_len)
     hidden_states: Optional[np.ndarray] = None  # (batch_size, hidden_state_iter, seq_len, embedding_dim)
 
-
 with esm_image.imports():
     import torch
     from transformers import EsmModel, AutoTokenizer
-
-
-@app.cls(
-    image=esm_image,
-    gpu="T4",
-    timeout=20 * MINUTES,
-    scaledown_window=10 * MINUTES,
-    volumes={MODEL_DIR: model_weights},
-)
-class ModalESM2:
-    """Modal-specific wrapper around `ESM2`."""
-    config: bytes = modal.parameter(default=b"{}")
-    
-    @modal.enter()
-    def _initialize(self) -> None:
-        self._core = ESM2Core(config=json.loads(self.config.decode("utf-8")))
-        self._core._initialize()
-
-    @modal.method()
-    def embed(self, sequences: Union[str, List[str]]) -> ESM2Output:
-        assert self._core is not None, "ModalESM2 has not been initialized"
-        return self._core.embed(sequences)
-
 
 class ESM2Core(EmbeddingAlgorithm):
     """ESM2 protein language model."""
@@ -288,10 +270,35 @@ class ESM2Core(EmbeddingAlgorithm):
 
         return embeddings, hidden_states, chain_index, residue_index
 
+############################################################
+# MODAL-SPECIFIC WRAPPER
+############################################################
 
-import atexit
-from ...base import ModelWrapper
+@app.cls(
+    image=esm_image,
+    gpu="T4",
+    timeout=20 * MINUTES,
+    scaledown_window=10 * MINUTES,
+    volumes={MODEL_DIR: model_weights},
+)
+class ModalESM2:
+    """Modal-specific wrapper around `ESM2`."""
+    config: bytes = modal.parameter(default=b"{}")
+    
+    @modal.enter()
+    def _initialize(self) -> None:
+        self._core = ESM2Core(config=json.loads(self.config.decode("utf-8")))
+        self._core._initialize()
 
+    @modal.method()
+    def embed(self, sequences: Union[str, List[str]]) -> ESM2Output:
+        assert self._core is not None, "ModalESM2 has not been initialized"
+        return self._core.embed(sequences)
+
+
+############################################################
+# HIGH-LEVEL INTERFACE
+############################################################
 class ESM2(ModelWrapper):
     """Interface for running ESM2 embeddings via Modal."""
 
@@ -314,3 +321,4 @@ class ESM2(ModelWrapper):
             return self._backend.model.embed.remote(sequences)
         else:
             raise ValueError(f"Backend {self._backend} not supported yet.")
+
