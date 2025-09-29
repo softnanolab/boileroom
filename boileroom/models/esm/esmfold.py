@@ -2,18 +2,19 @@
 
 import os
 import logging
+import json
 from dataclasses import dataclass
-from typing import Optional, List, Union
+from typing import Optional, Sequence, Union, List
 
 import modal
 import numpy as np
 from biotite.structure import AtomArray
 
-from ... import app
-from ...base import FoldingAlgorithm, StructurePrediction, PredictionMetadata
+from ...backend.modal import ModalBackend, app
+from ...base import FoldingAlgorithm, StructurePrediction, PredictionMetadata, ModelWrapper
 from ...images import esm_image
 from ...images.volumes import model_weights
-from ...utils import MINUTES, MODEL_DIR, GPUS_AVAIL_ON_MODAL, Timer
+from ...utils import MINUTES, MODEL_DIR, Timer
 from .linker import compute_position_ids, store_multimer_properties
 
 # ESMFold-Specific: A list of atoms (excluding hydrogen) for each AA type. PDB naming convention.
@@ -117,8 +118,11 @@ with esm_image.imports():
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+############################################################
+# CORE ALGORITHM
+############################################################
 
-# TODO: turn this into a Pydantic model instead
+
 @dataclass
 class ESMFoldOutput(StructurePrediction):
     """Output from ESMFold prediction including all model outputs."""
@@ -164,23 +168,7 @@ class ESMFoldOutput(StructurePrediction):
     # (see test_esmfold_batch_multimer_linkers for the exact batched shapes)
 
 
-GPU_TO_USE = os.environ.get("BOILEROOM_GPU", "T4")
-
-if GPU_TO_USE not in GPUS_AVAIL_ON_MODAL:
-    raise ValueError(
-        f"GPU specified in BOILEROOM_GPU environment variable ('{GPU_TO_USE}') not available on "
-        f"Modal. Please choose from: {GPUS_AVAIL_ON_MODAL}"
-    )
-
-
-@app.cls(
-    image=esm_image,
-    gpu=GPU_TO_USE,
-    timeout=20 * MINUTES,
-    container_idle_timeout=10 * MINUTES,
-    volumes={MODEL_DIR: model_weights},
-)
-class ESMFold(FoldingAlgorithm):
+class ESMFoldCore(FoldingAlgorithm):
     """ESMFold protein structure prediction model."""
 
     # TODO: maybe this config should be input to the fold function, so that it can
@@ -211,7 +199,6 @@ class ESMFold(FoldingAlgorithm):
         self.tokenizer: Optional[AutoTokenizer] = None
         self.model: Optional[EsmForProteinFolding] = None
 
-    @modal.enter()
     def _initialize(self) -> None:
         """Initialize the model during container startup. This helps us determine whether we run locally or remotely."""
         self._load()
@@ -228,21 +215,17 @@ class ESMFold(FoldingAlgorithm):
         self.model.trunk.set_chunk_size(64)
         self.ready = True
 
-    @modal.method()
-    def fold(self, sequences: Union[str, List[str]]) -> ESMFoldOutput:
+    def fold(self, sequences: Union[str, Sequence[str]]) -> ESMFoldOutput:
         """Predict protein structure(s) using ESMFold."""
         if self.tokenizer is None or self.model is None:
             logger.warning("Model not loaded. Forcing the model to load... Next time call _load() first.")
             self._load()
         assert self.tokenizer is not None and self.model is not None, "Model not loaded"
 
-        if isinstance(sequences, str):
-            sequences = [sequences]
+        validated_sequences = self._validate_sequences(sequences)
+        self.metadata.sequence_lengths = self._compute_sequence_lengths(validated_sequences)
 
-        sequences = self._validate_sequences(sequences)
-        self.metadata.sequence_lengths = self._compute_sequence_lengths(sequences)
-
-        tokenized_input, multimer_properties = self._tokenize_sequences(sequences)
+        tokenized_input, multimer_properties = self._tokenize_sequences(validated_sequences)
 
         with Timer("Model Inference") as timer:
             with torch.inference_mode():
@@ -569,10 +552,59 @@ class ESMFold(FoldingAlgorithm):
         return cifs
 
 
-def get_esmfold(gpu_type="T4", config: dict = {}):
+############################################################
+# MODAL-SPECIFIC WRAPPER
+############################################################
+@app.cls(
+    image=esm_image,
+    gpu="T4",
+    timeout=20 * MINUTES,
+    scaledown_window=10 * MINUTES,
+    volumes={MODEL_DIR: model_weights},
+)
+class ModalESMFold:
     """
-    Note that the app will still show that's using T4, but the actual method / function call will use the correct GPU,
-    and display accordingly in the Modal dashboard.
+    Modal-specific wrapper around `ESMFoldCore`.
     """
-    Model = ESMFold.with_options(gpu=gpu_type)  # type: ignore
-    return Model(config=config)
+
+    config: bytes = modal.parameter(default=b"{}")
+
+    @modal.enter()
+    def _initialize(self) -> None:
+        self._core = ESMFoldCore(json.loads(self.config.decode("utf-8")))
+        self._core._initialize()
+
+    @modal.method()
+    def fold(self, sequences: Union[str, Sequence[str]]) -> ESMFoldOutput:
+        return self._core.fold(sequences)
+
+
+############################################################
+# HIGH-LEVEL INTERFACE
+############################################################
+
+
+class ESMFold(ModelWrapper):
+    """
+    Interface for ESMFold protein structure prediction model.
+    # TODO: This is the user-facing interface. It should give all the relevant details possible.
+    # with proper documentation.
+    """
+
+    def __init__(self, backend: str = "modal", device: Optional[str] = None, config: Optional[dict] = None) -> None:
+        if config is None:
+            config = {}
+        self.config = config
+        self.device = device
+        if backend == "modal":
+            self._backend = ModalBackend(ModalESMFold, config, device=device)
+        else:
+            raise ValueError(f"Backend {backend} not supported")
+        self._backend.start()
+
+    def fold(self, sequences: Union[str, Sequence[str]]) -> ESMFoldOutput:
+        if isinstance(self._backend, ModalBackend):
+            backend_model = self._backend.get_model()
+            return backend_model.fold.remote(sequences)
+        else:
+            raise ValueError(f"Backend {self._backend} not supported yet.")
