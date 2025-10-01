@@ -2,11 +2,11 @@ import pytest
 import pathlib
 import numpy as np
 import torch
-from typing import Generator
+from typing import Generator, Optional
 from modal import enable_output
 
-from boileroom import app, ESMFold
-from boileroom.models.esm.esmfold import ESMFoldOutput
+from boileroom import ESMFold
+from boileroom.models.esm.esmfold import ESMFoldCore, ESMFoldOutput
 from boileroom.models.esm.linker import store_multimer_properties
 from boileroom.convert import pdb_string_to_atomarray
 from boileroom.constants import restype_3to1
@@ -15,15 +15,17 @@ from io import StringIO
 from biotite.structure.io.pdb import PDBFile
 
 
-@pytest.fixture
-def esmfold_model(config={}) -> Generator[ESMFold, None, None]:
-    with enable_output(), app.run():
-        yield ESMFold(config=config)
+# Module scope keeps a single Modal container alive for the duration of the suite.
+@pytest.fixture(scope="module")
+def esmfold_model(config: Optional[dict] = None) -> Generator[ESMFold, None, None]:
+    model_config = dict(config) if config is not None else {}
+    with enable_output():
+        yield ESMFold(backend="modal", config=model_config)
 
 
-def test_esmfold_basic(test_sequences: dict[str, str], esmfold_model: ESMFold, run_backend):
+def test_esmfold_basic(test_sequences: dict[str, str], esmfold_model: ESMFold):
     """Test basic ESMFold functionality."""
-    result = run_backend(esmfold_model.fold)(test_sequences["short"])
+    result = esmfold_model.fold(test_sequences["short"])
 
     assert isinstance(result, ESMFoldOutput), "Result should be an ESMFoldOutput"
 
@@ -38,11 +40,11 @@ def test_esmfold_basic(test_sequences: dict[str, str], esmfold_model: ESMFold, r
     assert np.all(result.plddt <= 100), "pLDDT scores should be less than or equal to 100"
 
 
-def test_esmfold_multimer(test_sequences, run_backend):
+def test_esmfold_multimer(test_sequences):
     """Test ESMFold multimer functionality."""
-    with enable_output(), app.run():  # TODO: make this better with a fixture, re-using the logic
+    with enable_output():  # TODO: make this better with a fixture, re-using the logic
         model = ESMFold(config={"output_pdb": True})
-        result = run_backend(model.fold)(test_sequences["multimer"])
+        result = model.fold(test_sequences["multimer"])
 
     assert result.pdb is not None, "PDB output should be generated"
     assert result.positions.shape[2] == len(test_sequences["multimer"].replace(":", "")), "Number of residues mismatch"
@@ -104,7 +106,7 @@ def test_esmfold_linker_map():
     assert torch.all(linker_map == gt_map), "Linker map mismatch"
 
 
-def test_esmfold_no_glycine_linker(test_sequences, run_backend):
+def test_esmfold_no_glycine_linker(test_sequences):
     """Test ESMFold no glycine linker."""
     model = ESMFold(
         config={
@@ -112,8 +114,8 @@ def test_esmfold_no_glycine_linker(test_sequences, run_backend):
         }
     )
 
-    with enable_output(), app.run():
-        result = run_backend(model.fold)(test_sequences["multimer"])
+    with enable_output():
+        result = model.fold(test_sequences["multimer"])
 
     assert result.positions is not None, "Positions should be generated"
     assert result.positions.shape[2] == len(test_sequences["multimer"].replace(":", "")), "Number of residues mismatch"
@@ -151,14 +153,14 @@ def test_esmfold_chain_indices():
     assert np.array_equal(chain_indices[0], expected_chain_indices), "Chain indices mismatch"
 
 
-def test_esmfold_batch(esmfold_model: ESMFold, test_sequences: dict[str, str], run_backend):
+def test_esmfold_batch(esmfold_model: ESMFold, test_sequences: dict[str, str]):
     """Test ESMFold batch prediction."""
 
     # Define input sequences
     sequences = [test_sequences["short"], test_sequences["medium"]]
 
     # Make prediction
-    result = run_backend(esmfold_model.fold)(sequences)
+    result = esmfold_model.fold(sequences)
 
     max_seq_length = max(len(seq) for seq in sequences)
     assert (
@@ -172,79 +174,77 @@ def test_esmfold_batch(esmfold_model: ESMFold, test_sequences: dict[str, str], r
     assert result.predicted_aligned_error.shape[0] == len(sequences), "Batch size mismatch in predicted_aligned_error"
 
 
-# TODO: This is not obvious to do, given the way we wrap things around in Modal
-# This shows well how fragile relying on Modal is going to be moving forward, and we should think
-# of ways to make it more managable through local execution as well
+def test_tokenize_sequences_with_mocker(mocker):
+    """Test tokenization of multimer sequences using pytest-mock."""
+    from boileroom.models.esm.esmfold import ESMFoldCore
 
-# def test_tokenize_sequences_with_mocker(mocker):
-#     """Test tokenization of multimer sequences using pytest-mock."""
-#     from boileroom.esmfold import ESMFold
+    # Test data
+    sequences = ["AAAAAA:CCCCCCCCC", "CCCCC:DDDDDDD:EEEEEEE", "HHHH"]
+    GLYCINE_LINKER = ""
+    POSITION_IDS_SKIP = 512
 
-#     # Test data
-#     sequences = ["AAAAAA:CCCCCCCCC", "CCCCC:DDDDDDD:EEEEEEE", "HHHH"]
-#     GLYCINE_LINKER = ""
-#     POSITION_IDS_SKIP = 512
+    # Create a model instance
+    model = ESMFoldCore(config={"glycine_linker": GLYCINE_LINKER, "position_ids_skip": POSITION_IDS_SKIP})
+    model.device = "cpu"
 
-#     # Create a model instance
-#     model = ESMFold(config={"glycine_linker": GLYCINE_LINKER, "position_ids_skip": POSITION_IDS_SKIP})
+    # Mock the tokenizer
+    mock_tokenizer = mocker.patch.object(model, "tokenizer")
+    mock_tokenizer.return_value = {
+        "input_ids": torch.tensor(
+            [
+                [1, 1, 1, 1, 1, 1, 3, 3, 3, 3, 3, 3, 3, 3, 3, -1, -1, -1, -1],
+                [3, 3, 3, 3, 3, 4, 4, 4, 4, 4, 4, 4, 5, 5, 5, 5, 5, 5, 5],
+                [8, 8, 8, 8, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
+            ]
+        ),
+        "attention_mask": torch.ones(3, 19),
+    }
 
-#     # Mock the tokenizer
-#     mock_tokenizer = mocker.patch.object(model, 'tokenizer')
-#     mock_tokenizer.return_value = {
-#         "input_ids": torch.tensor([
-#             [1, 1, 1, 1, 1, 1, 3, 3, 3, 3, 3, 3, 3, 3, 3, -1, -1, -1, -1],
-#             [3, 3, 3, 3, 3, 4, 4, 4, 4, 4, 4, 4, 5, 5, 5, 5, 5, 5, 5],
-#             [8, 8, 8, 8, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1]
-#             ]),
-#         "attention_mask": torch.ones(3, 19),
-#         }
+    # Call the method to test
+    tokenized_input, multimer_properties = model._tokenize_sequences(sequences)
 
-#     # Call the method to test
-#     tokenized_input = model._tokenize_sequences(sequences)
+    # Assert the tokenizer was called with the expected arguments
+    expected_sequences = [seq.replace(":", GLYCINE_LINKER) for seq in sequences]
+    mock_tokenizer.assert_called_once_with(
+        expected_sequences, padding=True, truncation=True, return_tensors="pt", add_special_tokens=False
+    )
 
-#     # Assert the tokenizer was called with the expected arguments
-#     expected_sequences = [seq.replace(":", GLYCINE_LINKER) for seq in sequences]
-#     mock_tokenizer.assert_called_once_with(
-#         expected_sequences,
-#         padding=True,
-#         truncation=True,
-#         return_tensors="pt",
-#         add_special_tokens=False
-#     )
-
-#     # Verify the output contains the expected keys
-#     assert set(tokenized_input.keys()) >= {"input_ids", "attention_mask", "position_ids"}
+    # Verify the output contains the expected keys
+    assert set(tokenized_input.keys()) >= {"input_ids", "attention_mask", "position_ids"}
+    assert multimer_properties is not None
 
 
-def test_sequence_validation(esmfold_model: ESMFold, test_sequences: dict[str, str], run_backend):
+def test_sequence_validation(test_sequences: dict[str, str]):
     """Test sequence validation in FoldingAlgorithm."""
+
+    esmfold_core = ESMFoldCore(config={})
 
     # Test single sequence
     single_seq = test_sequences["short"]
-    validated = esmfold_model._validate_sequences(single_seq)
+    validated = esmfold_core._validate_sequences(single_seq)
     assert isinstance(validated, list), "Single sequence should be converted to list"
     assert len(validated) == 1, "Should contain one sequence"
     assert validated[0] == single_seq, "Sequence should be unchanged"
 
     # Test sequence list
     seq_list = [test_sequences["short"], test_sequences["medium"]]
-    validated = esmfold_model._validate_sequences(seq_list)
+    validated = esmfold_core._validate_sequences(seq_list)
     assert isinstance(validated, list), "Should return a list"
     assert len(validated) == 2, "Should contain two sequences"
     assert validated == seq_list, "Sequences should be unchanged"
 
     # Test invalid sequence
     with pytest.raises(ValueError) as exc_info:
-        esmfold_model._validate_sequences(test_sequences["invalid"])
+        esmfold_core._validate_sequences(test_sequences["invalid"])
     assert "Invalid amino acid" in str(exc_info.value), f"Expected 'Invalid amino acid', got {str(exc_info.value)}"
 
     # Test that fold method uses validation
     with pytest.raises(ValueError) as exc_info:
-        run_backend(esmfold_model.fold)(test_sequences["invalid"])
+        esmfold_core.fold(test_sequences["invalid"])
     assert "Invalid amino acid" in str(exc_info.value), f"Expected 'Invalid amino acid', got {str(exc_info.value)}"
 
 
-def test_esmfold_output_pdb_cif(data_dir: pathlib.Path, test_sequences: dict[str, str], run_backend):
+def test_esmfold_output_pdb_cif(data_dir: pathlib.Path, test_sequences: dict[str, str]):
     """Test ESMFold output PDB and CIF."""
 
     def recover_sequence(atomarray: AtomArray) -> str:
@@ -253,24 +253,29 @@ def test_esmfold_output_pdb_cif(data_dir: pathlib.Path, test_sequences: dict[str
         one_letter_codes = [restype_3to1[three_letter_code] for three_letter_code in three_letter_codes]
         return "".join(one_letter_codes)
 
-    with enable_output(), app.run():
+    with enable_output():
         model = ESMFold(config={"output_pdb": True, "output_cif": False, "output_atomarray": True})
         # Define input sequences
         sequences = [test_sequences["short"], test_sequences["medium"]]
-        result = run_backend(model.fold)(sequences)
+        result = model.fold(sequences)
 
     assert result.pdb is not None, "PDB output should be generated"
     assert result.cif is None, "CIF output should be None"
-    assert len(result.pdb) == len(result.atom_array) == len(sequences) == 2, "Batching output match!"
-    assert isinstance(result.pdb, list), "PDB output should be a list"
-    assert len(result.pdb) == len(sequences), "PDB output should have same length as input sequences"
-    assert isinstance(result.atom_array, list), "Atom array should be a list"
-    assert isinstance(result.atom_array[0], AtomArray), "Atom array should be an AtomArray"
+    assert result.atom_array is not None, "Atom array output should be generated"
 
-    short_pdb = PDBFile.read(StringIO(result.pdb[0])).get_structure(model=1)
-    medium_pdb = PDBFile.read(StringIO(result.pdb[1])).get_structure(model=1)
-    short_atomarray = result.atom_array[0]
-    medium_atomarray = result.atom_array[1]
+    pdb_outputs = result.pdb
+    atom_array_outputs = result.atom_array
+
+    assert len(pdb_outputs) == len(atom_array_outputs) == len(sequences) == 2, "Batching output match!"
+    assert isinstance(pdb_outputs, list), "PDB output should be a list"
+    assert len(pdb_outputs) == len(sequences), "PDB output should have same length as input sequences"
+    assert isinstance(atom_array_outputs, list), "Atom array should be a list"
+    assert isinstance(atom_array_outputs[0], AtomArray), "Atom array should be an AtomArray"
+
+    short_pdb = PDBFile.read(StringIO(pdb_outputs[0])).get_structure(model=1)
+    medium_pdb = PDBFile.read(StringIO(pdb_outputs[1])).get_structure(model=1)
+    short_atomarray = atom_array_outputs[0]
+    medium_atomarray = atom_array_outputs[1]
 
     # Short protein checks
     num_residues = len(sequences[0])

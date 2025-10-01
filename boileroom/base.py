@@ -200,3 +200,11 @@ class EmbeddingAlgorithm(Algorithm):
             RuntimeError: If embedding generation fails
         """
         raise NotImplementedError
+
+
+class ModelWrapper:
+    def __init__(self, backend: str = "modal", device: str | None = None, config: dict | None = None) -> None:
+        """Initialize the model wrapper."""
+        self.backend = backend
+        self.device = device
+        self.config = config or {}

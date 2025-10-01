@@ -32,15 +32,15 @@ modal token new
 ## Quick Start
 
 ```python
-from boileroom import app, ESMFold
+from boileroom import ESMFold
 
 # Initialize the model
-model = ESMFold()
+model = ESMFold(backend="modal")
 
 # Predict structure for a protein sequence
 sequence = "MLKNVHVLVLGAGDVGSVVVRLLEK"
-with app.run():
-    result = model.fold.remote([sequence])
+
+result = model.fold([sequence])
 
 # Access prediction results
 coordinates = result.positions

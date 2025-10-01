@@ -10,25 +10,14 @@ def pytest_addoption(parser):
         "--backend",
         action="store",
         default="modal",
-        choices=("modal", "local"),
-        help="Execution backend for models in tests: modal (default) or local",
+        choices=("modal",),
+        help="Execution backend for models in tests: modal (default)",
     )
 
 
 @pytest.fixture(autouse=True, scope="session")
 def model_dir():
     os.environ["MODEL_DIR"] = str(pathlib.Path(__file__).parent.parent / ".model_cache")
-
-
-@pytest.fixture
-def run_backend(request):
-    mode = request.config.getoption("--backend")
-
-    def select(method):
-        # method is e.g. model.fold or model.embed
-        return getattr(method, "local" if mode == "local" else "remote")
-
-    return select
 
 
 @pytest.fixture
