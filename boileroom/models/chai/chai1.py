@@ -1,23 +1,33 @@
 
-import os
-import logging
-import numpy as np
-import modal
 import json
+import logging
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from typing import Any, Optional, Sequence, Union
+
+import modal
+import numpy as np
 
 from dataclasses import dataclass
-from typing import Optional, Any, Union, Sequence
 
-
+from ...base import (
+    FoldingAlgorithm,
+    ModelWrapper,
+    PredictionMetadata,
+    StructurePrediction,
+)
 from ...backend.modal import ModalBackend, app
 from ...images import chai_image
-from ...base import StructurePrediction, PredictionMetadata, FoldingAlgorithm, ModelWrapper
 from ...images.volumes import model_weights
 from ...utils import MODEL_DIR, MINUTES
 
 with chai_image.imports():
-    import chai_lab
+    import torch
+    from biotite.structure.io.pdbx import CIFFile
 
+    from chai_lab.chai1 import run_inference
+    from chai_lab.utils.paths import downloads_path
+    from chai_lab.ranking.rank import StructureCandidates
 
 # Set up basic logging configuration
 logging.basicConfig(level=logging.INFO)
@@ -39,32 +49,93 @@ class Chai1Output(StructurePrediction):
 
 class Chai1Core(FoldingAlgorithm):
     """Chai-1 protein structure prediction model."""
-    DEFAULT_CONFIG = {}
 
-    def __init__(self, config: dict = {}) -> None:
-        """Initialize Chai-1."""
-        super().__init__(config)
+    DEFAULT_CONFIG: dict[str, Any] = {
+        "device": "cuda:0",
+        "num_trunk_recycles": 1,
+        "num_diffn_timesteps": 20,
+        "num_diffn_samples": 1,
+        "num_trunk_samples": 1,
+        "use_esm_embeddings": False,
+        "use_msa_server": False,
+        "use_templates_server": False,
+    }
+
+    def __init__(self, config: dict[str, Any] | None = None) -> None:
+        super().__init__(config or {})
         self.metadata = self._initialize_metadata(
             model_name="Chai-1",
             model_version="v0.6.1",
         )
-        self.model_dir: Optional[str] = os.environ.get("MODEL_DIR", MODEL_DIR)
-        self.model: Optional[Any] = None # TODO: figure out the type
+        self.model_dir: Optional[str] = self.config.get("model_dir", MODEL_DIR)
+        self._device: torch.device | None = None
+        self._trunk: Any | None = None
 
-    
     def _initialize(self) -> None:
-        """Initialize Chai-1."""
         self._load()
-    
+
     def _load(self) -> None:
-        """Load Chai-1."""
-        self.model = chai_lab.Chai1(self.model_dir)
-        self.model.eval()
+        self._device = self._resolve_device()
         self.ready = True
-    
+
     def fold(self, sequences: Union[str, Sequence[str]]) -> Chai1Output:
-        """Fold protein sequences."""
-        return self.model.fold(sequences)
+        # TODO: ADD msa_directory: Path | None = None,
+        # TODO: ADD constraint_path: Path | None = None,
+        # TODO: ADD template_hits_path: Path | None = None,
+        validated_sequences = self._validate_sequences(sequences)
+        self.metadata.sequence_lengths = self._compute_sequence_lengths(validated_sequences)
+        with TemporaryDirectory(dir=self._downloads_root()) as buffer_dir:
+            fasta_path = self._write_fasta(validated_sequences, Path(buffer_dir))
+            candidate = run_inference(
+                fasta_file=fasta_path,
+                output_dir=Path(buffer_dir) / "outputs",
+                num_trunk_samples=self.config["num_trunk_samples"],
+                num_trunk_recycles=self.config["num_trunk_recycles"],
+                num_diffn_timesteps=self.config["num_diffn_timesteps"],
+                num_diffn_samples=self.config["num_diffn_samples"],
+                use_esm_embeddings=self.config["use_esm_embeddings"],
+                use_msa_server=self.config["use_msa_server"],
+                use_templates_server=self.config["use_templates_server"],
+                device=str(self._device),
+                low_memory=False,
+            )
+            positions = self._extract_positions(candidate)
+
+        return Chai1Output(positions=positions, metadata=self.metadata)
+
+    def _resolve_device(self) -> torch.device:
+        requested = self.config.get("device")
+        if requested is not None:
+            return torch.device(requested)
+        if torch.cuda.is_available():
+            return torch.device("cuda:0")
+        return torch.device("cpu")
+
+    def _downloads_root(self) -> Path:
+        return Path(self.config.get("downloads_dir", downloads_path))
+
+    def _write_fasta(self, sequences: list[str], buffer_dir: Path) -> Path:
+        fasta_path = buffer_dir / "input.fasta"
+        entries = [
+            f">protein|name=chain_{index}\n{sequence}" for index, sequence in enumerate(sequences)
+        ]
+        fasta_path.write_text("\n".join(entries))
+        return fasta_path
+
+    def _extract_positions(self, candidates: "StructureCandidates") -> np.ndarray:
+        cif_path = candidates.cif_paths[0]
+        return self._positions_from_cif(cif_path)
+
+    def _positions_from_cif(self, cif_path: Path) -> np.ndarray:
+        cif_file = CIFFile.read(str(cif_path))
+        structure = cif_file.get_structure()
+        model = structure[0]
+        coords = []
+        for chain in model:
+            atom_coords = [atom.coord for atom in chain]
+            coords.append(np.array(atom_coords, dtype=np.float32))
+        flattened = np.concatenate(coords, axis=0)
+        return flattened
 
 
 
@@ -80,7 +151,7 @@ class Chai1Core(FoldingAlgorithm):
 )
 class ModalChai1:
     """
-    Modal-specific wrapper around `ESMFoldCore`.
+    Modal-specific wrapper around `Chai1Core`.
     """
 
     config: bytes = modal.parameter(default=b"{}")
