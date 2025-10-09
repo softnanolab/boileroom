@@ -10,9 +10,8 @@ USER ${MAMBA_USER}
 
 ARG MAMBA_DOCKERFILE_ACTIVATE=1
 
-RUN python -m pip install --upgrade pip
-
-RUN python -m pip install --no-cache-dir "biotite>=1.0.1"
+RUN python -m pip install --upgrade pip \
+    && python -m pip install --no-cache-dir "biotite>=1.0.1"
 
 ENV MODEL_DIR=/mnt/models
 
