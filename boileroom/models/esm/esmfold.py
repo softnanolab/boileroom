@@ -13,7 +13,7 @@ from biotite.structure import AtomArray
 from ...backend import LocalBackend, ModalBackend
 from ...backend.modal import app
 from ...base import FoldingAlgorithm, StructurePrediction, PredictionMetadata, ModelWrapper
-from ...images import esm_image
+from .image import esm_image
 from ...images.volumes import model_weights
 from ...utils import MINUTES, MODEL_DIR, Timer
 from .linker import compute_position_ids, store_multimer_properties

@@ -33,16 +33,9 @@ dev = [
 esm = [
     "transformers>=4.49.0",
 ]
-boltz = [
-    "boltz==2.1.1",
-]
-chai = [
-    "chai_lab==0.6.1",
-    "hf_transfer==0.1.8",
-]
 
 [project.urls]
-Homepage = "https://github.com/jakublala/boileroom"
+Homepage = "https://github.com/softnanolab/boileroom"
 
 [tool.hatch.metadata]
 allow-direct-references = true

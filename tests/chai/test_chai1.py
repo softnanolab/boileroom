@@ -29,3 +29,12 @@ def test_chai1_basic(test_sequences: dict[str, str], chai1_model: Chai1):
     assert result.plddt.shape == (len(test_sequences["short"]),), "pLDDT scores should be a single dimension"
     assert np.all(result.plddt >= 0), "pLDDT scores should be non-negative"
     assert np.all(result.plddt <= 100), "pLDDT scores should be less than or equal to 100"
+
+
+def test_chai1_multimer(test_sequences: dict[str, str], chai1_model: Chai1):
+    """Test Chai-1 multimer functionality."""
+    result = chai1_model.fold(test_sequences["multimer"])
+
+    assert isinstance(result, Chai1Output), "Result should be a Chai1Output"
+
+    breakpoint()

@@ -1,6 +1,6 @@
 """Modal image definition for ESM family of models."""
 
-from .base import base_image
+from ...images.base import base_image
 
 # Define the base image with all dependencies
 esm_image = (

@@ -1,4 +1,5 @@
 import json
+import os
 import threading
 from typing import Any
 
@@ -62,7 +63,7 @@ class ModalAppManager:
         if self._attached_external or self._context is not None:
             return
 
-        context = self._app.run()
+        context = self._app.run(interactive=os.environ.get("MODAL_INTERACTIVE", "false").lower() == "true")
         try:
             context.__enter__()
         except InvalidError as error:

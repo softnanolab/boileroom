@@ -13,7 +13,7 @@ from ...backend import LocalBackend, ModalBackend
 from ...backend.modal import app
 from ...utils import MINUTES, MODEL_DIR, Timer
 
-from ...images import esm_image
+from .image import esm_image
 from ...images.volumes import model_weights
 from .linker import compute_position_ids, store_multimer_properties, replace_glycine_linkers
 

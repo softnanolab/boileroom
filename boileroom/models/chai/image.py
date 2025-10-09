@@ -2,8 +2,8 @@
 
 from pathlib import Path
 
-from .base import base_image
-from ..utils import MODEL_DIR
+from ...images.base import base_image
+from ...utils import MODEL_DIR
 
 _chai_downloads_dir = Path(MODEL_DIR) / "chai1"
 

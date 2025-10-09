@@ -1,7 +1,7 @@
 import numpy as np
 from typing import List
 
-from ...images import esm_image
+from .image import esm_image
 
 with esm_image.imports():
     import torch

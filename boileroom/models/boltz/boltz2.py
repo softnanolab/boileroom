@@ -11,7 +11,7 @@ from typing import Optional, Any, Union, Sequence
 
 from ...backend import LocalBackend, ModalBackend
 from ...backend.modal import app
-from ...images import boltz_image
+from .image import boltz_image
 from ...base import StructurePrediction, PredictionMetadata, FoldingAlgorithm, ModelWrapper
 from ...images.volumes import model_weights
 from ...utils import MODEL_DIR, MINUTES
