@@ -1,15 +1,21 @@
+import os
+from pathlib import Path
 from boileroom import Chai1
 
-import modal
+# load dotenv
+from dotenv import load_dotenv
+
+load_dotenv()
+
+os.environ["CHAI_DOWNLOADS_DIR"] = str(Path(os.getenv("MODEL_DIR")) / "chai1")
+
 
 if __name__ == "__main__":
-    with modal.enable_output():
-        # Initialize the model
-        model = Chai1(backend="modal")
+    model = Chai1(backend="local")
 
-        # # Predict structure for a protein sequence
-        sequence = "MLKNVHVLVLGAGDVGSVVVRLLEK"
+    # Predict structure for a protein sequence
+    sequence = "MLKNVHVLVLGAGDVGSVVVRLLEK"
 
-        result = model.fold([sequence])
+    result = model.fold([sequence])
 
-        print(result)
+    print(result)

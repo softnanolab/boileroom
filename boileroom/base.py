@@ -4,7 +4,7 @@ import logging
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Union, Sequence, Optional, Protocol, List
+from typing import Any, Union, Sequence, Optional, Protocol, List
 
 import numpy as np
 
@@ -208,3 +208,23 @@ class ModelWrapper:
         self.backend = backend
         self.device = device
         self.config = config or {}
+
+    def _call_backend_method(self, method_name: str, *args: Any, **kwargs: Any) -> Any:
+        """Invoke a method on the underlying backend model, handling remote calls if needed."""
+        backend = getattr(self, "_backend", None)
+        if backend is None:
+            raise RuntimeError("Backend is not initialized for this model wrapper.")
+
+        backend_model = backend.get_model()
+        method = getattr(backend_model, method_name, None)
+        if method is None:
+            raise AttributeError(f"Backend model does not have method '{method_name}'.")
+
+        remote_callable = getattr(method, "remote", None)
+        if callable(remote_callable):
+            return remote_callable(*args, **kwargs)
+
+        if callable(method):
+            return method(*args, **kwargs)
+
+        raise TypeError(f"Attribute '{method_name}' on backend model is not callable.")

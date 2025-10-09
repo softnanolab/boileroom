@@ -10,7 +10,8 @@ import modal
 import numpy as np
 from biotite.structure import AtomArray
 
-from ...backend.modal import ModalBackend, app
+from ...backend import LocalBackend, ModalBackend
+from ...backend.modal import app
 from ...base import FoldingAlgorithm, StructurePrediction, PredictionMetadata, ModelWrapper
 from ...images import esm_image
 from ...images.volumes import model_weights
@@ -598,13 +599,11 @@ class ESMFold(ModelWrapper):
         self.device = device
         if backend == "modal":
             self._backend = ModalBackend(ModalESMFold, config, device=device)
+        elif backend == "local":
+            self._backend = LocalBackend(ESMFoldCore, config, device=device)
         else:
             raise ValueError(f"Backend {backend} not supported")
         self._backend.start()
 
     def fold(self, sequences: Union[str, Sequence[str]]) -> ESMFoldOutput:
-        if isinstance(self._backend, ModalBackend):
-            backend_model = self._backend.get_model()
-            return backend_model.fold.remote(sequences)
-        else:
-            raise ValueError(f"Backend {self._backend} not supported yet.")
+        return self._call_backend_method("fold", sequences)

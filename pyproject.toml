@@ -17,7 +17,7 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
-    "modal>=0.73.12",
+    "modal>=1.1.0",
     "numpy>=2.2.2",
     "biotite>=1.0.1",
     "torch>=2.5.1,<2.7.0",
@@ -30,8 +30,15 @@ dev = [
     "pytest-xdist>=3.6.1",
     "pytest-mock>=3.14.0",
 ]
-local = [
+esm = [
     "transformers>=4.49.0",
+]
+boltz = [
+    "boltz==2.1.1",
+]
+chai = [
+    "chai_lab==0.6.1",
+    "hf_transfer==0.1.8",
 ]
 
 [project.urls]

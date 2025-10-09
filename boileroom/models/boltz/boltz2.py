@@ -9,7 +9,8 @@ from dataclasses import dataclass
 from typing import Optional, Any, Union, Sequence
 
 
-from ...backend.modal import ModalBackend, app
+from ...backend import LocalBackend, ModalBackend
+from ...backend.modal import app
 from ...images import boltz_image
 from ...base import StructurePrediction, PredictionMetadata, FoldingAlgorithm, ModelWrapper
 from ...images.volumes import model_weights
@@ -114,13 +115,11 @@ class Boltz2(ModelWrapper):
         self.device = device
         if backend == "modal":
             self._backend = ModalBackend(ModalBoltz2, config, device=device)
+        elif backend == "local":
+            self._backend = LocalBackend(Boltz2Core, config, device=device)
         else:
             raise ValueError(f"Backend {backend} not supported")
         self._backend.start()
 
     def fold(self, sequences: Union[str, Sequence[str]]) -> Boltz2Output:
-        if isinstance(self._backend, ModalBackend):
-            backend_model = self._backend.get_model()
-            return backend_model.fold.remote(sequences)
-        else:
-            raise ValueError(f"Backend {self._backend} not supported yet.")
+        return self._call_backend_method("fold", sequences)

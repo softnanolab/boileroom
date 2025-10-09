@@ -9,7 +9,8 @@ import json
 
 from ...base import ModelWrapper
 from ...base import EmbeddingAlgorithm, EmbeddingPrediction, PredictionMetadata
-from ...backend.modal import ModalBackend, app
+from ...backend import LocalBackend, ModalBackend
+from ...backend.modal import app
 from ...utils import MINUTES, MODEL_DIR, Timer
 
 from ...images import esm_image
@@ -316,13 +317,11 @@ class ESM2(ModelWrapper):
         self.device = device
         if backend == "modal":
             self._backend = ModalBackend(ModalESM2, config, device=device)
+        elif backend == "local":
+            self._backend = LocalBackend(ESM2Core, config, device=device)
         else:
             raise ValueError(f"Backend {backend} not supported")
         self._backend.start()
 
     def embed(self, sequences: Union[str, Sequence[str]]) -> ESM2Output:
-        if isinstance(self._backend, ModalBackend):
-            backend_model = self._backend.get_model()
-            return backend_model.embed.remote(sequences)
-        else:
-            raise ValueError(f"Backend {self._backend} not supported yet.")
+        return self._call_backend_method("embed", sequences)
