@@ -123,6 +123,9 @@ class ModalBackend(Backend):
         if self._remote_cls is None:
             remote_cls = self._model_cls
             if self._device is not None:
+                # Note that the app will still show that's using T4, 
+                # but the actual method / function call will use the correct GPU,
+                # and display accordingly in the Modal dashboard.
                 remote_cls = remote_cls.with_options(gpu=self._device)
             self._remote_cls = remote_cls
         return self._remote_cls

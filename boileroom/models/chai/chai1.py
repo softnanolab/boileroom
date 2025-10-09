@@ -8,6 +8,7 @@ from typing import Any, Mapping, Optional, Sequence, Union
 
 import modal
 import numpy as np
+from biotite.structure import AtomArray
 
 from ...base import (
     FoldingAlgorithm,
@@ -38,13 +39,17 @@ logger = logging.getLogger(__name__)
 @dataclass
 class Chai1Output(StructurePrediction):
     """Output from Chai-1 prediction including all model outputs."""
-    # Required by StructurePrediction protocol
-    positions: np.ndarray  # (model_layer, batch_size, residue, atom=14, xyz=3)
+    positions: np.ndarray  # (batch_size, residue, atom=14, xyz=3)
     metadata: PredictionMetadata
+    
     pae: list[np.ndarray] = field(default_factory=list)
     pde: list[np.ndarray] = field(default_factory=list)
     plddt: list[np.ndarray] = field(default_factory=list)
+    ptm: list[np.ndarray] = field(default_factory=list)
+    iptm: list[np.ndarray] = field(default_factory=list)
+    per_chain_iptm: list[np.ndarray] = field(default_factory=list)
     cif: Optional[list[str]] = None
+    atom_array: Optional[AtomArray] = None
 
 
 
@@ -61,6 +66,7 @@ class Chai1Core(FoldingAlgorithm):
         "use_msa_server": False,
         "use_templates_server": False,
         "output_cif": False,
+        "output_atomarray": False,
     }
 
     def __init__(self, config: dict[str, Any] | None = None) -> None:
@@ -83,7 +89,7 @@ class Chai1Core(FoldingAlgorithm):
     def fold(self, sequences: Union[str, Sequence[str]], config: Optional[dict] = None) -> Chai1Output:
         # TODO: This config is not implemented across all models; and will require further synchronization.
         # TODO: ADD msa_directory: Path | None = None,
-        # TODO: ADD constraint_path: Path | None = None,
+        # TODO: constraint path not tested properly
         # TODO: ADD template_hits_path: Path | None = None,
 
         if config is not None:
@@ -132,6 +138,8 @@ class Chai1Core(FoldingAlgorithm):
         if not isinstance(constraint_definition, Sequence):
             raise TypeError("constraint_path must be a path or a sequence of restraint definitions")
 
+        # Note: The model does not currently consume 'confidence' or 'min_distance_angstrom'.
+        # They are included here for future-proofing and to keep the CSV schema stable.
         columns = [
             "restraint_id",
             "chainA",
@@ -170,8 +178,8 @@ class Chai1Core(FoldingAlgorithm):
         return constraint_path
 
     def _convert_outputs(self, candidate: "StructureCandidates", elapsed_time: float) -> Chai1Output:
-        pae, pde, plddt = self._extract_confidence_metrics(candidate)
-        positions, cif_string = self._process_cif(candidate.cif_paths[0])
+        pae, pde, plddt, ptm, iptm, per_chain_iptm = self._extract_confidence_metrics(candidate)
+        positions, cif_string, atom_array = self._process_cif(candidate.cif_paths[0])
         self.metadata.prediction_time = elapsed_time
 
         return Chai1Output(
@@ -180,7 +188,11 @@ class Chai1Core(FoldingAlgorithm):
             pae=pae,
             pde=pde,
             plddt=plddt,
+            ptm=ptm,
+            iptm=iptm,
+            per_chain_iptm=per_chain_iptm,
             cif=cif_string,
+            atom_array=atom_array,
         )
 
     def _resolve_device(self) -> torch.device:
@@ -196,13 +208,14 @@ class Chai1Core(FoldingAlgorithm):
         assert len(sequences) == 1, "Chai-1 only supports a single batch for now."
         seqs = sequences[0].split(":") if ":" in sequences[0] else sequences[0]
         fasta_path = buffer_dir / "input.fasta"
+        # TODO: naming of the chains should be synchronized with how ESMFold did that
         entries = [
             f">protein|name=chain_{index}\n{sequence}" for index, sequence in enumerate(seqs)
         ]
         fasta_path.write_text("\n".join(entries))
         return fasta_path
 
-    def _process_cif(self, cif_path: Path) -> np.ndarray:
+    def _process_cif(self, cif_path: Path) -> tuple[np.ndarray, Optional[str], AtomArray]:
         cif_file = CIFFile.read(str(cif_path))
         structure = get_structure(cif_file)
         coords = []
@@ -214,8 +227,12 @@ class Chai1Core(FoldingAlgorithm):
         if self.config["output_cif"]:
             with open(cif_path, "r") as f:
                 cif_string = f.read()
+
+        atom_array = None
+        if self.config["output_atomarray"]:
+            atom_array = structure
         
-        return flattened, cif_string
+        return [flattened], [cif_string], [atom_array]
 
     def _extract_confidence_metrics(
         self,
@@ -224,7 +241,16 @@ class Chai1Core(FoldingAlgorithm):
         pae = self._collect_matrix(candidates, attribute_name="pae")
         pde = self._collect_matrix(candidates, attribute_name="pde")
         plddt = self._collect_matrix(candidates, attribute_name="plddt")
-        return pae, pde, plddt
+
+        ranking_data = candidates.ranking_data
+        if len(ranking_data) != 1:
+            logger.warning(f"Expected 1 ranking data, got {len(ranking_data)}. More not supported yet.")
+            return pae, pde, plddt, None, None, None
+
+        ptm = ranking_data[0].ptm_scores.complex_ptm
+        iptm = ranking_data[0].ptm_scores.interface_ptm
+        per_chain_iptm = ranking_data[0].ptm_scores.per_chain_pair_iptm
+        return [pae], [pde], [plddt], [ptm], [iptm], [per_chain_iptm]
 
     def _collect_matrix(
         self,
