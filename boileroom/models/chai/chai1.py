@@ -75,7 +75,7 @@ class Chai1Core(FoldingAlgorithm):
             model_name="Chai-1",
             model_version="v0.6.1",
         )
-        self.model_dir: Optional[str] = self.config.get("model_dir", MODEL_DIR)
+        self.model_dir: Optional[str] = os.environ.get("MODEL_DIR")
         self._device: torch.device | None = None
         self._trunk: Any | None = None
 

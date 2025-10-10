@@ -11,7 +11,7 @@ from ...base import ModelWrapper
 from ...base import EmbeddingAlgorithm, EmbeddingPrediction, PredictionMetadata
 from ...backend import LocalBackend, ModalBackend
 from ...backend.modal import app
-from ...utils import MINUTES, MODEL_DIR, Timer
+from ...utils import MINUTES, Timer
 
 from .image import esm_image
 from ...images.volumes import model_weights
@@ -60,7 +60,7 @@ class ESM2Core(EmbeddingAlgorithm):
             model_name="ESM-2",
             model_version="v4.49.0",  # HuggingFace transformers version
         )
-        self.model_dir: Optional[str] = os.environ.get("MODEL_DIR", MODEL_DIR)
+        self.model_dir: Optional[str] = os.environ.get("MODEL_DIR")
         self.tokenizer: Optional[AutoTokenizer] = None
         self.model: Optional[EsmModel] = None
         self.assert_valid_model(self.config["model_name"])

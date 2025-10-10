@@ -6,14 +6,15 @@ available support, while a red cross indicates that the combination is not yet i
 
 ### Structure Algorithms
 
-| Model      | 🟢 Modal | 🐧 Apptainer | 🐳 Docker | 💻 Local |
-|------------|:--------:|:------------:|:---------:|:--------:|
-| Boltz-2    | 🍊       | ❌           | ❌        | ❌       |
-| Chai-1     | 🍊       | ❌           | ❌        | ❌       |
-| ESMFold    | ✅       | ❌           | ❌        | ✅       |
+| Model      | 🟢 Modal | 🐧 Apptainer (FastAPI) | 🐳 Docker (FastAPI) | 💻 Local (uv) | 💻 Local (Docker/Apptainer) |
+|------------|:--------:|:---------------------:|:------------------:|:-------------:|:--------------------------:|
+| Boltz-2    | 🍊       | ❌                    | ❌                 | ❌            | ❌                         |
+| Chai-1     | 🍊       | ❌                    | ❌                 | ❌            | ✅                         |
+| ESMFold    | ✅       | ❌                    | ❌                 | ✅            | ❌                         |
 
 ### Embedding Algorithms
 
-| Model      | 🟢 Modal | 🐧 Apptainer | 🐳 Docker | 💻 Local |
-|------------|:--------:|:------------:|:---------:|:--------:|
-| ESM-2      | ✅       | ❌           | ❌        | ✅       |
+| Model      | 🟢 Modal | 🐧 Apptainer (FastAPI) | 🐳 Docker (FastAPI) | 💻 Local (uv) | 💻 Local (Docker/Apptainer) |
+|------------|:--------:|:---------------------:|:------------------:|:-------------:|:--------------------------:|
+| ESM-2      | ✅       | ❌                    | ❌                 | ✅            | ❌                         |
+

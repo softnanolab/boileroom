@@ -13,7 +13,7 @@ MINUTES = 60
 HOURS = 60 * MINUTES
 
 # Directory constants
-MODEL_DIR = "/mnt/models"
+MODAL_MODEL_DIR = "/mnt/models"
 CACHE_DIR = os.path.expanduser("~/.cache/boileroom")
 
 # Amino acid constants
@@ -54,6 +54,15 @@ def ensure_cache_dir() -> Path:
     cache_path = Path(CACHE_DIR)
     cache_path.mkdir(parents=True, exist_ok=True)
     return cache_path
+
+
+def get_model_dir() -> Path:
+    """Return the model directory, honoring the MODEL_DIR environment variable.
+
+    The path is not created here; callers should create it if needed.
+    """
+    value = os.environ.get("MODEL_DIR", MODEL_DIR)
+    return Path(value).expanduser()
 
 
 def format_time(seconds: float) -> str:

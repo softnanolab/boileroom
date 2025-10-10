@@ -14,7 +14,7 @@ from ...backend.modal import app
 from .image import boltz_image
 from ...base import StructurePrediction, PredictionMetadata, FoldingAlgorithm, ModelWrapper
 from ...images.volumes import model_weights
-from ...utils import MODEL_DIR, MINUTES
+from ...utils import MINUTES
 
 with boltz_image.imports():
     # TODO: import the Boltz-2 model
@@ -49,7 +49,7 @@ class Boltz2Core(FoldingAlgorithm):
             model_name="Boltz-2",
             # TODO: add the version
         )
-        self.model_dir: Optional[str] = os.environ.get("MODEL_DIR", MODEL_DIR)
+        self.model_dir: Optional[str] = os.environ.get("MODEL_DIR")
         self.model: Optional[Any] = None # TODO: figure out the type
 
     
