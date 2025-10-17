@@ -1,3 +1,4 @@
+import os
 import csv
 import json
 import logging
@@ -20,7 +21,7 @@ from ...backend import LocalBackend, ModalBackend
 from ...backend.modal import app
 from .image import chai_image
 from ...images.volumes import model_weights
-from ...utils import MODEL_DIR, MINUTES, Timer
+from ...utils import MODAL_MODEL_DIR, MINUTES, Timer
 
 with chai_image.imports():
     import torch
@@ -75,7 +76,7 @@ class Chai1Core(FoldingAlgorithm):
             model_name="Chai-1",
             model_version="v0.6.1",
         )
-        self.model_dir: Optional[str] = os.environ.get("MODEL_DIR")
+        self.model_dir: Optional[str] = os.environ.get("MODEL_DIR", MODAL_MODEL_DIR)
         self._device: torch.device | None = None
         self._trunk: Any | None = None
 
@@ -194,19 +195,11 @@ class Chai1Core(FoldingAlgorithm):
             cif=cif_string,
             atom_array=atom_array,
         )
-
-    def _resolve_device(self) -> torch.device:
-        requested = self.config.get("device")
-        if requested is not None:
-            return torch.device(requested)
-        if torch.cuda.is_available():
-            return torch.device("cuda:0")
-        return torch.device("cpu")
     
     def _write_fasta(self, sequences: list[str], buffer_dir: Path) -> Path:
         # assert that a single batch only
         assert len(sequences) == 1, "Chai-1 only supports a single batch for now."
-        seqs = sequences[0].split(":") if ":" in sequences[0] else sequences[0]
+        seqs = sequences[0].split(":") if ":" in sequences[0] else [sequences[0]]
         fasta_path = buffer_dir / "input.fasta"
         # TODO: naming of the chains should be synchronized with how ESMFold did that
         entries = [
@@ -275,7 +268,7 @@ class Chai1Core(FoldingAlgorithm):
     gpu="T4",
     timeout=20 * MINUTES,
     scaledown_window=10 * MINUTES,
-    volumes={MODEL_DIR: model_weights}, # TODO: somehow link this to what Chai-1 actually uses
+    volumes={MODAL_MODEL_DIR: model_weights}, # TODO: somehow link this to what Chai-1 actually uses
 )
 class ModalChai1:
     """
@@ -290,8 +283,8 @@ class ModalChai1:
         self._core._initialize()
 
     @modal.method()
-    def fold(self, sequences: Union[str, Sequence[str]]) -> Chai1Output:
-        return self._core.fold(sequences)
+    def fold(self, *args: Any, **kwargs: Any) -> Chai1Output:
+        return self._core.fold(*args, **kwargs)
 
 ############################################################
 # HIGH-LEVEL INTERFACE
@@ -317,5 +310,5 @@ class Chai1(ModelWrapper):
             raise ValueError(f"Backend {backend} not supported")
         self._backend.start()
 
-    def fold(self, sequences: Union[str, Sequence[str]]) -> Chai1Output:
-        return self._call_backend_method("fold", sequences)
+    def fold(self, *args: Any, **kwargs: Any) -> Chai1Output:
+        return self._call_backend_method("fold", *args, **kwargs)

@@ -15,7 +15,7 @@ from ...backend.modal import app
 from ...base import FoldingAlgorithm, StructurePrediction, PredictionMetadata, ModelWrapper
 from .image import esm_image
 from ...images.volumes import model_weights
-from ...utils import MINUTES, MODEL_DIR, Timer
+from ...utils import MINUTES, MODAL_MODEL_DIR, Timer
 from .linker import compute_position_ids, store_multimer_properties
 
 # ESMFold-Specific: A list of atoms (excluding hydrogen) for each AA type. PDB naming convention.
@@ -175,6 +175,7 @@ class ESMFoldCore(FoldingAlgorithm):
     # TODO: maybe this config should be input to the fold function, so that it can
     # changed programmatically on a single ephermal app, rather than re-creating the app?
     DEFAULT_CONFIG = {
+        "device": "cuda:0",
         # ESMFold model config
         "output_pdb": False,
         "output_cif": False,
@@ -196,7 +197,8 @@ class ESMFoldCore(FoldingAlgorithm):
             model_name="ESMFold",
             model_version="v4.49.0",  # HuggingFace transformers version
         )
-        self.model_dir: Optional[str] = os.environ.get("MODEL_DIR", MODEL_DIR)
+        self.model_dir: Optional[str] = os.environ.get("MODEL_DIR", MODAL_MODEL_DIR)
+        self._device: torch.device | None = None
         self.tokenizer: Optional[AutoTokenizer] = None
         self.model: Optional[EsmForProteinFolding] = None
 
@@ -210,8 +212,8 @@ class ESMFoldCore(FoldingAlgorithm):
             self.tokenizer = AutoTokenizer.from_pretrained("facebook/esmfold_v1", cache_dir=self.model_dir)
         if self.model is None:
             self.model = EsmForProteinFolding.from_pretrained("facebook/esmfold_v1", cache_dir=self.model_dir)
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.model = self.model.to(self.device)
+        self._device = self._resolve_device()
+        self.model = self.model.to(self._device)
         self.model.eval()
         self.model.trunk.set_chunk_size(64)
         self.ready = True
@@ -561,7 +563,7 @@ class ESMFoldCore(FoldingAlgorithm):
     gpu="T4",
     timeout=20 * MINUTES,
     scaledown_window=10 * MINUTES,
-    volumes={MODEL_DIR: model_weights},
+    volumes={MODAL_MODEL_DIR: model_weights},
 )
 class ModalESMFold:
     """

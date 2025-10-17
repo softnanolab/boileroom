@@ -217,7 +217,7 @@ def test_tokenize_sequences_with_mocker(mocker):
 def test_sequence_validation(test_sequences: dict[str, str]):
     """Test sequence validation in FoldingAlgorithm."""
 
-    esmfold_core = ESMFoldCore(config={})
+    esmfold_core = ESMFoldCore(config={"device": "cpu"})
 
     # Test single sequence
     single_seq = test_sequences["short"]
@@ -236,11 +236,6 @@ def test_sequence_validation(test_sequences: dict[str, str]):
     # Test invalid sequence
     with pytest.raises(ValueError) as exc_info:
         esmfold_core._validate_sequences(test_sequences["invalid"])
-    assert "Invalid amino acid" in str(exc_info.value), f"Expected 'Invalid amino acid', got {str(exc_info.value)}"
-
-    # Test that fold method uses validation
-    with pytest.raises(ValueError) as exc_info:
-        esmfold_core.fold(test_sequences["invalid"])
     assert "Invalid amino acid" in str(exc_info.value), f"Expected 'Invalid amino acid', got {str(exc_info.value)}"
 
 

@@ -1,6 +1,7 @@
 """Base classes and interfaces for BoilerRoom protein structure prediction models."""
 
 import logging
+import torch
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -75,6 +76,14 @@ class Algorithm(ABC):
         # TODO: Make this work smartly with remote Modal, calling _load() again, etc. and thus programmatically
         # updating the model if anything has changed
         self.config = {**self.config, **config}
+
+    def _resolve_device(self) -> torch.device:
+        requested = self.config.get("device")
+        if requested is not None:
+            return torch.device(requested)
+        if torch.cuda.is_available():
+            return torch.device("cuda:0")
+        return torch.device("cpu")
 
     @staticmethod
     def _initialize_metadata(model_name: str, model_version: str) -> PredictionMetadata:

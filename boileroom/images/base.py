@@ -1,6 +1,6 @@
 from modal import Image
 
-from ...utils import MODAL_MODEL_DIR
+from ..utils import MODAL_MODEL_DIR
 
 base_image = (
     Image.debian_slim(python_version="3.12")

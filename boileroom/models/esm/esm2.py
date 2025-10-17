@@ -11,7 +11,7 @@ from ...base import ModelWrapper
 from ...base import EmbeddingAlgorithm, EmbeddingPrediction, PredictionMetadata
 from ...backend import LocalBackend, ModalBackend
 from ...backend.modal import app
-from ...utils import MINUTES, Timer
+from ...utils import MINUTES, MODAL_MODEL_DIR, Timer
 
 from .image import esm_image
 from ...images.volumes import model_weights
@@ -47,6 +47,7 @@ class ESM2Core(EmbeddingAlgorithm):
     """ESM2 protein language model."""
 
     DEFAULT_CONFIG = {
+        "device": "cuda:0",
         "model_name": "esm2_t33_650M_UR50D",
         "output_hidden_states": True,
         # Chain linking and positioning config
@@ -60,7 +61,8 @@ class ESM2Core(EmbeddingAlgorithm):
             model_name="ESM-2",
             model_version="v4.49.0",  # HuggingFace transformers version
         )
-        self.model_dir: Optional[str] = os.environ.get("MODEL_DIR")
+        self.model_dir: Optional[str] = os.environ.get("MODEL_DIR", MODAL_MODEL_DIR)
+        self._device: torch.device | None = None
         self.tokenizer: Optional[AutoTokenizer] = None
         self.model: Optional[EsmModel] = None
         self.assert_valid_model(self.config["model_name"])
@@ -98,8 +100,8 @@ class ESM2Core(EmbeddingAlgorithm):
             )
         if self.model is None:
             self.model = EsmModel.from_pretrained(f"facebook/{self.config['model_name']}", cache_dir=self.model_dir)
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.model = self.model.to(self.device)
+        self._device = self._resolve_device()
+        self.model = self.model.to(self._device)
         self.model.eval()
         self.ready = True
 
@@ -286,7 +288,7 @@ class ESM2Core(EmbeddingAlgorithm):
     gpu="T4",
     timeout=20 * MINUTES,
     scaledown_window=10 * MINUTES,
-    volumes={MODEL_DIR: model_weights},
+    volumes={MODAL_MODEL_DIR: model_weights},
 )
 class ModalESM2:
     """Modal-specific wrapper around `ESM2`."""
