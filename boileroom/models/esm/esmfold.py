@@ -246,7 +246,7 @@ class ESMFoldCore(FoldingAlgorithm):
                 sequences, return_tensors="pt", add_special_tokens=False, padding=True, truncation=True, max_length=1024
             )
             multimer_properties = None
-        tokenized = {k: v.to(self.device) for k, v in tokenized.items()}
+        tokenized = {k: v.to(self._device) for k, v in tokenized.items()}
 
         return tokenized, multimer_properties
 

@@ -143,7 +143,7 @@ class ESM2Core(EmbeddingAlgorithm):
                 truncation=True,
             )
             multimer_properties = None
-        tokenized = tokenized.to(self.device)
+        tokenized = tokenized.to(self._device)
         tokenized["output_hidden_states"] = self.config["output_hidden_states"]
 
         with Timer("Model Inference") as timer:
