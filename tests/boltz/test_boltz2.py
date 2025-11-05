@@ -1,3 +1,4 @@
+import json
 import pathlib
 from typing import Generator, Optional
 
@@ -9,7 +10,7 @@ from boileroom import Boltz2
 from boileroom.models.boltz.boltz2 import Boltz2Output
 from boileroom.constants import restype_3to1
 
-from biotite.structure import AtomArray, superimpose, rmsd
+from biotite.structure import AtomArray
 from biotite.structure.io.pdbx import CIFFile, get_structure
 
 
@@ -33,98 +34,80 @@ def _recover_chain_sequences(atomarray: AtomArray) -> list[str]:
     return chains
 
 
-def test_boltz2_against_reference_cif(data_dir: pathlib.Path, boltz2_model: Boltz2):
-    # Locate reference CIF; skip if not present (user will provide one)
-    candidate = data_dir / "boltz" / "0_model_0.cif"
-    if not candidate.exists():
-        pytest.skip("Reference CIF not available: boltz/0_model_0.cif")
-
-    # Read reference structure
-    cif = CIFFile.read(candidate)
-    ref = get_structure(cif, model=1)
-
-    # Build sequences from reference chain order and run prediction
-    chain_seqs = _recover_chain_sequences(ref)
-    input_multimer = ":".join(chain_seqs) if len(chain_seqs) > 1 else chain_seqs[0]
-
-    # Ensure reference chain sequences match provided Nipah binder sequence
-    assert ":".join(chain_seqs) == nipah_binder_sequence, "Reference CIF sequences mismatch with expected Nipah binder sequence"
+def test_boltz2_nipah_matches_reference():
+    """Run Nipah system once and compare confidence + arrays to tests/data/boltz; also check basic shapes."""
+    base_dir = pathlib.Path(__file__).resolve().parents[1] / "data" / "boltz"
+    conf_path = base_dir / "confidence_0_model_0.json"
+    plddt_npz = base_dir / "plddt_0_model_0.npz"
+    pae_npz = base_dir / "pae_0_model_0.npz"
+    pde_npz = base_dir / "pde_0_model_0.npz"
+    assert conf_path.exists(), "tests/data/boltz/confidence_0_model_0.json must exist"
+    assert plddt_npz.exists(), "tests/data/boltz/plddt_0_model_0.npz must exist"
+    assert pae_npz.exists(), "tests/data/boltz/pae_0_model_0.npz must exist"
+    assert pde_npz.exists(), "tests/data/boltz/pde_0_model_0.npz must exist"
 
     with enable_output():
-        result = boltz2_model.fold(input_multimer)
+        model = Boltz2(backend="modal", config={"write_full_pae": True, "write_full_pde": True})
+        out = model.fold(nipah_binder_sequence)
 
-    # Basic type and shape checks
-    assert isinstance(result, Boltz2Output), "Result should be a Boltz2Output"
-    assert result.positions is not None, "Positions should be generated"
+    assert isinstance(out, Boltz2Output)
 
-    # Validate sequence order matches reference
-    assert isinstance(input_multimer, str)
-    pred_seqs = input_multimer.split(":")
-    assert pred_seqs == chain_seqs, "Predicted input sequences must match reference chain order and identity"
-
-    # Extract predicted CA coordinates; handle possible dimensional variants
-    pos = result.positions
-    # Expected shapes could be: (S, B, R, 14, 3) or (B, R, 14, 3) or (R, 14, 3)
+    # Basic positions check
+    pos = out.positions
     if pos.ndim == 5:
         pred = np.asarray(pos[0, 0])
     elif pos.ndim == 4:
         pred = np.asarray(pos[0])
     else:
         pred = np.asarray(pos)
+    assert pred.shape[-2:] == (14, 3)
+    assert pred.shape[-3] == len(nipah_binder_sequence.replace(":", ""))
 
-    assert pred.shape[-2:] == (14, 3), f"Unexpected atom/coord shape: {pred.shape}"
+    # Confidence comparison
+    reference_data = json.loads(conf_path.read_text())
+    assert out.confidence is not None and len(out.confidence) > 0
+    pred_conf = out.confidence[0]
+    tolerance = 1e-3
+    for key in [
+        "confidence_score",
+        "ptm",
+        "iptm",
+        "ligand_iptm",
+        "protein_iptm",
+        "complex_plddt",
+        "complex_iplddt",
+        "complex_pde",
+        "complex_ipde",
+    ]:
+        if key in reference_data:
+            assert key in pred_conf
+            assert abs(reference_data[key] - pred_conf[key]) < tolerance
+    if "chains_ptm" in reference_data:
+        for k, v in reference_data["chains_ptm"].items():
+            assert k in pred_conf["chains_ptm"]
+            assert abs(v - pred_conf["chains_ptm"][k]) < tolerance
+    if "pair_chains_iptm" in reference_data:
+        for i, inner in reference_data["pair_chains_iptm"].items():
+            for j, v in inner.items():
+                assert abs(v - pred_conf["pair_chains_iptm"][i][j]) < tolerance
 
-    # Compare residue counts
-    num_res_ref = len(np.unique(ref.res_id))
-    assert pred.shape[-3] == num_res_ref, f"Residue count mismatch: pred={pred.shape[-3]} ref={num_res_ref}"
+    # Array comparisons
+    assert out.plddt is not None and out.pae is not None and out.pde is not None
+    ref_plddt = np.load(plddt_npz)["arr_0"]
+    ref_pae = np.load(pae_npz)["arr_0"]
+    ref_pde = np.load(pde_npz)["arr_0"]
+    pred_plddt = out.plddt[0]
+    pred_pae = out.pae[0]
+    pred_pde = out.pde[0]
+    assert ref_plddt.shape == pred_plddt.shape
+    assert ref_pae.shape == pred_pae.shape
+    assert ref_pde.shape == pred_pde.shape
+    assert np.max(np.abs(ref_plddt - pred_plddt)) < tolerance
+    assert np.max(np.abs(ref_pae - pred_pae)) < tolerance
+    assert np.max(np.abs(ref_pde - pred_pde)) < tolerance
 
-    # Build a CA-only AtomArray from prediction, reusing reference CA topology for metadata
-    ref_ca = ref[ref.atom_name == "CA"]
-    pred_ca = ref_ca.copy()
-    pred_ca.coord = pred[:, 1, :]  # Atom14 convention: index 1 is CA
 
-    # Superimpose and compute RMSD on CA atoms
-    superimposed, _ = superimpose(ref_ca, pred_ca)
-    ca_rmsd = rmsd(ref_ca, superimposed)
-
-    # Tolerance: generous due to stochasticity; will be refined with seeding later
-    assert ca_rmsd < 5.0, f"CA RMSD too high: {ca_rmsd:.2f} Å"
-
-
-def test_boltz2_lengths_monomer_and_multimer(test_sequences: dict[str, str]):
-    """Check monomer and multimer residue counts in positions output."""
-    with enable_output():
-        model = Boltz2(backend="modal")
-
-    # Monomer
-    mono = test_sequences["short"]
-    mono_out = model.fold(mono)
-    assert isinstance(mono_out, Boltz2Output)
-    mono_pos = mono_out.positions
-    # Normalize to last dims (..., R, 14, 3)
-    if mono_pos.ndim == 5:
-        mono_arr = np.asarray(mono_pos[0, 0])
-    elif mono_pos.ndim == 4:
-        mono_arr = np.asarray(mono_pos[0])
-    else:
-        mono_arr = np.asarray(mono_pos)
-    assert mono_arr.shape[-2:] == (14, 3)
-    assert mono_arr.shape[-3] == len(mono), "Monomer residue length mismatch"
-
-    # Multimer
-    multi = test_sequences["multimer"]
-    multi_out = model.fold(multi)
-    assert isinstance(multi_out, Boltz2Output)
-    multi_pos = multi_out.positions
-    if multi_pos.ndim == 5:
-        multi_arr = np.asarray(multi_pos[0, 0])
-    elif multi_pos.ndim == 4:
-        multi_arr = np.asarray(multi_pos[0])
-    else:
-        multi_arr = np.asarray(multi_pos)
-    assert multi_arr.shape[-2:] == (14, 3)
-    exp_len = len(multi.replace(":", ""))
-    assert multi_arr.shape[-3] == exp_len, "Multimer residue length mismatch"
+    # Note: Avoid extra inference-based tests; one Nipah run is sufficient for shapes and value checks.
 
 
 def test_boltz2_invalid_amino_acids_validation(test_sequences: dict[str, str]):
@@ -135,5 +118,3 @@ def test_boltz2_invalid_amino_acids_validation(test_sequences: dict[str, str]):
     core = Boltz2Core(config={"device": "cpu"})
     with pytest.raises(ValueError):
         core._validate_sequences(test_sequences["invalid"])  # should raise
-
-

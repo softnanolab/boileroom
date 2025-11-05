@@ -48,8 +48,18 @@ logger = logging.getLogger(__name__)
 class Boltz2Output(StructurePrediction):
     """Output from Boltz-2 prediction including all model outputs."""
     # Required by StructurePrediction protocol
-    positions: np.ndarray  # (model_layer, batch_size, residue, atom=14, xyz=3)
+    positions: np.ndarray  # (samples, residue, atom, xyz) or object array depending on sampler
     metadata: PredictionMetadata
+    # Confidence-related outputs (one entry per sample)
+    confidence: Optional[List[Dict[str, Any]]] = None
+    plddt: Optional[List[np.ndarray]] = None
+    pae: Optional[List[np.ndarray]] = None
+    pde: Optional[List[np.ndarray]] = None
+    # Optional serialized structures (one string per sample)
+    pdb: Optional[List[str]] = None
+    cif: Optional[List[str]] = None
+    # Optional atom arrays (one per sample)
+    atom_array: Optional[List[Any]] = None
 
 
 
@@ -73,6 +83,7 @@ class Boltz2Core(FoldingAlgorithm):
         "output_cif": False,
         "write_full_pae": False,
         "write_full_pde": False,
+        "output_atomarray": False,
         "num_workers": 2,
         "override": False,
         "seed": None,
@@ -264,11 +275,163 @@ class Boltz2Core(FoldingAlgorithm):
         assert self._trainer is not None and self.model is not None
         with torch.inference_mode():
             return self._trainer.predict(self.model, datamodule=datamodule, return_predictions=True)
+
+    def _extract_sample_from_pred(self, item: Dict[str, Any]) -> tuple[
+        Optional[np.ndarray],
+        Dict[str, Any],
+        Optional[np.ndarray],
+        Optional[np.ndarray],
+        Optional[np.ndarray],
+    ]:
+        """Extract coordinates and confidence-related arrays/metrics from a single prediction dict.
+
+        Returns: (coords, aggregated_confidence_dict, plddt, pae, pde)
+        """
+        coords_like = item.get("sample_atom_coords") or item.get("coords")
+        coords = (
+            coords_like.detach().cpu().numpy() if hasattr(coords_like, "detach") else np.array(coords_like)
+        ) if coords_like is not None else None
+
+        plddt_like = item.get("plddt")
+        if plddt_like is not None:
+            plddt = (
+                plddt_like.detach().cpu().numpy() if hasattr(plddt_like, "detach") else np.array(plddt_like)
+            )
+            # Squeeze extra batch dimensions to ensure 1D array
+            while plddt.ndim > 1:
+                plddt = np.squeeze(plddt, axis=0)
+        else:
+            plddt = None
+
+        pae_like = item.get("pae")
+        if pae_like is not None:
+            pae = (
+                pae_like.detach().cpu().numpy() if hasattr(pae_like, "detach") else np.array(pae_like)
+            )
+            # Squeeze extra batch dimensions to ensure 2D square matrix
+            while pae.ndim > 2:
+                pae = np.squeeze(pae, axis=0)
+        else:
+            pae = None
+
+        pde_like = item.get("pde")
+        if pde_like is not None:
+            pde = (
+                pde_like.detach().cpu().numpy() if hasattr(pde_like, "detach") else np.array(pde_like)
+            )
+            # Squeeze extra batch dimensions to ensure 2D square matrix
+            while pde.ndim > 2:
+                pde = np.squeeze(pde, axis=0)
+        else:
+            pde = None
+
+        aggregated: Dict[str, Any] = {}
+        for key in [
+            "confidence_score",
+            "ptm",
+            "iptm",
+            "ligand_iptm",
+            "protein_iptm",
+            "complex_plddt",
+            "complex_iplddt",
+            "complex_pde",
+            "complex_ipde",
+        ]:
+            if key in item and item[key] is not None:
+                val = item[key].detach().cpu().numpy() if hasattr(item[key], "detach") else item[key]
+                aggregated[key] = float(val) if np.ndim(val) == 0 else val
+
+        if "pair_chains_iptm" in item and item["pair_chains_iptm"] is not None:
+            pair_val = item["pair_chains_iptm"]
+            if isinstance(pair_val, dict):
+                aggregated["pair_chains_iptm"] = pair_val
+            else:
+                pair_np = pair_val.detach().cpu().numpy() if hasattr(pair_val, "detach") else np.array(pair_val)
+                nested: Dict[str, Dict[str, float]] = {}
+                for i in range(pair_np.shape[-2]):
+                    nested[str(i)] = {str(j): float(pair_np[i, j]) for j in range(pair_np.shape[-1])}
+                aggregated["pair_chains_iptm"] = nested
+
+        if "pair_chains_iptm" in aggregated and isinstance(aggregated["pair_chains_iptm"], dict):
+            chains_ptm: Dict[str, float] = {}
+            for i_str, inner in aggregated["pair_chains_iptm"].items():
+                if i_str in inner:
+                    chains_ptm[i_str] = float(inner[i_str])
+            if chains_ptm:
+                aggregated["chains_ptm"] = chains_ptm
+
+        return coords, aggregated, plddt, pae, pde
+
+    def _validate_sample_arrays(self, plddt: Optional[np.ndarray], pae: Optional[np.ndarray], pde: Optional[np.ndarray]) -> None:
+        if plddt is not None and plddt.ndim != 1:
+            raise ValueError(f"plddt expected 1D per-token array; got shape {plddt.shape}")
+        if pae is not None and (pae.ndim != 2 or pae.shape[0] != pae.shape[1]):
+            raise ValueError(f"pae expected square matrix; got shape {pae.shape}")
+        if pde is not None and (pde.ndim != 2 or pde.shape[0] != pde.shape[1]):
+            raise ValueError(f"pde expected square matrix; got shape {pde.shape}")
+
+    def _reconstruct_chain_index(self, sequences: List[str], num_residues: int) -> Optional[np.ndarray]:
+        """Reconstruct chain indices from input sequences if explicit chain metadata is unavailable.
+
+        Chains are split by ':' and assigned indices 0,1,2,... in order (A,B,C,...).
+
+        Returns an array of shape (num_residues,) with chain indices, or None on mismatch.
+        """
+        try:
+            chains: List[str] = []
+            for entry in sequences:
+                parts = entry.split(":") if ":" in entry else [entry]
+                chains.extend([p.strip() for p in parts if p.strip()])
+            chain_lengths = [len(seq) for seq in chains]
+            if sum(chain_lengths) != num_residues:
+                logger.warning(
+                    "Chain reconstruction mismatch: sum(chain lengths)=%s != num_residues=%s",
+                    sum(chain_lengths),
+                    num_residues,
+                )
+                return None
+            chain_index = np.empty((num_residues,), dtype=np.int32)
+            offset = 0
+            for idx, length in enumerate(chain_lengths):
+                chain_index[offset : offset + length] = idx
+                offset += length
+            return chain_index
+        except Exception:
+            return None
+
+    # TODO: Unify PDB/CIF conversion with ESMFold utilities and shared helpers
+    def _convert_outputs_to_atomarray(self, coords: np.ndarray, plddt: Optional[np.ndarray], chain_index: Optional[np.ndarray]):
+        """Convert Boltz-2 outputs into a Biotite AtomArray.
+
+        NOTE: Boltz-2 does not currently expose atom typing and residue indices needed for a full
+        PDB/CIF with atom names. This method is a placeholder for future unification.
+        """
+        raise NotImplementedError("Boltz-2 AtomArray conversion requires atom/residue typing; TODO to implement")
+
+    def _convert_outputs_to_pdb(self, atom_array):
+        from biotite.structure.io.pdb import PDBFile, set_structure
+        from io import StringIO
+        structure_file = PDBFile()
+        set_structure(structure_file, atom_array)
+        string = StringIO()
+        structure_file.write(string)
+        return string.getvalue()
+
+    def _convert_outputs_to_cif(self, atom_array):
+        from biotite.structure.io.pdbx import CIFFile, set_structure
+        from io import StringIO
+        structure_file = CIFFile()
+        set_structure(structure_file, atom_array)
+        string = StringIO()
+        structure_file.write(string)
+        return string.getvalue()
     
     def fold(self, sequences: Union[str, Sequence[str]]) -> Boltz2Output:
         """Fold protein sequences (proteins only), keeping model resident in memory."""
-        if isinstance(sequences, str):
-            sequences = [sequences]
+
+        # Validate sequences and compute sequence lengths
+        validated_sequences = self._validate_sequences(sequences)
+        self.metadata.sequence_lengths = self._compute_sequence_lengths(validated_sequences)
 
         # Always use a temporary working directory on the machine
         cache_dir = (
@@ -281,7 +444,7 @@ class Boltz2Core(FoldingAlgorithm):
             work_path = Path(tmp).resolve()
 
             with Timer("Boltz-2 preprocessing"):
-                fasta_text = self._sequences_to_fasta(list(sequences))
+                fasta_text = self._sequences_to_fasta(validated_sequences)
                 processed = self._prepare_inputs(fasta_text, work_path, cache_dir)
 
             datamodule = self._build_datamodule(processed, int(self.config.get("num_workers", 2)), cache_dir)
@@ -289,23 +452,55 @@ class Boltz2Core(FoldingAlgorithm):
             with Timer("Boltz-2 inference") as t:
                 preds = self._predict_with_trainer(datamodule)
 
-            # Minimal output mapping: collect positions/coords only
-            positions: List[np.ndarray] = []
-            for item in preds or []:
-                if not isinstance(item, dict):
-                    continue
-                coords = item.get("sample_atom_coords") or item.get("coords")
-                if coords is None:
-                    continue
-                try:
-                    arr = coords.detach().cpu().numpy() if hasattr(coords, "detach") else np.array(coords)
-                except Exception:
-                    continue
-                positions.append(arr)
+            # Extract and organize per-sample outputs succinctly
+            extracted = [
+                self._extract_sample_from_pred(item)
+                for item in (preds or [])
+                if isinstance(item, dict)
+            ]
+
+            positions: List[np.ndarray] = [c for (c, _, _, _, _) in extracted if c is not None]
+            confidences: List[Dict[str, Any]] = [a for (_, a, _, _, _) in extracted if a]
+            plddts: List[np.ndarray] = [p for (_, _, p, _, _) in extracted if p is not None]
+            paes: List[np.ndarray] = [a for (_, _, _, a, _) in extracted if a is not None]
+            pdes: List[np.ndarray] = [d for (_, _, _, _, d) in extracted if d is not None]
+
+            # Validate shapes where present
+            for arr in plddts:
+                self._validate_sample_arrays(arr, None, None)
+            for arr in paes:
+                self._validate_sample_arrays(None, arr, None)
+            for arr in pdes:
+                self._validate_sample_arrays(None, None, arr)
 
             positions_np = np.array(positions, dtype=object)
+
+            # Optional PDB/CIF generation (not implemented yet) -> return empty lists if requested
+            pdb_list: Optional[List[str]] = None
+            cif_list: Optional[List[str]] = None
+            if self.config.get("output_pdb"):
+                pdb_list = []
+            if self.config.get("output_cif"):
+                cif_list = []
+
+            # Optional AtomArray list (placeholder until full typing is available)
+            atom_array_list: Optional[List[Any]] = None
+            if self.config.get("output_atomarray"):
+                # TODO: Implement real AtomArray construction once atom/residue typing is exposed by Boltz
+                atom_array_list = [None for _ in positions]
+
             self.metadata.prediction_time = t.duration
-            return Boltz2Output(positions=positions_np, metadata=self.metadata)
+            return Boltz2Output(
+                positions=positions_np,
+                metadata=self.metadata,
+                confidence=(confidences if confidences else None),
+                plddt=(plddts if plddts else None),
+                pae=(paes if paes else None),
+                pde=(pdes if pdes else None),
+                pdb=pdb_list,
+                cif=cif_list,
+                atom_array=atom_array_list,
+            )
 
 
 
@@ -344,6 +539,11 @@ class Boltz2(ModelWrapper):
     Interface for Boltz-2 protein structure prediction model.
     # TODO: This is the user-facing interface. It should give all the relevant details possible.
     # with proper documentation.
+
+    # TODO: no support for multiple samples
+    # TODO: no support for constraints
+    # TODO: no support for templates
+    # TODO: rewrite the output to be a list of Boltz2Output objects, not a single object with many entries from a batch
     """
 
     def __init__(self, backend: str = "modal", device: Optional[str] = None, config: Optional[dict] = None) -> None:

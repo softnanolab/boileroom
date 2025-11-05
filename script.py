@@ -62,7 +62,33 @@ if __name__ == "__main__":
         # print(result)
 
         model = Boltz2(backend="modal", device="A100-80GB")
+        print("Model initialized successfully")
+        # breakpoint()  # Debug: Check model initialization (uncomment for interactive debugging)
 
-        result = model.fold(["ICLQKTSNQILKPKLISYTLGQSGTCITDPLLAMDEGYFAYSHLERIGSCSRGVSKQRIIGVGEVLDRGDEVPSLFMTNVWTPPNPNTVYHCSAVYNNEFYYVLCAVSTVGDPILNSTYWSGSLMMTRLAVKPKSNGGGYNQHQLALRSIEKGRYDKVMPYGPSGIKQGDTLYFPAVGFLVRTEFKYNDSNCPITKCQYSKPENCRLSMGIRPNSHYILRSGLLKYNLSDGENPKVVFIEISDQRLSIGSPSKIYDSLGQPVFYQASFSWDTMIKFGDVLTVNPLVVNWRNNTVISRPGQSQCPRFNTCPEICWEGVYNDAFLIDRINWISAGVFLDSNQTAENPVFTVFKDNEILYRAQLASEDTNAQKTITNCFLLKNKIWCISLVEIYDTGDNVIRPKLFAVKIPEQCTH:IMILYWYWNASNHKFTNFQAGQVDPYILLDLDMCEPQKVAQYDYIYWTVHPMIFKDYPWMEPQIQIFKKELWTPENFQDCANPEQHKFIIWFQSNESPNMGGNEFQPGKDYMIISTSNGELDWGFLDMGKVCDESAWIDMSSPNHSQE"])
+        sequences = ["ICLQKTSNQILKPKLISYTLGQSGTCITDPLLAMDEGYFAYSHLERIGSCSRGVSKQRIIGVGEVLDRGDEVPSLFMTNVWTPPNPNTVYHCSAVYNNEFYYVLCAVSTVGDPILNSTYWSGSLMMTRLAVKPKSNGGGYNQHQLALRSIEKGRYDKVMPYGPSGIKQGDTLYFPAVGFLVRTEFKYNDSNCPITKCQYSKPENCRLSMGIRPNSHYILRSGLLKYNLSDGENPKVVFIEISDQRLSIGSPSKIYDSLGQPVFYQASFSWDTMIKFGDVLTVNPLVVNWRNNTVISRPGQSQCPRFNTCPEICWEGVYNDAFLIDRINWISAGVFLDSNQTAENPVFTVFKDNEILYRAQLASEDTNAQKTITNCFLLKNKIWCISLVEIYDTGDNVIRPKLFAVKIPEQCTH:IMILYWYWNASNHKFTNFQAGQVDPYILLDLDMCEPQKVAQYDYIYWTVHPMIFKDYPWMEPQIQIFKKELWTPENFQDCANPEQHKFIIWFQSNESPNMGGNEFQPGKDYMIISTSNGELDWGFLDMGKVCDESAWIDMSSPNHSQE"]
+        result = model.fold(sequences)
 
-        print(result)
+        print("\n=== Debugging Output ===")
+        print(f"Result type: {type(result)}")
+        print(f"Positions shape: {result.positions.shape if hasattr(result.positions, 'shape') else 'N/A'}")
+        print(f"Positions dtype: {result.positions.dtype if hasattr(result.positions, 'dtype') else 'N/A'}")
+        if result.plddt is not None:
+            print(f"plddt list length: {len(result.plddt)}")
+            if len(result.plddt) > 0:
+                print(f"plddt[0] shape: {result.plddt[0].shape}")
+        if result.pae is not None:
+            print(f"pae list length: {len(result.pae)}")
+            if len(result.pae) > 0:
+                print(f"pae[0] shape: {result.pae[0].shape}")
+        if result.pde is not None:
+            print(f"pde list length: {len(result.pde)}")
+            if len(result.pde) > 0:
+                print(f"pde[0] shape: {result.pde[0].shape}")
+        if result.confidence is not None:
+            print(f"Confidence list length: {len(result.confidence)}")
+            if len(result.confidence) > 0:
+                print(f"Confidence keys: {list(result.confidence[0].keys())}")
+        print(f"Metadata: {result.metadata}")
+        print(f"Prediction time: {result.metadata.prediction_time}")
+        print(f"Sequence lengths: {result.metadata.sequence_lengths}")
+        # breakpoint()  # Debug: Inspect final result (uncomment for interactive debugging)
