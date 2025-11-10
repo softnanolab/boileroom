@@ -35,10 +35,36 @@ def esm2_model_factory():
     ],
 )
 def test_esm2_embed_basic(esm2_model_factory, model_config):
-    """Test ESM2 embedding."""
+    """Test ESM2 embedding with default output (minimal)."""
     sequence = "MALWMRLLPLLALLALWGPDPAAA"
 
-    model = esm2_model_factory(model_name=model_config["model_name"])
+    model = esm2_model_factory(model_name=model_config["model_name"], output_hidden_states=False)
+    result = model.embed([sequence])
+    # Minimal output should include embeddings, chain_index, residue_index, metadata
+    assert result.embeddings.shape == (1, len(sequence), model_config["latent_dim"])
+    assert result.chain_index is not None, "chain_index should be in minimal output"
+    assert result.residue_index is not None, "residue_index should be in minimal output"
+    assert result.metadata is not None, "metadata should always be present"
+    # hidden_states should be None when output_hidden_states=False
+    assert result.hidden_states is None, "hidden_states should be None when output_hidden_states=False"
+    del model
+
+
+@pytest.mark.parametrize(
+    "model_config",
+    [
+        {"model_name": "esm2_t6_8M_UR50D", "latent_dim": 320, "num_layers": 6},
+        {"model_name": "esm2_t12_35M_UR50D", "latent_dim": 480, "num_layers": 12},
+        {"model_name": "esm2_t30_150M_UR50D", "latent_dim": 640, "num_layers": 30},
+        {"model_name": "esm2_t33_650M_UR50D", "latent_dim": 1280, "num_layers": 33},
+        {"model_name": "esm2_t36_3B_UR50D", "latent_dim": 2560, "num_layers": 36},
+    ],
+)
+def test_esm2_embed_with_hidden_states(esm2_model_factory, model_config):
+    """Test ESM2 embedding with hidden_states enabled."""
+    sequence = "MALWMRLLPLLALLALWGPDPAAA"
+
+    model = esm2_model_factory(model_name=model_config["model_name"], output_hidden_states=True)
     result = model.embed([sequence])
     # +2 for the two extra tokens (start of sequence and end of sequence)
     assert result.embeddings.shape == (1, len(sequence), model_config["latent_dim"])
@@ -54,11 +80,15 @@ def test_esm2_embed_basic(esm2_model_factory, model_config):
 
 
 def test_esm2_embed_hidden_states(esm2_model_factory):
-    """Test ESM2 embedding hidden states."""
+    """Test ESM2 embedding hidden states control via output_hidden_states flag."""
     sequence = "MALWMRLLPLLALLALWGPDPAAA"
     model = esm2_model_factory(model_name="esm2_t33_650M_UR50D", output_hidden_states=False)
     result = model.embed([sequence])
-    assert result.hidden_states is None
+    assert result.hidden_states is None, "hidden_states should be None when output_hidden_states=False"
+    # Even without hidden_states, minimal output should still include embeddings, chain_index, residue_index
+    assert result.embeddings is not None
+    assert result.chain_index is not None
+    assert result.residue_index is not None
     del model
 
 
@@ -102,8 +132,8 @@ def test_esm2_embed_multimer(esm2_model_factory, test_sequences):
         assert result.residue_index is not None, "Residue index should be present"
         assert result.residue_index.shape == (1, expected_length), "Residue index shape mismatch"
 
-        # Check hidden states
-        assert result.hidden_states is not None, "Hidden states should be present"
+        # Check hidden states (should be present when output_hidden_states=True)
+        assert result.hidden_states is not None, "Hidden states should be present when output_hidden_states=True"
         assert result.hidden_states.shape == (1, 34, expected_length, 1280), "Hidden states shape mismatch"
 
         # Test with a more complex multimer sequence

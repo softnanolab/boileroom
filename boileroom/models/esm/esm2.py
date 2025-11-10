@@ -49,7 +49,8 @@ class ESM2Core(EmbeddingAlgorithm):
     DEFAULT_CONFIG = {
         "device": "cuda:0",
         "model_name": "esm2_t33_650M_UR50D",
-        "output_hidden_states": True,
+        "output_hidden_states": True,  # Controls generation of hidden_states
+        "output_attributes": None,  # Optional[List[str]] - controls which attributes to include in output
         # Chain linking and positioning config
         "glycine_linker": "",
         "position_ids_skip": 512,
@@ -195,13 +196,18 @@ class ESM2Core(EmbeddingAlgorithm):
 
         self.metadata.prediction_time = prediction_time
 
-        return ESM2Output(
+        # Build full output with all attributes
+        full_output = ESM2Output(
             metadata=self.metadata,
             embeddings=embeddings,
             hidden_states=hidden_states,
             chain_index=chain_index_output,
             residue_index=residue_index_output,
         )
+        
+        # Apply filtering based on output_attributes
+        output_attributes = self.config.get("output_attributes")
+        return self._filter_output_attributes(full_output, output_attributes)
 
     def _mask_linker_region(
         self,

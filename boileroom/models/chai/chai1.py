@@ -40,17 +40,18 @@ logger = logging.getLogger(__name__)
 @dataclass
 class Chai1Output(StructurePrediction):
     """Output from Chai-1 prediction including all model outputs."""
-    positions: np.ndarray  # (batch_size, residue, atom=14, xyz=3)
     metadata: PredictionMetadata
+    atom_array: Optional[List[AtomArray]] = None  # Always generated, one AtomArray per sample
+    positions: Optional[np.ndarray] = None  # (batch_size, residue, atom=14, xyz=3)
     
-    pae: list[np.ndarray] = field(default_factory=list)
-    pde: list[np.ndarray] = field(default_factory=list)
-    plddt: list[np.ndarray] = field(default_factory=list)
-    ptm: list[np.ndarray] = field(default_factory=list)
-    iptm: list[np.ndarray] = field(default_factory=list)
-    per_chain_iptm: list[np.ndarray] = field(default_factory=list)
+    # Additional Chai-1-specific outputs (all optional, filtered by output_attributes)
+    pae: Optional[list[np.ndarray]] = None
+    pde: Optional[list[np.ndarray]] = None
+    plddt: Optional[list[np.ndarray]] = None
+    ptm: Optional[list[np.ndarray]] = None
+    iptm: Optional[list[np.ndarray]] = None
+    per_chain_iptm: Optional[list[np.ndarray]] = None
     cif: Optional[list[str]] = None
-    atom_array: Optional[AtomArray] = None
 
 
 
@@ -66,8 +67,7 @@ class Chai1Core(FoldingAlgorithm):
         "use_esm_embeddings": False,
         "use_msa_server": False,
         "use_templates_server": False,
-        "output_cif": False,
-        "output_atomarray": False,
+        "output_attributes": None,  # Optional[List[str]] - controls which attributes to include in output
     }
 
     def __init__(self, config: dict[str, Any] | None = None) -> None:
@@ -180,21 +180,31 @@ class Chai1Core(FoldingAlgorithm):
 
     def _convert_outputs(self, candidate: "StructureCandidates", elapsed_time: float) -> Chai1Output:
         pae, pde, plddt, ptm, iptm, per_chain_iptm = self._extract_confidence_metrics(candidate)
-        positions, cif_string, atom_array = self._process_cif(candidate.cif_paths[0])
+        positions_list, cif_string_list, atom_array = self._process_cif(candidate.cif_paths[0])
         self.metadata.prediction_time = elapsed_time
 
-        return Chai1Output(
+        # Build full output with all attributes
+        # positions_list is a list with one element (single sample)
+        positions = positions_list[0] if positions_list and len(positions_list) > 0 else None
+        # cif_string_list is a list with one element; convert [None] to None, keep [string] as [string]
+        cif = cif_string_list if cif_string_list and cif_string_list[0] is not None else None
+        
+        full_output = Chai1Output(
             positions=positions,
             metadata=self.metadata,
-            pae=pae,
-            pde=pde,
-            plddt=plddt,
-            ptm=ptm,
-            iptm=iptm,
-            per_chain_iptm=per_chain_iptm,
-            cif=cif_string,
+            pae=pae if pae else None,
+            pde=pde if pde else None,
+            plddt=plddt if plddt else None,
+            ptm=ptm if ptm else None,
+            iptm=iptm if iptm else None,
+            per_chain_iptm=per_chain_iptm if per_chain_iptm else None,
+            cif=cif,
             atom_array=atom_array,
         )
+        
+        # Apply filtering based on output_attributes
+        output_attributes = self.config.get("output_attributes")
+        return self._filter_output_attributes(full_output, output_attributes)
     
     def _write_fasta(self, sequences: list[str], buffer_dir: Path) -> Path:
         # assert that a single batch only
@@ -208,7 +218,7 @@ class Chai1Core(FoldingAlgorithm):
         fasta_path.write_text("\n".join(entries))
         return fasta_path
 
-    def _process_cif(self, cif_path: Path) -> tuple[np.ndarray, Optional[str], AtomArray]:
+    def _process_cif(self, cif_path: Path) -> tuple[List[np.ndarray], List[Optional[str]], List[AtomArray]]:
         cif_file = CIFFile.read(str(cif_path))
         structure = get_structure(cif_file)
         coords = []
@@ -216,16 +226,17 @@ class Chai1Core(FoldingAlgorithm):
             coords.append(np.array(chain.coord, dtype=np.float32))
         flattened = np.concatenate(coords, axis=0)
         
+        # Always generate atom_array
+        atom_array = [structure]
+        
+        # Generate CIF string only if requested via output_attributes
         cif_string = None
-        if self.config["output_cif"]:
+        output_attributes = self.config.get("output_attributes")
+        if output_attributes and ("*" in output_attributes or "cif" in output_attributes):
             with open(cif_path, "r") as f:
                 cif_string = f.read()
-
-        atom_array = None
-        if self.config["output_atomarray"]:
-            atom_array = structure
         
-        return [flattened], [cif_string], [atom_array]
+        return [flattened], [cif_string], atom_array
 
     def _extract_confidence_metrics(
         self,

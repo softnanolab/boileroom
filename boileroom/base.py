@@ -1,5 +1,6 @@
 """Base classes and interfaces for BoilerRoom protein structure prediction models."""
 
+import dataclasses
 import logging
 import torch
 
@@ -28,7 +29,8 @@ class StructurePrediction(Protocol):
     """Protocol defining the minimum interface for structure prediction outputs."""
 
     metadata: PredictionMetadata
-    positions: np.ndarray  # Atom positions
+    atom_array: Optional[List[Any]]  # Typically List[AtomArray]
+    positions: Optional[np.ndarray] = None
     pdb: Optional[list[str]] = None
     cif: Optional[list[str]] = None
 
@@ -37,7 +39,10 @@ class EmbeddingPrediction(Protocol):
     """Protocol defining the minimum interface for embedding outputs."""
 
     metadata: PredictionMetadata
-    embeddings: np.ndarray  # Atom positions
+    embeddings: np.ndarray
+    chain_index: np.ndarray
+    residue_index: np.ndarray
+    hidden_states: Optional[np.ndarray] = None
 
 
 class Algorithm(ABC):
@@ -168,6 +173,67 @@ class FoldingAlgorithm(Algorithm):
         """
         return [len(seq) - seq.count(":") for seq in sequences]
 
+    @staticmethod
+    def _validate_structure_output(output: StructurePrediction) -> None:
+        """Ensure structure predictions include atom_array or positions."""
+
+        has_atom_array = getattr(output, "atom_array", None) is not None
+        has_positions = getattr(output, "positions", None) is not None
+        if not (has_atom_array or has_positions):
+            raise ValueError(
+                "StructurePrediction outputs must include 'atom_array' or 'positions'."
+            )
+
+    @staticmethod
+    def _filter_output_attributes(
+        output: StructurePrediction,
+        requested_attributes: Optional[List[str]],
+    ) -> StructurePrediction:
+        """Return a copy of ``output`` with attributes filtered per request."""
+
+        if not dataclasses.is_dataclass(output):
+            return output
+
+        include_all = bool(requested_attributes) and "*" in requested_attributes
+        requested_set = {
+            attr for attr in (requested_attributes or []) if attr != "*"
+        }
+
+        available_fields = {field.name for field in dataclasses.fields(output)}
+        invalid = requested_set - available_fields
+        if invalid:
+            logger.warning(
+                "Ignoring unknown structure output attributes: %s",
+                ", ".join(sorted(invalid)),
+            )
+            requested_set -= invalid
+
+        atom_array_present = getattr(output, "atom_array", None) is not None
+        always_include = {"metadata"}
+        if atom_array_present:
+            always_include.add("atom_array")
+        else:
+            always_include.add("positions")
+
+        if not requested_attributes:
+            requested_set = set()
+
+        updates: dict[str, Any] = {}
+        for field in dataclasses.fields(output):
+            name = field.name
+            if name in always_include:
+                continue
+            if include_all or name in requested_set:
+                continue
+            updates[name] = None
+
+        if not updates:
+            return output
+
+        filtered = dataclasses.replace(output, **updates)
+        FoldingAlgorithm._validate_structure_output(filtered)
+        return filtered
+
     def _prepare_multimer_sequences(self, sequences: List[str]) -> List[str]:
         """
         Prepare multimer sequences for prediction.
@@ -209,6 +275,48 @@ class EmbeddingAlgorithm(Algorithm):
             RuntimeError: If embedding generation fails
         """
         raise NotImplementedError
+
+    @staticmethod
+    def _filter_output_attributes(
+        output: EmbeddingPrediction,
+        requested_attributes: Optional[List[str]],
+    ) -> EmbeddingPrediction:
+        """Return a copy of ``output`` with attributes filtered per request."""
+
+        if not dataclasses.is_dataclass(output):
+            return output
+
+        include_all = bool(requested_attributes) and "*" in requested_attributes
+        requested_set = {
+            attr for attr in (requested_attributes or []) if attr != "*"
+        }
+
+        available_fields = {field.name for field in dataclasses.fields(output)}
+        invalid = requested_set - available_fields
+        if invalid:
+            logger.warning(
+                "Ignoring unknown embedding output attributes: %s",
+                ", ".join(sorted(invalid)),
+            )
+            requested_set -= invalid
+
+        always_include = {"metadata", "embeddings", "chain_index", "residue_index"}
+        if not requested_attributes:
+            requested_set = set()
+
+        updates: dict[str, Any] = {}
+        for field in dataclasses.fields(output):
+            name = field.name
+            if name in always_include:
+                continue
+            if include_all or name in requested_set:
+                continue
+            updates[name] = None
+
+        if not updates:
+            return output
+
+        return dataclasses.replace(output, **updates)
 
 
 class ModelWrapper:

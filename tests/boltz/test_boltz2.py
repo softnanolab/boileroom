@@ -47,12 +47,20 @@ def test_boltz2_nipah_matches_reference():
     assert pde_npz.exists(), "tests/data/boltz/pde_0_model_0.npz must exist"
 
     with enable_output():
-        model = Boltz2(backend="modal", config={"write_full_pae": True, "write_full_pde": True})
+        model = Boltz2(backend="modal", config={
+            "write_full_pae": True, 
+            "write_full_pde": True,
+            "output_attributes": ["*"]  # Request all attributes for comprehensive testing
+        })
         out = model.fold(nipah_binder_sequence)
 
     assert isinstance(out, Boltz2Output)
+    
+    # Verify minimal defaults: atom_array should always be present
+    assert out.atom_array is not None, "atom_array should always be generated"
+    assert len(out.atom_array) > 0, "atom_array should contain at least one structure"
 
-    # Basic positions check
+    # Basic positions check (if positions are requested)
     pos = out.positions
     if pos.ndim == 5:
         pred = np.asarray(pos[0, 0])
@@ -108,6 +116,23 @@ def test_boltz2_nipah_matches_reference():
 
 
     # Note: Avoid extra inference-based tests; one Nipah run is sufficient for shapes and value checks.
+
+
+def test_boltz2_minimal_output(test_sequences: dict[str, str]):
+    """Test that Boltz2 returns minimal output by default (metadata + atom_array)."""
+    with enable_output():
+        model = Boltz2(backend="modal", config={})  # No output_attributes = minimal output
+        out = model.fold(test_sequences["short"])
+    
+    assert isinstance(out, Boltz2Output)
+    assert out.metadata is not None, "metadata should always be present"
+    assert out.atom_array is not None, "atom_array should always be generated"
+    # With minimal output, other fields should be None
+    assert out.positions is None, "positions should be None in minimal output"
+    assert out.confidence is None, "confidence should be None in minimal output"
+    assert out.plddt is None, "plddt should be None in minimal output"
+    assert out.pae is None, "pae should be None in minimal output"
+    assert out.pde is None, "pde should be None in minimal output"
 
 
 def test_boltz2_invalid_amino_acids_validation(test_sequences: dict[str, str]):

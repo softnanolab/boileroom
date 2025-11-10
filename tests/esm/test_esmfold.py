@@ -24,8 +24,24 @@ def esmfold_model(config: Optional[dict] = None) -> Generator[ESMFold, None, Non
 
 
 def test_esmfold_basic(test_sequences: dict[str, str], esmfold_model: ESMFold):
-    """Test basic ESMFold functionality."""
+    """Test basic ESMFold functionality with minimal output."""
     result = esmfold_model.fold(test_sequences["short"])
+
+    assert isinstance(result, ESMFoldOutput), "Result should be an ESMFoldOutput"
+    assert result.metadata is not None, "metadata should always be present"
+    assert result.atom_array is not None, "atom_array should always be generated"
+    assert len(result.atom_array) > 0, "atom_array should contain at least one structure"
+    
+    # With minimal output, positions and plddt should be None
+    assert result.positions is None, "positions should be None in minimal output"
+    assert result.plddt is None, "plddt should be None in minimal output"
+
+
+def test_esmfold_full_output(test_sequences: dict[str, str]):
+    """Test ESMFold with full output requested."""
+    with enable_output():
+        model = ESMFold(config={"output_attributes": ["*"]})
+        result = model.fold(test_sequences["short"])
 
     assert isinstance(result, ESMFoldOutput), "Result should be an ESMFoldOutput"
 
@@ -43,7 +59,7 @@ def test_esmfold_basic(test_sequences: dict[str, str], esmfold_model: ESMFold):
 def test_esmfold_multimer(test_sequences):
     """Test ESMFold multimer functionality."""
     with enable_output():  # TODO: make this better with a fixture, re-using the logic
-        model = ESMFold(config={"output_pdb": True})
+        model = ESMFold(config={"output_attributes": ["*"]})  # Request all attributes
         result = model.fold(test_sequences["multimer"])
 
     assert result.pdb is not None, "PDB output should be generated"
@@ -111,6 +127,7 @@ def test_esmfold_no_glycine_linker(test_sequences):
     model = ESMFold(
         config={
             "glycine_linker": "",
+            "output_attributes": ["*"],  # Request all attributes
         }
     )
 
@@ -153,14 +170,14 @@ def test_esmfold_chain_indices():
     assert np.array_equal(chain_indices[0], expected_chain_indices), "Chain indices mismatch"
 
 
-def test_esmfold_batch(esmfold_model: ESMFold, test_sequences: dict[str, str]):
+def test_esmfold_batch(test_sequences: dict[str, str]):
     """Test ESMFold batch prediction."""
-
-    # Define input sequences
-    sequences = [test_sequences["short"], test_sequences["medium"]]
-
-    # Make prediction
-    result = esmfold_model.fold(sequences)
+    with enable_output():
+        model = ESMFold(config={"output_attributes": ["*"]})  # Request all attributes
+        # Define input sequences
+        sequences = [test_sequences["short"], test_sequences["medium"]]
+        # Make prediction
+        result = model.fold(sequences)
 
     max_seq_length = max(len(seq) for seq in sequences)
     assert (
@@ -249,14 +266,14 @@ def test_esmfold_output_pdb_cif(data_dir: pathlib.Path, test_sequences: dict[str
         return "".join(one_letter_codes)
 
     with enable_output():
-        model = ESMFold(config={"output_pdb": True, "output_cif": False, "output_atomarray": True})
+        model = ESMFold(config={"output_attributes": ["pdb", "atom_array"]})  # Request PDB and atom_array
         # Define input sequences
         sequences = [test_sequences["short"], test_sequences["medium"]]
         result = model.fold(sequences)
 
     assert result.pdb is not None, "PDB output should be generated"
-    assert result.cif is None, "CIF output should be None"
-    assert result.atom_array is not None, "Atom array output should be generated"
+    assert result.cif is None, "CIF output should be None (not requested)"
+    assert result.atom_array is not None, "Atom array output should always be generated"
 
     pdb_outputs = result.pdb
     atom_array_outputs = result.atom_array

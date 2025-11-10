@@ -18,6 +18,7 @@
 - Type hints are required; CI enforces `mypy` (config in `.pre-commit-config.yaml`).
 - `ruff` manages linting and formatting with a 120-character line budget; prefer auto-fixes via pre-commit.
 - Place Modal configuration constants in `boileroom/constants.py`; avoid duplicating literal IDs across modules.
+- Use f-strings and not any other way fo doing strings, e.g., f"Today is {date}".
 
 ## Testing Expectations
 - Prefer pytest-style `test_*` functions and fixtures; see `tests/test_utils.py` for style cues.

@@ -16,26 +16,49 @@ def chai1_model(config: Optional[dict] = None) -> Generator[Chai1, None, None]:
         yield Chai1(backend="modal", config=model_config)
     
 
-# def test_chai1_basic(test_sequences: dict[str, str], chai1_model: Chai1):
-#     """Test basic Chai-1 functionality."""
-#     quick_config = {
-#         "num_diffn_samples": 1,
-#         "num_trunk_samples": 1,
-#         "use_esm_embeddings": True,
-#         "num_trunk_recycles": 1,
-#         "num_diffn_timesteps": 10,
-#     }
-#     result = chai1_model.fold(test_sequences["short"], config=quick_config)
+def test_chai1_minimal_output(test_sequences: dict[str, str], chai1_model: Chai1):
+    """Test that Chai1 returns minimal output by default (metadata + atom_array)."""
+    quick_config = {
+        "num_diffn_samples": 1,
+        "num_trunk_samples": 1,
+        "use_esm_embeddings": True,
+        "num_trunk_recycles": 1,
+        "num_diffn_timesteps": 10,
+    }
+    result = chai1_model.fold(test_sequences["short"], config=quick_config)
 
-#     assert isinstance(result, Chai1Output), "Result should be a Chai1Output"
+    assert isinstance(result, Chai1Output), "Result should be a Chai1Output"
+    assert result.metadata is not None, "metadata should always be present"
+    assert result.atom_array is not None, "atom_array should always be generated"
+    assert len(result.atom_array) > 0, "atom_array should contain at least one structure"
+    
+    # With minimal output, other fields should be None
+    assert result.positions is None, "positions should be None in minimal output"
+    assert result.plddt is None, "plddt should be None in minimal output"
+    assert result.pae is None, "pae should be None in minimal output"
+    assert result.pde is None, "pde should be None in minimal output"
+    assert result.cif is None, "cif should be None in minimal output"
 
-#     assert result.positions[0].shape[2] == 3, "Number of dimensions should be 3"
-#     assert result.positions[0].shape[0] == len(test_sequences["short"]), "Number of residues mismatch"
-#     assert result.positions[0].shape[1] == 3, "Number of dimensions should be 3"
 
-#     assert result.plddt.shape == (len(test_sequences["short"]),), "pLDDT scores should be a single dimension"
-#     assert np.all(result.plddt >= 0), "pLDDT scores should be non-negative"
-#     assert np.all(result.plddt <= 100), "pLDDT scores should be less than or equal to 100"
+def test_chai1_full_output(test_sequences: dict[str, str], chai1_model: Chai1):
+    """Test Chai1 with full output requested."""
+    quick_config = {
+        "num_diffn_samples": 1,
+        "num_trunk_samples": 1,
+        "use_esm_embeddings": True,
+        "num_trunk_recycles": 1,
+        "num_diffn_timesteps": 10,
+        "output_attributes": ["*"],  # Request all attributes
+    }
+    result = chai1_model.fold(test_sequences["short"], config=quick_config)
+
+    assert isinstance(result, Chai1Output), "Result should be a Chai1Output"
+    assert result.atom_array is not None, "atom_array should always be generated"
+    assert result.positions is not None, "positions should be present when requested"
+    assert result.plddt is not None, "plddt should be present when requested"
+    assert len(result.plddt) > 0, "plddt should contain values"
+    assert np.all(np.array(result.plddt[0]) >= 0), "pLDDT scores should be non-negative"
+    assert np.all(np.array(result.plddt[0]) <= 100), "pLDDT scores should be less than or equal to 100"
 
 
 # def test_chai1_multimer(test_sequences: dict[str, str], chai1_model: Chai1):

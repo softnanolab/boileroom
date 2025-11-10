@@ -128,39 +128,35 @@ logger = logging.getLogger(__name__)
 class ESMFoldOutput(StructurePrediction):
     """Output from ESMFold prediction including all model outputs."""
 
-    # TODO: we should figure out what should be the verbosity of the output,
-    # as a usual user does not need all of this information
-
     # Required by StructurePrediction protocol
-    positions: np.ndarray  # (model_layer, batch_size, residue, atom=14, xyz=3)
     metadata: PredictionMetadata
+    atom_array: Optional[List[AtomArray]] = None  # Always generated, one AtomArray per sample
+    positions: Optional[np.ndarray] = None  # (model_layer, batch_size, residue, atom=14, xyz=3)
 
-    # Additional ESMFold-specific outputs
-    frames: np.ndarray  # (model_layer, batch_size, residue, qxyz=7)
-    sidechain_frames: np.ndarray  # (model_layer, batch_size, residue, 8, 4, 4) [rot matrix per sidechain]
-    unnormalized_angles: np.ndarray  # (model_layer, batch_size, residue, 7, 2) [torsion angles]
-    angles: np.ndarray  # (model_layer, batch_size, residue, 7, 2) [torsion angles]
-    states: np.ndarray  # (model_layer, batch_size, residue, ???)
-    s_s: np.ndarray  # (batch_size, residue, 1024)
-    s_z: np.ndarray  # (batch_size, residue, residue, 128)
-    distogram_logits: np.ndarray  # (batch_size, residue, residue, 64) ???
-    lm_logits: np.ndarray  # (batch_size, residue, 23) ???
-    aatype: np.ndarray  # (batch_size, residue) amino acid identity
-    atom14_atom_exists: np.ndarray  # (batch_size, residue, atom=14)
-    residx_atom14_to_atom37: np.ndarray  # (batch_size, residue, atom=14)
-    residx_atom37_to_atom14: np.ndarray  # (batch_size, residue, atom=37)
-    atom37_atom_exists: np.ndarray  # (batch_size, residue, atom=37)
-    residue_index: np.ndarray  # (batch_size, residue)
-    lddt_head: np.ndarray  # (model_layer, batch_size, residue, atom=37, 50) ??
-    plddt: np.ndarray  # (batch_size, residue, atom=37)
-    ptm_logits: np.ndarray  # (batch_size, residue, residue, 64) ???
-    ptm: np.ndarray  # float # TODO: make it into a float when sending to the client
-    aligned_confidence_probs: np.ndarray  # (batch_size, residue, residue, 64)
-    predicted_aligned_error: np.ndarray  # (batch_size, residue, residue)
-    max_predicted_aligned_error: np.ndarray  # float # TODO: make it into a float when sending to the client
-    chain_index: np.ndarray  # (batch_size, residue)
-    # TODO: maybe add this to the output to clearly indicate padded residues
-    atom_array: Optional[AtomArray] = None  # 0-indexed
+    # Additional ESMFold-specific outputs (all optional, filtered by output_attributes)
+    frames: Optional[np.ndarray] = None  # (model_layer, batch_size, residue, qxyz=7)
+    sidechain_frames: Optional[np.ndarray] = None  # (model_layer, batch_size, residue, 8, 4, 4) [rot matrix per sidechain]
+    unnormalized_angles: Optional[np.ndarray] = None  # (model_layer, batch_size, residue, 7, 2) [torsion angles]
+    angles: Optional[np.ndarray] = None  # (model_layer, batch_size, residue, 7, 2) [torsion angles]
+    states: Optional[np.ndarray] = None  # (model_layer, batch_size, residue, ???)
+    s_s: Optional[np.ndarray] = None  # (batch_size, residue, 1024)
+    s_z: Optional[np.ndarray] = None  # (batch_size, residue, residue, 128)
+    distogram_logits: Optional[np.ndarray] = None  # (batch_size, residue, residue, 64) ???
+    lm_logits: Optional[np.ndarray] = None  # (batch_size, residue, 23) ???
+    aatype: Optional[np.ndarray] = None  # (batch_size, residue) amino acid identity
+    atom14_atom_exists: Optional[np.ndarray] = None  # (batch_size, residue, atom=14)
+    residx_atom14_to_atom37: Optional[np.ndarray] = None  # (batch_size, residue, atom=14)
+    residx_atom37_to_atom14: Optional[np.ndarray] = None  # (batch_size, residue, atom=37)
+    atom37_atom_exists: Optional[np.ndarray] = None  # (batch_size, residue, atom=37)
+    residue_index: Optional[np.ndarray] = None  # (batch_size, residue)
+    lddt_head: Optional[np.ndarray] = None  # (model_layer, batch_size, residue, atom=37, 50) ??
+    plddt: Optional[np.ndarray] = None  # (batch_size, residue, atom=37)
+    ptm_logits: Optional[np.ndarray] = None  # (batch_size, residue, residue, 64) ???
+    ptm: Optional[np.ndarray] = None  # float # TODO: make it into a float when sending to the client
+    aligned_confidence_probs: Optional[np.ndarray] = None  # (batch_size, residue, residue, 64)
+    predicted_aligned_error: Optional[np.ndarray] = None  # (batch_size, residue, residue)
+    max_predicted_aligned_error: Optional[np.ndarray] = None  # float # TODO: make it into a float when sending to the client
+    chain_index: Optional[np.ndarray] = None  # (batch_size, residue)
     pdb: Optional[list[str]] = None  # 0-indexed
     cif: Optional[list[str]] = None  # 0-indexed
 
@@ -176,13 +172,10 @@ class ESMFoldCore(FoldingAlgorithm):
     # changed programmatically on a single ephermal app, rather than re-creating the app?
     DEFAULT_CONFIG = {
         "device": "cuda:0",
-        # ESMFold model config
-        "output_pdb": False,
-        "output_cif": False,
-        "output_atomarray": False,
         # Chain linking and positioning config
         "glycine_linker": "",
         "position_ids_skip": 512,
+        "output_attributes": None,  # Optional[List[str]] - controls which attributes to include in output
     }
 
     # We need to properly asses whether using this or the original ESMFold is better
@@ -451,17 +444,24 @@ class ESMFoldCore(FoldingAlgorithm):
 
         self.metadata.prediction_time = prediction_time
 
+        # Always generate atom_array
         atom_array = self._convert_outputs_to_atomarray(outputs)
-        if self.config["output_pdb"]:
+        outputs["atom_array"] = atom_array
+
+        # Generate PDB/CIF only if requested via output_attributes
+        output_attributes = self.config.get("output_attributes")
+        if output_attributes and ("*" in output_attributes or "pdb" in output_attributes):
             outputs["pdb"] = self._convert_outputs_to_pdb(atom_array)
-        if self.config["output_cif"]:
+        if output_attributes and ("*" in output_attributes or "cif" in output_attributes):
             outputs["cif"] = self._convert_outputs_to_cif(atom_array)
-        if self.config["output_atomarray"]:
-            outputs["atom_array"] = atom_array
 
-        return ESMFoldOutput(metadata=self.metadata, **outputs)
+        # Build full output with all attributes
+        full_output = ESMFoldOutput(metadata=self.metadata, **outputs)
+        
+        # Apply filtering based on output_attributes
+        return self._filter_output_attributes(full_output, output_attributes)
 
-    def _convert_outputs_to_atomarray(self, outputs: dict) -> AtomArray:
+    def _convert_outputs_to_atomarray(self, outputs: dict) -> List[AtomArray]:
         """Convert ESMFold outputs to a Biotite AtomArray.
 
         Args:
