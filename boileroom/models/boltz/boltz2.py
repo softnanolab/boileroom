@@ -77,7 +77,7 @@ class Boltz2Core(FoldingAlgorithm):
         "sampling_steps": 200,
         "diffusion_samples": 1,
         "max_parallel_samples": 5,
-        "step_scale": None,  # will default to 1.5 for boltz2 if None
+        "step_scale": 1.5,
         "write_full_pae": False,
         "write_full_pde": False,
         "output_attributes": None,  # Optional[List[str]] - controls which attributes to include in output
@@ -92,6 +92,8 @@ class Boltz2Core(FoldingAlgorithm):
         # Paths
         "cache_dir": None,  # defaults to Path(MODAL_MODEL_DIR)/"boltz"
     }
+    # Static config keys that can only be set at initialization
+    STATIC_CONFIG_KEYS = {"device", "cache_dir", "no_kernels"}
 
     def __init__(self, config: dict = {}) -> None:
         """Initialize Boltz-2."""
@@ -203,7 +205,7 @@ class Boltz2Core(FoldingAlgorithm):
             headers.append(seq)
         return "\n".join(headers)
 
-    def _prepare_inputs(self, fasta_text: str, work_dir: Path, cache_dir: Path) -> Dict[str, Any]:
+    def _prepare_inputs(self, fasta_text: str, work_dir: Path, cache_dir: Path, config: dict) -> Dict[str, Any]:
         """Run preprocessing using Boltz's pipeline to produce a Manifest and processed dirs."""
         data_dir = work_dir / "inputs"
         data_dir.mkdir(parents=True, exist_ok=True)
@@ -220,9 +222,9 @@ class Boltz2Core(FoldingAlgorithm):
         ccd_path = cache_dir / "ccd.pkl"  # unused for boltz2 but required by signature
 
         # MSA server config
-        use_msa_server = bool(self.config.get("use_msa_server", True))
-        msa_server_url = str(self.config.get("msa_server_url", "https://api.colabfold.com"))
-        msa_pairing_strategy = str(self.config.get("msa_pairing_strategy", "greedy"))
+        use_msa_server = bool(config.get("use_msa_server", True))
+        msa_server_url = str(config.get("msa_server_url", "https://api.colabfold.com"))
+        msa_pairing_strategy = str(config.get("msa_pairing_strategy", "greedy"))
         # Optional auth headers/params are intentionally omitted for broader compatibility
 
         # Process inputs (writes processed/manifest.json and NPZs)
@@ -236,7 +238,7 @@ class Boltz2Core(FoldingAlgorithm):
             msa_pairing_strategy=msa_pairing_strategy,
             boltz2=True,
             preprocessing_threads=1,
-            max_msa_seqs=int(self.config.get("max_msa_seqs", 8192)),
+            max_msa_seqs=int(config.get("max_msa_seqs", 8192)),
         )
 
         manifest_path = out_dir / "processed" / "manifest.json"
@@ -605,8 +607,11 @@ class Boltz2Core(FoldingAlgorithm):
         structure_file.write(string)
         return string.getvalue()
     
-    def fold(self, sequences: Union[str, Sequence[str]]) -> Boltz2Output:
+    def fold(self, sequences: Union[str, Sequence[str]], options: Optional[dict] = None) -> Boltz2Output:
         """Fold protein sequences (proteins only), keeping model resident in memory."""
+        
+        # Merge static config with per-call options
+        effective_config = self._merge_options(options)
 
         # Validate sequences and compute sequence lengths
         validated_sequences = self._validate_sequences(sequences)
@@ -614,8 +619,8 @@ class Boltz2Core(FoldingAlgorithm):
 
         # Always use a temporary working directory on the machine
         cache_dir = (
-            Path(self.config.get("cache_dir")).resolve()
-            if self.config.get("cache_dir")
+            Path(effective_config.get("cache_dir")).resolve()
+            if effective_config.get("cache_dir")
             else Path(self.model_dir).resolve() / "boltz"
         )
 
@@ -624,9 +629,9 @@ class Boltz2Core(FoldingAlgorithm):
 
             with Timer("Boltz-2 preprocessing"):
                 fasta_text = self._sequences_to_fasta(validated_sequences)
-                processed = self._prepare_inputs(fasta_text, work_path, cache_dir)
+                processed = self._prepare_inputs(fasta_text, work_path, cache_dir, effective_config)
 
-            datamodule = self._build_datamodule(processed, int(self.config.get("num_workers", 2)), cache_dir)
+            datamodule = self._build_datamodule(processed, int(effective_config.get("num_workers", 2)), cache_dir)
 
             with Timer("Boltz-2 inference") as t:
                 preds = self._predict_with_trainer(datamodule)
@@ -671,7 +676,7 @@ class Boltz2Core(FoldingAlgorithm):
             )
 
             # Generate PDB/CIF only if requested via output_attributes
-            output_attributes = self.config.get("output_attributes")
+            output_attributes = effective_config.get("output_attributes")
             pdb_list: Optional[List[str]] = None
             cif_list: Optional[List[str]] = None
             
@@ -728,8 +733,8 @@ class ModalBoltz2:
         self._core._initialize()
 
     @modal.method()
-    def fold(self, sequences: Union[str, Sequence[str]]) -> Boltz2Output:
-        return self._core.fold(sequences)
+    def fold(self, sequences: Union[str, Sequence[str]], options: Optional[dict] = None) -> Boltz2Output:
+        return self._core.fold(sequences, options=options)
 
 ############################################################
 # HIGH-LEVEL INTERFACE
@@ -760,5 +765,5 @@ class Boltz2(ModelWrapper):
             raise ValueError(f"Backend {backend} not supported")
         self._backend.start()
 
-    def fold(self, sequences: Union[str, Sequence[str]]) -> Boltz2Output:
-        return self._call_backend_method("fold", sequences)
+    def fold(self, sequences: Union[str, Sequence[str]], options: Optional[dict] = None) -> Boltz2Output:
+        return self._call_backend_method("fold", sequences, options=options)

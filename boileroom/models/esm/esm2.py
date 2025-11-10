@@ -55,6 +55,8 @@ class ESM2Core(EmbeddingAlgorithm):
         "glycine_linker": "",
         "position_ids_skip": 512,
     }
+    # Static config keys that can only be set at initialization
+    STATIC_CONFIG_KEYS = {"device", "model_name"}
 
     def __init__(self, config: dict = {}) -> None:
         super().__init__(config)
@@ -106,11 +108,14 @@ class ESM2Core(EmbeddingAlgorithm):
         self.model.eval()
         self.ready = True
 
-    def embed(self, sequences: Union[str, Sequence[str]]) -> ESM2Output:
+    def embed(self, sequences: Union[str, Sequence[str]], options: Optional[dict] = None) -> ESM2Output:
         if self.tokenizer is None or self.model is None:
             logger.warning("Model not loaded. Forcing the model to load... Next time call _load() first.")
             self._load()
         assert self.tokenizer is not None and self.model is not None, "Model not loaded"
+
+        # Merge static config with per-call options
+        effective_config = self._merge_options(options)
 
         normalized_sequences: list[str]
         if isinstance(sequences, str):
@@ -118,11 +123,11 @@ class ESM2Core(EmbeddingAlgorithm):
         else:
             normalized_sequences = list(sequences)
 
-        logger.debug(f'Embedding {len(normalized_sequences)} sequences using {self.config["model_name"]}')
+        logger.debug(f'Embedding {len(normalized_sequences)} sequences using {effective_config["model_name"]}')
 
         if any(":" in seq for seq in normalized_sequences):
             # Multimer logic
-            glycine_linker = self.config["glycine_linker"]
+            glycine_linker = effective_config["glycine_linker"]
             multimer_properties = self._store_multimer_properties(normalized_sequences, glycine_linker)
             tokenized = self.tokenizer(
                 replace_glycine_linkers(normalized_sequences, glycine_linker),
@@ -132,7 +137,7 @@ class ESM2Core(EmbeddingAlgorithm):
             )
             # Add position_ids and attention_mask
             tokenized["position_ids"] = compute_position_ids(
-                normalized_sequences, glycine_linker, self.config["position_ids_skip"]
+                normalized_sequences, glycine_linker, effective_config["position_ids_skip"]
             )
             tokenized["attention_mask"] = (multimer_properties["linker_map"] == 1).to(torch.int32)
         else:
@@ -145,13 +150,13 @@ class ESM2Core(EmbeddingAlgorithm):
             )
             multimer_properties = None
         tokenized = tokenized.to(self._device)
-        tokenized["output_hidden_states"] = self.config["output_hidden_states"]
+        tokenized["output_hidden_states"] = effective_config["output_hidden_states"]
 
         with Timer("Model Inference") as timer:
             with torch.inference_mode():
                 outputs = self.model(**tokenized)
 
-        outputs = self._convert_outputs(outputs, multimer_properties, timer.duration)
+        outputs = self._convert_outputs(outputs, multimer_properties, timer.duration, effective_config)
 
         return outputs
 
@@ -170,12 +175,13 @@ class ESM2Core(EmbeddingAlgorithm):
         outputs: "BaseModelOutputWithPoolingAndCrossAttentions",
         multimer_properties: dict[str, torch.Tensor] | None,
         prediction_time: float,
+        config: dict,
     ) -> ESM2Output:
         """Convert model outputs to ESM2Output format."""
 
         embeddings = outputs.last_hidden_state.cpu().numpy()
 
-        if self.config["output_hidden_states"]:
+        if config["output_hidden_states"]:
             assert torch.all(
                 outputs.hidden_states[-1] == outputs.last_hidden_state
             ), "Last hidden state should be the same as the output of the model"
@@ -206,7 +212,7 @@ class ESM2Core(EmbeddingAlgorithm):
         )
         
         # Apply filtering based on output_attributes
-        output_attributes = self.config.get("output_attributes")
+        output_attributes = config.get("output_attributes")
         return self._filter_output_attributes(full_output, output_attributes)
 
     def _mask_linker_region(
@@ -307,9 +313,9 @@ class ModalESM2:
         self._core._initialize()
 
     @modal.method()
-    def embed(self, sequences: Union[str, Sequence[str]]) -> ESM2Output:
+    def embed(self, sequences: Union[str, Sequence[str]], options: Optional[dict] = None) -> ESM2Output:
         assert self._core is not None, "ModalESM2 has not been initialized"
-        return self._core.embed(sequences)
+        return self._core.embed(sequences, options=options)
 
 
 ############################################################
@@ -331,5 +337,5 @@ class ESM2(ModelWrapper):
             raise ValueError(f"Backend {backend} not supported")
         self._backend.start()
 
-    def embed(self, sequences: Union[str, Sequence[str]]) -> ESM2Output:
-        return self._call_backend_method("embed", sequences)
+    def embed(self, sequences: Union[str, Sequence[str]], options: Optional[dict] = None) -> ESM2Output:
+        return self._call_backend_method("embed", sequences, options=options)

@@ -256,6 +256,14 @@ def test_sequence_validation(test_sequences: dict[str, str]):
     assert "Invalid amino acid" in str(exc_info.value), f"Expected 'Invalid amino acid', got {str(exc_info.value)}"
 
 
+def test_esmfold_static_config_enforcement(test_sequences: dict[str, str]):
+    """Test that static config keys cannot be overridden in options."""
+    esmfold_core = ESMFoldCore(config={"device": "cpu"})
+    # device is a static config key
+    with pytest.raises(ValueError, match="device"):
+        esmfold_core.fold(test_sequences["short"], options={"device": "cuda:0"})
+
+
 def test_esmfold_output_pdb_cif(data_dir: pathlib.Path, test_sequences: dict[str, str]):
     """Test ESMFold output PDB and CIF."""
 

@@ -69,6 +69,8 @@ class Chai1Core(FoldingAlgorithm):
         "use_templates_server": False,
         "output_attributes": None,  # Optional[List[str]] - controls which attributes to include in output
     }
+    # Static config keys that can only be set at initialization
+    STATIC_CONFIG_KEYS = {"device"}
 
     def __init__(self, config: dict[str, Any] | None = None) -> None:
         super().__init__(config or {})
@@ -87,14 +89,13 @@ class Chai1Core(FoldingAlgorithm):
         self._device = self._resolve_device()
         self.ready = True
 
-    def fold(self, sequences: Union[str, Sequence[str]], config: Optional[dict] = None) -> Chai1Output:
-        # TODO: This config is not implemented across all models; and will require further synchronization.
+    def fold(self, sequences: Union[str, Sequence[str]], options: Optional[dict] = None) -> Chai1Output:
         # TODO: ADD msa_directory: Path | None = None,
         # TODO: constraint path not tested properly
         # TODO: ADD template_hits_path: Path | None = None,
 
-        if config is not None:
-            self.config.update(config)
+        # Merge static config with per-call options
+        effective_config = self._merge_options(options)
 
         validated_sequences = self._validate_sequences(sequences)
         self.metadata.sequence_lengths = self._compute_sequence_lengths(validated_sequences)
@@ -102,7 +103,7 @@ class Chai1Core(FoldingAlgorithm):
         with TemporaryDirectory() as buffer_dir:
             buffer_path = Path(buffer_dir)
             fasta_path = self._write_fasta(validated_sequences, buffer_path)
-            constraint_path = self._write_constraint(buffer_path)
+            constraint_path = self._write_constraint(buffer_path, effective_config)
             output_dir = buffer_path / "outputs"
             output_dir.mkdir(parents=True, exist_ok=True)
             with Timer("Model Inference") as timer:
@@ -110,22 +111,22 @@ class Chai1Core(FoldingAlgorithm):
                     fasta_file=fasta_path,
                     output_dir=output_dir,
                     constraint_path=constraint_path,
-                    num_trunk_samples=self.config["num_trunk_samples"],
-                    num_trunk_recycles=self.config["num_trunk_recycles"],
-                    num_diffn_timesteps=self.config["num_diffn_timesteps"],
-                    num_diffn_samples=self.config["num_diffn_samples"],
-                    use_esm_embeddings=self.config["use_esm_embeddings"],
-                    use_msa_server=self.config["use_msa_server"],
-                    use_templates_server=self.config["use_templates_server"],
+                    num_trunk_samples=effective_config["num_trunk_samples"],
+                    num_trunk_recycles=effective_config["num_trunk_recycles"],
+                    num_diffn_timesteps=effective_config["num_diffn_timesteps"],
+                    num_diffn_samples=effective_config["num_diffn_samples"],
+                    use_esm_embeddings=effective_config["use_esm_embeddings"],
+                    use_msa_server=effective_config["use_msa_server"],
+                    use_templates_server=effective_config["use_templates_server"],
                     device=str(self._device),
                     low_memory=False,
                 )
-            output = self._convert_outputs(candidate, elapsed_time=timer.duration)
+            output = self._convert_outputs(candidate, elapsed_time=timer.duration, effective_config=effective_config)
         
         return output
 
-    def _write_constraint(self, buffer_path: Path) -> Optional[Path]:
-        constraint_definition = self.config.get("constraint_path")
+    def _write_constraint(self, buffer_path: Path, config: dict) -> Optional[Path]:
+        constraint_definition = config.get("constraint_path")
         if constraint_definition is None:
             return None
 
@@ -178,9 +179,9 @@ class Chai1Core(FoldingAlgorithm):
 
         return constraint_path
 
-    def _convert_outputs(self, candidate: "StructureCandidates", elapsed_time: float) -> Chai1Output:
+    def _convert_outputs(self, candidate: "StructureCandidates", elapsed_time: float, effective_config: dict) -> Chai1Output:
         pae, pde, plddt, ptm, iptm, per_chain_iptm = self._extract_confidence_metrics(candidate)
-        positions_list, cif_string_list, atom_array = self._process_cif(candidate.cif_paths[0])
+        positions_list, cif_string_list, atom_array = self._process_cif(candidate.cif_paths[0], effective_config)
         self.metadata.prediction_time = elapsed_time
 
         # Build full output with all attributes
@@ -203,7 +204,7 @@ class Chai1Core(FoldingAlgorithm):
         )
         
         # Apply filtering based on output_attributes
-        output_attributes = self.config.get("output_attributes")
+        output_attributes = effective_config.get("output_attributes")
         return self._filter_output_attributes(full_output, output_attributes)
     
     def _write_fasta(self, sequences: list[str], buffer_dir: Path) -> Path:
@@ -218,7 +219,7 @@ class Chai1Core(FoldingAlgorithm):
         fasta_path.write_text("\n".join(entries))
         return fasta_path
 
-    def _process_cif(self, cif_path: Path) -> tuple[List[np.ndarray], List[Optional[str]], List[AtomArray]]:
+    def _process_cif(self, cif_path: Path, config: dict) -> tuple[List[np.ndarray], List[Optional[str]], List[AtomArray]]:
         cif_file = CIFFile.read(str(cif_path))
         structure = get_structure(cif_file)
         coords = []
@@ -231,7 +232,7 @@ class Chai1Core(FoldingAlgorithm):
         
         # Generate CIF string only if requested via output_attributes
         cif_string = None
-        output_attributes = self.config.get("output_attributes")
+        output_attributes = config.get("output_attributes")
         if output_attributes and ("*" in output_attributes or "cif" in output_attributes):
             with open(cif_path, "r") as f:
                 cif_string = f.read()
@@ -294,8 +295,8 @@ class ModalChai1:
         self._core._initialize()
 
     @modal.method()
-    def fold(self, *args: Any, **kwargs: Any) -> Chai1Output:
-        return self._core.fold(*args, **kwargs)
+    def fold(self, sequences: Union[str, Sequence[str]], options: Optional[dict] = None) -> Chai1Output:
+        return self._core.fold(sequences, options=options)
 
 ############################################################
 # HIGH-LEVEL INTERFACE
@@ -321,5 +322,5 @@ class Chai1(ModelWrapper):
             raise ValueError(f"Backend {backend} not supported")
         self._backend.start()
 
-    def fold(self, *args: Any, **kwargs: Any) -> Chai1Output:
-        return self._call_backend_method("fold", *args, **kwargs)
+    def fold(self, sequences: Union[str, Sequence[str]], options: Optional[dict] = None) -> Chai1Output:
+        return self._call_backend_method("fold", sequences, options=options)

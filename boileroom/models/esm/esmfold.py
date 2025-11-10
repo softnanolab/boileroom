@@ -168,8 +168,6 @@ class ESMFoldOutput(StructurePrediction):
 class ESMFoldCore(FoldingAlgorithm):
     """ESMFold protein structure prediction model."""
 
-    # TODO: maybe this config should be input to the fold function, so that it can
-    # changed programmatically on a single ephermal app, rather than re-creating the app?
     DEFAULT_CONFIG = {
         "device": "cuda:0",
         # Chain linking and positioning config
@@ -177,6 +175,8 @@ class ESMFoldCore(FoldingAlgorithm):
         "position_ids_skip": 512,
         "output_attributes": None,  # Optional[List[str]] - controls which attributes to include in output
     }
+    # Static config keys that can only be set at initialization
+    STATIC_CONFIG_KEYS = {"device"}
 
     # We need to properly asses whether using this or the original ESMFold is better
     # based on speed, accuracy, bugs, etc.; as well as customizability
@@ -211,29 +211,32 @@ class ESMFoldCore(FoldingAlgorithm):
         self.model.trunk.set_chunk_size(64)
         self.ready = True
 
-    def fold(self, sequences: Union[str, Sequence[str]]) -> ESMFoldOutput:
+    def fold(self, sequences: Union[str, Sequence[str]], options: Optional[dict] = None) -> ESMFoldOutput:
         """Predict protein structure(s) using ESMFold."""
         if self.tokenizer is None or self.model is None:
             logger.warning("Model not loaded. Forcing the model to load... Next time call _load() first.")
             self._load()
         assert self.tokenizer is not None and self.model is not None, "Model not loaded"
 
+        # Merge static config with per-call options
+        effective_config = self._merge_options(options)
+
         validated_sequences = self._validate_sequences(sequences)
         self.metadata.sequence_lengths = self._compute_sequence_lengths(validated_sequences)
 
-        tokenized_input, multimer_properties = self._tokenize_sequences(validated_sequences)
+        tokenized_input, multimer_properties = self._tokenize_sequences(validated_sequences, effective_config)
 
         with Timer("Model Inference") as timer:
             with torch.inference_mode():
                 outputs = self.model(**tokenized_input)
 
-        outputs = self._convert_outputs(outputs, multimer_properties, timer.duration)
+        outputs = self._convert_outputs(outputs, multimer_properties, timer.duration, effective_config)
         return outputs
 
-    def _tokenize_sequences(self, sequences: List[str]) -> tuple[dict, dict[str, torch.Tensor] | None]:
+    def _tokenize_sequences(self, sequences: List[str], config: dict) -> tuple[dict, dict[str, torch.Tensor] | None]:
         assert self.tokenizer is not None, "Tokenizer not loaded"
         if ":" in "".join(sequences):  # MULTIMER setting
-            tokenized, multimer_properties = self._tokenize_multimer(sequences)
+            tokenized, multimer_properties = self._tokenize_multimer(sequences, config)
         else:  # MONOMER setting
             tokenized = self.tokenizer(
                 sequences, return_tensors="pt", add_special_tokens=False, padding=True, truncation=True, max_length=1024
@@ -243,13 +246,13 @@ class ESMFoldCore(FoldingAlgorithm):
 
         return tokenized, multimer_properties
 
-    def _tokenize_multimer(self, sequences: List[str]) -> torch.Tensor:
+    def _tokenize_multimer(self, sequences: List[str], config: dict) -> torch.Tensor:
         assert self.tokenizer is not None, "Tokenizer not loaded"
         # Store multimer properties first
-        linker_map, residue_index, chain_index = store_multimer_properties(sequences, self.config["glycine_linker"])
+        glycine_linker = config["glycine_linker"]
+        linker_map, residue_index, chain_index = store_multimer_properties(sequences, glycine_linker)
 
         # Create tokenized input using list comprehension directly
-        glycine_linker = self.config["glycine_linker"]
         tokenized = self.tokenizer(
             [seq.replace(":", glycine_linker) for seq in sequences],
             padding=True,
@@ -259,7 +262,7 @@ class ESMFoldCore(FoldingAlgorithm):
         )
 
         # Add position IDs
-        tokenized["position_ids"] = compute_position_ids(sequences, glycine_linker, self.config["position_ids_skip"])
+        tokenized["position_ids"] = compute_position_ids(sequences, glycine_linker, config["position_ids_skip"])
 
         # Create attention mask (1 means keep, 0 means mask)
         # This also masks padding tokens, which are -1
@@ -432,6 +435,7 @@ class ESMFoldCore(FoldingAlgorithm):
         outputs: dict,
         multimer_properties: dict[str, torch.Tensor] | None,
         prediction_time: float,
+        config: dict,
     ) -> ESMFoldOutput:
         """Convert model outputs to ESMFoldOutput format."""
 
@@ -449,7 +453,7 @@ class ESMFoldCore(FoldingAlgorithm):
         outputs["atom_array"] = atom_array
 
         # Generate PDB/CIF only if requested via output_attributes
-        output_attributes = self.config.get("output_attributes")
+        output_attributes = config.get("output_attributes")
         if output_attributes and ("*" in output_attributes or "pdb" in output_attributes):
             outputs["pdb"] = self._convert_outputs_to_pdb(atom_array)
         if output_attributes and ("*" in output_attributes or "cif" in output_attributes):
@@ -578,8 +582,8 @@ class ModalESMFold:
         self._core._initialize()
 
     @modal.method()
-    def fold(self, sequences: Union[str, Sequence[str]]) -> ESMFoldOutput:
-        return self._core.fold(sequences)
+    def fold(self, sequences: Union[str, Sequence[str]], options: Optional[dict] = None) -> ESMFoldOutput:
+        return self._core.fold(sequences, options=options)
 
 
 ############################################################
@@ -607,5 +611,5 @@ class ESMFold(ModelWrapper):
             raise ValueError(f"Backend {backend} not supported")
         self._backend.start()
 
-    def fold(self, sequences: Union[str, Sequence[str]]) -> ESMFoldOutput:
-        return self._call_backend_method("fold", sequences)
+    def fold(self, sequences: Union[str, Sequence[str]], options: Optional[dict] = None) -> ESMFoldOutput:
+        return self._call_backend_method("fold", sequences, options=options)

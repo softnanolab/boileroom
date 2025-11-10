@@ -204,3 +204,15 @@ def test_esm2_embed_multimer(esm2_model_factory, test_sequences):
             assert num_zeros < 16, f"Too many zeros ({num_zeros}) in non-padding hidden states"
             assert np.all(result.hidden_states[i, :, expected_length:] == 0), "Padding should be 0"
         del model
+
+
+def test_esm2_static_config_enforcement():
+    """Test that static config keys cannot be overridden in options."""
+    from boileroom.models.esm.esm2 import ESM2Core
+
+    core = ESM2Core(config={"device": "cpu", "model_name": "esm2_t33_650M_UR50D"})
+    # device and model_name are static config keys
+    with pytest.raises(ValueError, match="device"):
+        core.embed("MALWMRLLPLLALLALWGPDPAAA", options={"device": "cuda:0"})
+    with pytest.raises(ValueError, match="model_name"):
+        core.embed("MALWMRLLPLLALLALWGPDPAAA", options={"model_name": "esm2_t6_8M_UR50D"})

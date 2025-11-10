@@ -18,14 +18,14 @@ def chai1_model(config: Optional[dict] = None) -> Generator[Chai1, None, None]:
 
 def test_chai1_minimal_output(test_sequences: dict[str, str], chai1_model: Chai1):
     """Test that Chai1 returns minimal output by default (metadata + atom_array)."""
-    quick_config = {
+    quick_options = {
         "num_diffn_samples": 1,
         "num_trunk_samples": 1,
         "use_esm_embeddings": True,
         "num_trunk_recycles": 1,
         "num_diffn_timesteps": 10,
     }
-    result = chai1_model.fold(test_sequences["short"], config=quick_config)
+    result = chai1_model.fold(test_sequences["short"], options=quick_options)
 
     assert isinstance(result, Chai1Output), "Result should be a Chai1Output"
     assert result.metadata is not None, "metadata should always be present"
@@ -42,7 +42,7 @@ def test_chai1_minimal_output(test_sequences: dict[str, str], chai1_model: Chai1
 
 def test_chai1_full_output(test_sequences: dict[str, str], chai1_model: Chai1):
     """Test Chai1 with full output requested."""
-    quick_config = {
+    quick_options = {
         "num_diffn_samples": 1,
         "num_trunk_samples": 1,
         "use_esm_embeddings": True,
@@ -50,7 +50,7 @@ def test_chai1_full_output(test_sequences: dict[str, str], chai1_model: Chai1):
         "num_diffn_timesteps": 10,
         "output_attributes": ["*"],  # Request all attributes
     }
-    result = chai1_model.fold(test_sequences["short"], config=quick_config)
+    result = chai1_model.fold(test_sequences["short"], options=quick_options)
 
     assert isinstance(result, Chai1Output), "Result should be a Chai1Output"
     assert result.atom_array is not None, "atom_array should always be generated"
@@ -66,3 +66,10 @@ def test_chai1_full_output(test_sequences: dict[str, str], chai1_model: Chai1):
 #     result = chai1_model.fold(test_sequences["multimer"])
 
 #     assert isinstance(result, Chai1Output), "Result should be a Chai1Output"
+
+
+def test_chai1_static_config_enforcement(test_sequences: dict[str, str], chai1_model: Chai1):
+    """Test that static config keys cannot be overridden in options."""
+    # device is a static config key
+    with pytest.raises(ValueError, match="device"):
+        chai1_model.fold(test_sequences["short"], options={"device": "cpu"})

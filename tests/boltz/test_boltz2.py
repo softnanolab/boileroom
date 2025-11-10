@@ -143,3 +143,17 @@ def test_boltz2_invalid_amino_acids_validation(test_sequences: dict[str, str]):
     core = Boltz2Core(config={"device": "cpu"})
     with pytest.raises(ValueError):
         core._validate_sequences(test_sequences["invalid"])  # should raise
+
+
+def test_boltz2_static_config_enforcement(test_sequences: dict[str, str]):
+    """Test that static config keys cannot be overridden in options."""
+    from boileroom.models.boltz.boltz2 import Boltz2Core
+
+    core = Boltz2Core(config={"device": "cpu"})
+    # device, cache_dir, and no_kernels are static config keys
+    with pytest.raises(ValueError, match="device"):
+        core.fold(test_sequences["short"], options={"device": "cuda:0"})
+    with pytest.raises(ValueError, match="cache_dir"):
+        core.fold(test_sequences["short"], options={"cache_dir": "/tmp/test"})
+    with pytest.raises(ValueError, match="no_kernels"):
+        core.fold(test_sequences["short"], options={"no_kernels": True})

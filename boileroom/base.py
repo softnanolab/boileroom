@@ -49,6 +49,8 @@ class Algorithm(ABC):
     """Abstract base class for algorithms."""
 
     DEFAULT_CONFIG: dict = {}
+    # Static config keys that can only be set at initialization and cannot be overridden per-call
+    STATIC_CONFIG_KEYS: set[str] = set()
 
     def __init__(self, config: dict = {}) -> None:
         """Initialize the algorithm."""
@@ -90,6 +92,41 @@ class Algorithm(ABC):
             return torch.device("cuda:0")
         return torch.device("cpu")
 
+    def _merge_options(self, options: Optional[dict] = None) -> dict:
+        """Merge per-call options with static config, enforcing that static keys cannot be overridden.
+        
+        Parameters
+        ----------
+        options : Optional[dict]
+            Per-call options dictionary. Keys that are in STATIC_CONFIG_KEYS will raise ValueError.
+            
+        Returns
+        -------
+        dict
+            Merged configuration dictionary with options overriding non-static config values.
+            
+        Raises
+        ------
+        ValueError
+            If options contains any keys that are in STATIC_CONFIG_KEYS.
+        """
+        if options is None:
+            options = {}
+        
+        static_keys = getattr(self, "STATIC_CONFIG_KEYS", set())
+        if not isinstance(static_keys, set):
+            static_keys = set(static_keys)
+        
+        # Check for attempts to override static config keys
+        conflicting_keys = set(options.keys()) & static_keys
+        if conflicting_keys:
+            raise ValueError(
+                f"The following config keys can only be set at initialization and cannot be overridden per-call: {sorted(conflicting_keys)}"
+            )
+        
+        # Merge: static config (from self.config) + dynamic options
+        return {**self.config, **options}
+    
     @staticmethod
     def _initialize_metadata(model_name: str, model_version: str) -> PredictionMetadata:
         """Initialize metadata for the prediction.
@@ -124,7 +161,7 @@ class FoldingAlgorithm(Algorithm):
     """
 
     @abstractmethod
-    def fold(self, sequences: Union[str, Sequence[str]]) -> StructurePrediction:
+    def fold(self, sequences: Union[str, Sequence[str]], options: Optional[dict] = None) -> StructurePrediction:
         """Predict the structure for one or more protein sequences.
 
         Parameters
@@ -132,6 +169,9 @@ class FoldingAlgorithm(Algorithm):
         sequences : Union[str, Sequence[str]]
             A single sequence string or list of sequence strings
             containing valid amino acid characters
+        options : Optional[dict]
+            Optional per-call configuration overrides. Keys that are in STATIC_CONFIG_KEYS
+            cannot be overridden and will raise ValueError.
 
         Returns
         -------
@@ -139,7 +179,7 @@ class FoldingAlgorithm(Algorithm):
             Structure prediction output implementing the StructurePrediction protocol
 
         Raises:
-            ValueError: If sequences are invalid
+            ValueError: If sequences are invalid or if options contains static config keys
             RuntimeError: If prediction fails
         """
         raise NotImplementedError
@@ -256,7 +296,7 @@ class EmbeddingAlgorithm(Algorithm):
     """Abstract base class for embedding algorithms."""
 
     @abstractmethod
-    def embed(self, sequences: Union[str, Sequence[str]]) -> EmbeddingPrediction:
+    def embed(self, sequences: Union[str, Sequence[str]], options: Optional[dict] = None) -> EmbeddingPrediction:
         """Generate embeddings for one or more protein sequences.
 
         Parameters
@@ -264,6 +304,9 @@ class EmbeddingAlgorithm(Algorithm):
         sequences : Union[str, Sequence[str]]
             A single sequence string or list of sequence strings
             containing valid amino acid characters
+        options : Optional[dict]
+            Optional per-call configuration overrides. Keys that are in STATIC_CONFIG_KEYS
+            cannot be overridden and will raise ValueError.
 
         Returns
         -------
@@ -271,7 +314,7 @@ class EmbeddingAlgorithm(Algorithm):
             Embedding output implementing the EmbeddingPrediction protocol
 
         Raises:
-            ValueError: If sequences are invalid
+            ValueError: If sequences are invalid or if options contains static config keys
             RuntimeError: If embedding generation fails
         """
         raise NotImplementedError
