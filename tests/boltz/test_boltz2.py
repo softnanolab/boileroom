@@ -11,10 +11,10 @@ from boileroom.models.boltz.boltz2 import Boltz2Output
 from boileroom.constants import restype_3to1
 
 from biotite.structure import AtomArray
-from biotite.structure.io.pdbx import CIFFile, get_structure
 
 
 nipah_binder_sequence = "ICLQKTSNQILKPKLISYTLGQSGTCITDPLLAMDEGYFAYSHLERIGSCSRGVSKQRIIGVGEVLDRGDEVPSLFMTNVWTPPNPNTVYHCSAVYNNEFYYVLCAVSTVGDPILNSTYWSGSLMMTRLAVKPKSNGGGYNQHQLALRSIEKGRYDKVMPYGPSGIKQGDTLYFPAVGFLVRTEFKYNDSNCPITKCQYSKPENCRLSMGIRPNSHYILRSGLLKYNLSDGENPKVVFIEISDQRLSIGSPSKIYDSLGQPVFYQASFSWDTMIKFGDVLTVNPLVVNWRNNTVISRPGQSQCPRFNTCPEICWEGVYNDAFLIDRINWISAGVFLDSNQTAENPVFTVFKDNEILYRAQLASEDTNAQKTITNCFLLKNKIWCISLVEIYDTGDNVIRPKLFAVKIPEQCTH:IMILYWYWNASNHKFTNFQAGQVDPYILLDLDMCEPQKVAQYDYIYWTVHPMIFKDYPWMEPQIQIFKKELWTPENFQDCANPEQHKFIIWFQSNESPNMGGNEFQPGKDYMIISTSNGELDWGFLDMGKVCDESAWIDMSSPNHSQE"
+
 
 @pytest.fixture(scope="module")
 def boltz2_model(config: Optional[dict] = None) -> Generator[Boltz2, None, None]:
@@ -47,15 +47,18 @@ def test_boltz2_nipah_matches_reference():
     assert pde_npz.exists(), "tests/data/boltz/pde_0_model_0.npz must exist"
 
     with enable_output():
-        model = Boltz2(backend="modal", config={
-            "write_full_pae": True, 
-            "write_full_pde": True,
-            "output_attributes": ["*"]  # Request all attributes for comprehensive testing
-        })
+        model = Boltz2(
+            backend="modal",
+            config={
+                "write_full_pae": True,
+                "write_full_pde": True,
+                "output_attributes": ["*"],  # Request all attributes for comprehensive testing
+            },
+        )
         out = model.fold(nipah_binder_sequence)
 
     assert isinstance(out, Boltz2Output)
-    
+
     # Verify minimal defaults: atom_array should always be present
     assert out.atom_array is not None, "atom_array should always be generated"
     assert len(out.atom_array) > 0, "atom_array should contain at least one structure"
@@ -114,7 +117,6 @@ def test_boltz2_nipah_matches_reference():
     assert np.max(np.abs(ref_pae - pred_pae)) < tolerance
     assert np.max(np.abs(ref_pde - pred_pde)) < tolerance
 
-
     # Note: Avoid extra inference-based tests; one Nipah run is sufficient for shapes and value checks.
 
 
@@ -123,7 +125,7 @@ def test_boltz2_minimal_output(test_sequences: dict[str, str]):
     with enable_output():
         model = Boltz2(backend="modal", config={})  # No output_attributes = minimal output
         out = model.fold(test_sequences["short"])
-    
+
     assert isinstance(out, Boltz2Output)
     assert out.metadata is not None, "metadata should always be present"
     assert out.atom_array is not None, "atom_array should always be generated"

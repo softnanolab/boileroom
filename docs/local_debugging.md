@@ -4,7 +4,7 @@ To debug, or just simply run in the local environment, one can execute the `Loca
 This, however, requires that the execution python environment (of the main process) has all the required dependencies.
 
 1. Install project dependencies manually: `uv pip install .`
-2. Some models specific version of some packages (e.g. NumPy, thus install it with: `uv pip install "numpy<2.0"`). 
+2. Some models specific version of some packages (e.g. NumPy, thus install it with: `uv pip install "numpy<2.0"`).
 See the table for full description for each model.
 3. Activate the virtual environment: `source .venv/bin/activate`
 4. Confirm the interpreter comes from the environment: `which python`

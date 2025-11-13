@@ -31,7 +31,7 @@ def test_esmfold_basic(test_sequences: dict[str, str], esmfold_model: ESMFold):
     assert result.metadata is not None, "metadata should always be present"
     assert result.atom_array is not None, "atom_array should always be generated"
     assert len(result.atom_array) > 0, "atom_array should contain at least one structure"
-    
+
     # With minimal output, positions and plddt should be None
     assert result.positions is None, "positions should be None in minimal output"
     assert result.plddt is None, "plddt should be None in minimal output"
@@ -46,12 +46,14 @@ def test_esmfold_full_output(test_sequences: dict[str, str]):
     assert isinstance(result, ESMFoldOutput), "Result should be an ESMFoldOutput"
 
     seq_len = len(test_sequences["short"])
+    assert result.positions is not None, "positions should be present in full output"
     positions_shape = result.positions.shape
 
     assert positions_shape[-1] == 3, "Coordinate dimension mismatch. Expected: 3, Got: {positions_shape[-1]}"
     assert (
         positions_shape[-3] == seq_len
     ), "Number of residues mismatch. Expected: {seq_len}, Got: {positions_shape[-3]}"
+    assert result.plddt is not None, "plddt should be present in full output"
     assert np.all(result.plddt >= 0), "pLDDT scores should be non-negative"
     assert np.all(result.plddt <= 100), "pLDDT scores should be less than or equal to 100"
 
@@ -180,11 +182,16 @@ def test_esmfold_batch(test_sequences: dict[str, str]):
         result = model.fold(sequences)
 
     max_seq_length = max(len(seq) for seq in sequences)
+    assert result.positions is not None, "positions should be present in full output"
     assert (
         result.positions.shape == (8, len(sequences), max_seq_length, 14, 3)
     ), f"Position shape mismatch. Expected: (8, {len(sequences)}, {max_seq_length}, 14, 3), Got: {result.positions.shape}"
 
     # Check that batch outputs have correct sequence lengths
+    assert result.aatype is not None, "aatype should be present in full output"
+    assert result.plddt is not None, "plddt should be present in full output"
+    assert result.ptm_logits is not None, "ptm_logits should be present in full output"
+    assert result.predicted_aligned_error is not None, "predicted_aligned_error should be present in full output"
     assert result.aatype.shape[0] == len(sequences), "Batch size mismatch in aatype"
     assert result.plddt.shape[0] == len(sequences), "Batch size mismatch in plddt"
     assert result.ptm_logits.shape[0] == len(sequences), "Batch size mismatch in ptm_logits"

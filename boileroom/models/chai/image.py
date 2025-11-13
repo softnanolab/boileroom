@@ -8,8 +8,7 @@ from ...utils import MODAL_MODEL_DIR
 _chai_downloads_dir = Path(MODAL_MODEL_DIR) / "chai1"
 
 chai_image = (
-    base_image
-    .pip_install(
+    base_image.pip_install(
         "torch==2.5.1+cu118",
         extra_index_url="https://download.pytorch.org/whl/cu118",
     )

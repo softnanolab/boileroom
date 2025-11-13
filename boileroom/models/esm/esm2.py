@@ -2,7 +2,7 @@ import modal
 import numpy as np
 import os
 from dataclasses import dataclass
-from typing import List, Sequence, Union, Optional, TYPE_CHECKING
+from typing import List, Sequence, Union, Optional, TYPE_CHECKING, cast
 
 import logging
 import json
@@ -10,6 +10,7 @@ import json
 from ...base import ModelWrapper
 from ...base import EmbeddingAlgorithm, EmbeddingPrediction, PredictionMetadata
 from ...backend import LocalBackend, ModalBackend
+from ...backend.base import Backend
 from ...backend.modal import app
 from ...utils import MINUTES, MODAL_MODEL_DIR, Timer
 
@@ -210,10 +211,11 @@ class ESM2Core(EmbeddingAlgorithm):
             chain_index=chain_index_output,
             residue_index=residue_index_output,
         )
-        
+
         # Apply filtering based on output_attributes
         output_attributes = config.get("output_attributes")
-        return self._filter_output_attributes(full_output, output_attributes)
+        filtered = self._filter_output_attributes(full_output, output_attributes)
+        return cast(ESM2Output, filtered)
 
     def _mask_linker_region(
         self,
@@ -329,12 +331,14 @@ class ESM2(ModelWrapper):
             config = {}
         self.config = config
         self.device = device
+        backend_instance: Backend
         if backend == "modal":
-            self._backend = ModalBackend(ModalESM2, config, device=device)
+            backend_instance = ModalBackend(ModalESM2, config, device=device)
         elif backend == "local":
-            self._backend = LocalBackend(ESM2Core, config, device=device)
+            backend_instance = LocalBackend(ESM2Core, config, device=device)
         else:
             raise ValueError(f"Backend {backend} not supported")
+        self._backend = backend_instance
         self._backend.start()
 
     def embed(self, sequences: Union[str, Sequence[str]], options: Optional[dict] = None) -> ESM2Output:

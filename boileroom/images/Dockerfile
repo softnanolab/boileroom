@@ -25,4 +25,3 @@ RUN mkdir -p "/mnt/models" \
 USER ${MAMBA_USER}
 
 ENTRYPOINT ["/usr/bin/tini", "--"]
-

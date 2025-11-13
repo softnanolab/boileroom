@@ -9,7 +9,7 @@ from .base import Backend
 
 class LocalBackend(Backend):
     """
-    Backend that instantiates and runs model locally. 
+    Backend that instantiates and runs model locally.
     This requires that the model's dependencies are installed in the current Python environment.
     None of the dependency conflicts are resolved programmatically, so use this at your own risk.
 
@@ -19,7 +19,7 @@ class LocalBackend(Backend):
     model = Chai1(backend="local")
     result = model.fold([sequence])
     ```
-    
+
     """
 
     def __init__(
@@ -58,4 +58,3 @@ class LocalBackend(Backend):
         initialize = getattr(model, "_initialize", None)
         if callable(initialize):
             initialize()
-

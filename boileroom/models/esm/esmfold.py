@@ -4,13 +4,14 @@ import os
 import logging
 import json
 from dataclasses import dataclass
-from typing import Optional, Sequence, Union, List
+from typing import Optional, Sequence, Union, List, cast
 
 import modal
 import numpy as np
 from biotite.structure import AtomArray
 
 from ...backend import LocalBackend, ModalBackend
+from ...backend.base import Backend
 from ...backend.modal import app
 from ...base import FoldingAlgorithm, StructurePrediction, PredictionMetadata, ModelWrapper
 from .image import esm_image
@@ -135,7 +136,9 @@ class ESMFoldOutput(StructurePrediction):
 
     # Additional ESMFold-specific outputs (all optional, filtered by output_attributes)
     frames: Optional[np.ndarray] = None  # (model_layer, batch_size, residue, qxyz=7)
-    sidechain_frames: Optional[np.ndarray] = None  # (model_layer, batch_size, residue, 8, 4, 4) [rot matrix per sidechain]
+    sidechain_frames: Optional[np.ndarray] = (
+        None  # (model_layer, batch_size, residue, 8, 4, 4) [rot matrix per sidechain]
+    )
     unnormalized_angles: Optional[np.ndarray] = None  # (model_layer, batch_size, residue, 7, 2) [torsion angles]
     angles: Optional[np.ndarray] = None  # (model_layer, batch_size, residue, 7, 2) [torsion angles]
     states: Optional[np.ndarray] = None  # (model_layer, batch_size, residue, ???)
@@ -155,7 +158,9 @@ class ESMFoldOutput(StructurePrediction):
     ptm: Optional[np.ndarray] = None  # float # TODO: make it into a float when sending to the client
     aligned_confidence_probs: Optional[np.ndarray] = None  # (batch_size, residue, residue, 64)
     predicted_aligned_error: Optional[np.ndarray] = None  # (batch_size, residue, residue)
-    max_predicted_aligned_error: Optional[np.ndarray] = None  # float # TODO: make it into a float when sending to the client
+    max_predicted_aligned_error: Optional[np.ndarray] = (
+        None  # float # TODO: make it into a float when sending to the client
+    )
     chain_index: Optional[np.ndarray] = None  # (batch_size, residue)
     pdb: Optional[list[str]] = None  # 0-indexed
     cif: Optional[list[str]] = None  # 0-indexed
@@ -461,9 +466,10 @@ class ESMFoldCore(FoldingAlgorithm):
 
         # Build full output with all attributes
         full_output = ESMFoldOutput(metadata=self.metadata, **outputs)
-        
+
         # Apply filtering based on output_attributes
-        return self._filter_output_attributes(full_output, output_attributes)
+        filtered = self._filter_output_attributes(full_output, output_attributes)
+        return cast(ESMFoldOutput, filtered)
 
     def _convert_outputs_to_atomarray(self, outputs: dict) -> List[AtomArray]:
         """Convert ESMFold outputs to a Biotite AtomArray.
@@ -603,12 +609,14 @@ class ESMFold(ModelWrapper):
             config = {}
         self.config = config
         self.device = device
+        backend_instance: Backend
         if backend == "modal":
-            self._backend = ModalBackend(ModalESMFold, config, device=device)
+            backend_instance = ModalBackend(ModalESMFold, config, device=device)
         elif backend == "local":
-            self._backend = LocalBackend(ESMFoldCore, config, device=device)
+            backend_instance = LocalBackend(ESMFoldCore, config, device=device)
         else:
             raise ValueError(f"Backend {backend} not supported")
+        self._backend = backend_instance
         self._backend.start()
 
     def fold(self, sequences: Union[str, Sequence[str]], options: Optional[dict] = None) -> ESMFoldOutput:

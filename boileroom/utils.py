@@ -57,11 +57,11 @@ def ensure_cache_dir() -> Path:
 
 
 def get_model_dir() -> Path:
-    """Return the model directory, honoring the MODEL_DIR environment variable.
+    """Return the model directory, honoring the MODAL_MODEL_DIR environment variable.
 
     The path is not created here; callers should create it if needed.
     """
-    value = os.environ.get("MODEL_DIR", MODEL_DIR)
+    value = os.environ.get("MODEL_DIR", MODAL_MODEL_DIR)
     return Path(value).expanduser()
 
 

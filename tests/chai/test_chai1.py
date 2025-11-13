@@ -14,7 +14,7 @@ def chai1_model(config: Optional[dict] = None) -> Generator[Chai1, None, None]:
     model_config = dict(config) if config is not None else {}
     with enable_output():
         yield Chai1(backend="modal", config=model_config)
-    
+
 
 def test_chai1_minimal_output(test_sequences: dict[str, str], chai1_model: Chai1):
     """Test that Chai1 returns minimal output by default (metadata + atom_array)."""
@@ -31,7 +31,7 @@ def test_chai1_minimal_output(test_sequences: dict[str, str], chai1_model: Chai1
     assert result.metadata is not None, "metadata should always be present"
     assert result.atom_array is not None, "atom_array should always be generated"
     assert len(result.atom_array) > 0, "atom_array should contain at least one structure"
-    
+
     # With minimal output, other fields should be None
     assert result.positions is None, "positions should be None in minimal output"
     assert result.plddt is None, "plddt should be None in minimal output"

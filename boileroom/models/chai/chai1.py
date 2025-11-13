@@ -2,10 +2,10 @@ import os
 import csv
 import json
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any, Mapping, Optional, Sequence, Union
+from typing import Any, Mapping, Optional, Sequence, Union, cast
 
 import modal
 import numpy as np
@@ -18,6 +18,7 @@ from ...base import (
     StructurePrediction,
 )
 from ...backend import LocalBackend, ModalBackend
+from ...backend.base import Backend
 from ...backend.modal import app
 from .image import chai_image
 from ...images.volumes import model_weights
@@ -40,10 +41,11 @@ logger = logging.getLogger(__name__)
 @dataclass
 class Chai1Output(StructurePrediction):
     """Output from Chai-1 prediction including all model outputs."""
+
     metadata: PredictionMetadata
-    atom_array: Optional[List[AtomArray]] = None  # Always generated, one AtomArray per sample
+    atom_array: Optional[list[AtomArray]] = None  # Always generated, one AtomArray per sample
     positions: Optional[np.ndarray] = None  # (batch_size, residue, atom=14, xyz=3)
-    
+
     # Additional Chai-1-specific outputs (all optional, filtered by output_attributes)
     pae: Optional[list[np.ndarray]] = None
     pde: Optional[list[np.ndarray]] = None
@@ -52,7 +54,6 @@ class Chai1Output(StructurePrediction):
     iptm: Optional[list[np.ndarray]] = None
     per_chain_iptm: Optional[list[np.ndarray]] = None
     cif: Optional[list[str]] = None
-
 
 
 class Chai1Core(FoldingAlgorithm):
@@ -122,7 +123,7 @@ class Chai1Core(FoldingAlgorithm):
                     low_memory=False,
                 )
             output = self._convert_outputs(candidate, elapsed_time=timer.duration, effective_config=effective_config)
-        
+
         return output
 
     def _write_constraint(self, buffer_path: Path, config: dict) -> Optional[Path]:
@@ -179,7 +180,9 @@ class Chai1Core(FoldingAlgorithm):
 
         return constraint_path
 
-    def _convert_outputs(self, candidate: "StructureCandidates", elapsed_time: float, effective_config: dict) -> Chai1Output:
+    def _convert_outputs(
+        self, candidate: "StructureCandidates", elapsed_time: float, effective_config: dict
+    ) -> Chai1Output:
         pae, pde, plddt, ptm, iptm, per_chain_iptm = self._extract_confidence_metrics(candidate)
         positions_list, cif_string_list, atom_array = self._process_cif(candidate.cif_paths[0], effective_config)
         self.metadata.prediction_time = elapsed_time
@@ -188,8 +191,11 @@ class Chai1Core(FoldingAlgorithm):
         # positions_list is a list with one element (single sample)
         positions = positions_list[0] if positions_list and len(positions_list) > 0 else None
         # cif_string_list is a list with one element; convert [None] to None, keep [string] as [string]
-        cif = cif_string_list if cif_string_list and cif_string_list[0] is not None else None
-        
+        # Filter out None values to match type list[str]
+        cif: Optional[list[str]] = None
+        if cif_string_list and cif_string_list[0] is not None:
+            cif = [s for s in cif_string_list if s is not None]
+
         full_output = Chai1Output(
             positions=positions,
             metadata=self.metadata,
@@ -202,47 +208,55 @@ class Chai1Core(FoldingAlgorithm):
             cif=cif,
             atom_array=atom_array,
         )
-        
+
         # Apply filtering based on output_attributes
         output_attributes = effective_config.get("output_attributes")
-        return self._filter_output_attributes(full_output, output_attributes)
-    
+        filtered = self._filter_output_attributes(full_output, output_attributes)
+        return cast(Chai1Output, filtered)
+
     def _write_fasta(self, sequences: list[str], buffer_dir: Path) -> Path:
         # assert that a single batch only
         assert len(sequences) == 1, "Chai-1 only supports a single batch for now."
         seqs = sequences[0].split(":") if ":" in sequences[0] else [sequences[0]]
         fasta_path = buffer_dir / "input.fasta"
         # TODO: naming of the chains should be synchronized with how ESMFold did that
-        entries = [
-            f">protein|name=chain_{index}\n{sequence}" for index, sequence in enumerate(seqs)
-        ]
+        entries = [f">protein|name=chain_{index}\n{sequence}" for index, sequence in enumerate(seqs)]
         fasta_path.write_text("\n".join(entries))
         return fasta_path
 
-    def _process_cif(self, cif_path: Path, config: dict) -> tuple[List[np.ndarray], List[Optional[str]], List[AtomArray]]:
+    def _process_cif(
+        self, cif_path: Path, config: dict
+    ) -> tuple[list[np.ndarray], list[Optional[str]], list[AtomArray]]:
         cif_file = CIFFile.read(str(cif_path))
         structure = get_structure(cif_file)
         coords = []
         for chain in structure:
             coords.append(np.array(chain.coord, dtype=np.float32))
         flattened = np.concatenate(coords, axis=0)
-        
+
         # Always generate atom_array
         atom_array = [structure]
-        
+
         # Generate CIF string only if requested via output_attributes
         cif_string = None
         output_attributes = config.get("output_attributes")
         if output_attributes and ("*" in output_attributes or "cif" in output_attributes):
             with open(cif_path, "r") as f:
                 cif_string = f.read()
-        
+
         return [flattened], [cif_string], atom_array
 
     def _extract_confidence_metrics(
         self,
         candidates: "StructureCandidates",
-    ) -> tuple[list[np.ndarray], list[np.ndarray], list[np.ndarray]]:
+    ) -> tuple[
+        list[np.ndarray],
+        list[np.ndarray],
+        list[np.ndarray],
+        Optional[list[np.ndarray]],
+        Optional[list[np.ndarray]],
+        Optional[list[np.ndarray]],
+    ]:
         pae = self._collect_matrix(candidates, attribute_name="pae")
         pde = self._collect_matrix(candidates, attribute_name="pde")
         plddt = self._collect_matrix(candidates, attribute_name="plddt")
@@ -280,7 +294,7 @@ class Chai1Core(FoldingAlgorithm):
     gpu="T4",
     timeout=20 * MINUTES,
     scaledown_window=10 * MINUTES,
-    volumes={MODAL_MODEL_DIR: model_weights}, # TODO: somehow link this to what Chai-1 actually uses
+    volumes={MODAL_MODEL_DIR: model_weights},  # TODO: somehow link this to what Chai-1 actually uses
 )
 class ModalChai1:
     """
@@ -298,9 +312,11 @@ class ModalChai1:
     def fold(self, sequences: Union[str, Sequence[str]], options: Optional[dict] = None) -> Chai1Output:
         return self._core.fold(sequences, options=options)
 
+
 ############################################################
 # HIGH-LEVEL INTERFACE
 ############################################################
+
 
 class Chai1(ModelWrapper):
     """
@@ -314,12 +330,14 @@ class Chai1(ModelWrapper):
             config = {}
         self.config = config
         self.device = device
+        backend_instance: Backend
         if backend == "modal":
-            self._backend = ModalBackend(ModalChai1, config, device=device)
+            backend_instance = ModalBackend(ModalChai1, config, device=device)
         elif backend == "local":
-            self._backend = LocalBackend(Chai1Core, config, device=device)
+            backend_instance = LocalBackend(Chai1Core, config, device=device)
         else:
             raise ValueError(f"Backend {backend} not supported")
+        self._backend = backend_instance
         self._backend.start()
 
     def fold(self, sequences: Union[str, Sequence[str]], options: Optional[dict] = None) -> Chai1Output:

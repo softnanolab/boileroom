@@ -10,5 +10,3 @@ RUN micromamba run -n base python -m pip install --no-cache-dir \
 
 ENV HF_HUB_ENABLE_HF_TRANSFER=1 \
     DISABLE_PANDERA_IMPORT_WARNING=True
-
- 

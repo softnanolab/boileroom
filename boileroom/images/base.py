@@ -7,4 +7,4 @@ base_image = (
     .apt_install("wget", "git")
     .pip_install("biotite>=1.0.1")
     .env({"MODEL_DIR": MODAL_MODEL_DIR})
-    )
+)

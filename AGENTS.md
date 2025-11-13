@@ -15,7 +15,7 @@
 
 ## Coding Style & Naming
 - Follow Python 3.12 conventions with 4-space indentation, descriptive `snake_case` for functions, and `PascalCase` for model classes.
-- Type hints are required; CI enforces `mypy` (config in `.pre-commit-config.yaml`).
+- Type hints are required; CI enforces `mypy` (config in `.pre-commit-config.yaml`). Prefer builtin generics (list[int], dict[str, float]) and X | Y for unions (Python 3.9+ / 3.10+).
 - `ruff` manages linting and formatting with a 120-character line budget; prefer auto-fixes via pre-commit.
 - Place Modal configuration constants in `boileroom/constants.py`; avoid duplicating literal IDs across modules.
 - Use f-strings and not any other way fo doing strings, e.g., f"Today is {date}".

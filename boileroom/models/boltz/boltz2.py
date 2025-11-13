@@ -1,4 +1,3 @@
-
 import os
 import logging
 import json
@@ -10,10 +9,11 @@ import numpy as np
 import modal
 
 from dataclasses import dataclass
-from typing import Optional, Any, Union, Sequence, List, Dict
+from typing import Optional, Any, Union, Sequence, List, Dict, cast
 
 
 from ...backend import LocalBackend, ModalBackend
+from ...backend.base import Backend
 from ...backend.modal import app
 from .image import boltz_image
 from ...base import StructurePrediction, PredictionMetadata, FoldingAlgorithm, ModelWrapper
@@ -47,10 +47,12 @@ logger = logging.getLogger(__name__)
 @dataclass
 class Boltz2Output(StructurePrediction):
     """Output from Boltz-2 prediction including all model outputs."""
+
     # Required by StructurePrediction protocol
     metadata: PredictionMetadata
     atom_array: Optional[List[Any]] = None  # Always generated, one AtomArray per sample
     positions: Optional[np.ndarray] = None  # (samples, residue, atom, xyz) or object array depending on sampler
+
     # Confidence-related outputs (one entry per sample)
     confidence: Optional[List[Dict[str, Any]]] = None
     plddt: Optional[List[np.ndarray]] = None
@@ -61,9 +63,9 @@ class Boltz2Output(StructurePrediction):
     cif: Optional[List[str]] = None
 
 
-
 class Boltz2Core(FoldingAlgorithm):
     """Boltz-2 protein structure prediction model."""
+
     DEFAULT_CONFIG = {
         "device": "cuda:0",
         "use_msa_server": True,
@@ -106,19 +108,20 @@ class Boltz2Core(FoldingAlgorithm):
         self.model: Optional[Any] = None
         self._trainer: Optional[Any] = None
 
-    
     def _initialize(self) -> None:
         """Initialize Boltz-2."""
         self._load()
-    
+
     def _load(self) -> None:
         """Load Boltz-2 once and prepare a persistent Trainer."""
         # Resolve cache and weights
-        cache_dir = (
-            Path(self.config.get("cache_dir"))
-            if self.config.get("cache_dir")
-            else Path(self.model_dir).resolve() / "boltz"
-        )
+        cache_dir_str = self.config.get("cache_dir")
+        if cache_dir_str is not None:
+            cache_dir = Path(cache_dir_str)
+        else:
+            if self.model_dir is None:
+                raise ValueError("model_dir must be set when cache_dir is not provided")
+            cache_dir = Path(self.model_dir).resolve() / "boltz"
         cache_dir.mkdir(parents=True, exist_ok=True)
 
         # Download boltz2 weights and resources (mols)
@@ -256,7 +259,9 @@ class Boltz2Core(FoldingAlgorithm):
 
     # TODO: Potentially cache preprocessing for identical inputs to avoid repeated MSA/feature builds.
 
-    def _build_datamodule(self, processed: Dict[str, Any], num_workers: int, cache_dir: Path, override_method: Optional[str] = None) -> Any:
+    def _build_datamodule(
+        self, processed: Dict[str, Any], num_workers: int, cache_dir: Path, override_method: Optional[str] = None
+    ) -> Any:
         return Boltz2InferenceDataModule(
             manifest=processed["manifest"],
             target_dir=processed["targets_dir"],
@@ -275,7 +280,9 @@ class Boltz2Core(FoldingAlgorithm):
         with torch.inference_mode():
             return self._trainer.predict(self.model, datamodule=datamodule, return_predictions=True)
 
-    def _extract_sample_from_pred(self, item: Dict[str, Any]) -> tuple[
+    def _extract_sample_from_pred(
+        self, item: Dict[str, Any]
+    ) -> tuple[
         Optional[np.ndarray],
         Dict[str, Any],
         Optional[np.ndarray],
@@ -288,14 +295,14 @@ class Boltz2Core(FoldingAlgorithm):
         """
         coords_like = item.get("sample_atom_coords") or item.get("coords")
         coords = (
-            coords_like.detach().cpu().numpy() if hasattr(coords_like, "detach") else np.array(coords_like)
-        ) if coords_like is not None else None
+            (coords_like.detach().cpu().numpy() if hasattr(coords_like, "detach") else np.array(coords_like))
+            if coords_like is not None
+            else None
+        )
 
         plddt_like = item.get("plddt")
         if plddt_like is not None:
-            plddt = (
-                plddt_like.detach().cpu().numpy() if hasattr(plddt_like, "detach") else np.array(plddt_like)
-            )
+            plddt = plddt_like.detach().cpu().numpy() if hasattr(plddt_like, "detach") else np.array(plddt_like)
             # Squeeze extra batch dimensions to ensure 1D array
             while plddt.ndim > 1:
                 plddt = np.squeeze(plddt, axis=0)
@@ -304,9 +311,7 @@ class Boltz2Core(FoldingAlgorithm):
 
         pae_like = item.get("pae")
         if pae_like is not None:
-            pae = (
-                pae_like.detach().cpu().numpy() if hasattr(pae_like, "detach") else np.array(pae_like)
-            )
+            pae = pae_like.detach().cpu().numpy() if hasattr(pae_like, "detach") else np.array(pae_like)
             # Squeeze extra batch dimensions to ensure 2D square matrix
             while pae.ndim > 2:
                 pae = np.squeeze(pae, axis=0)
@@ -315,9 +320,7 @@ class Boltz2Core(FoldingAlgorithm):
 
         pde_like = item.get("pde")
         if pde_like is not None:
-            pde = (
-                pde_like.detach().cpu().numpy() if hasattr(pde_like, "detach") else np.array(pde_like)
-            )
+            pde = pde_like.detach().cpu().numpy() if hasattr(pde_like, "detach") else np.array(pde_like)
             # Squeeze extra batch dimensions to ensure 2D square matrix
             while pde.ndim > 2:
                 pde = np.squeeze(pde, axis=0)
@@ -361,7 +364,9 @@ class Boltz2Core(FoldingAlgorithm):
 
         return coords, aggregated, plddt, pae, pde
 
-    def _validate_sample_arrays(self, plddt: Optional[np.ndarray], pae: Optional[np.ndarray], pde: Optional[np.ndarray]) -> None:
+    def _validate_sample_arrays(
+        self, plddt: Optional[np.ndarray], pae: Optional[np.ndarray], pde: Optional[np.ndarray]
+    ) -> None:
         if plddt is not None and plddt.ndim != 1:
             raise ValueError(f"plddt expected 1D per-token array; got shape {plddt.shape}")
         if pae is not None and (pae.ndim != 2 or pae.shape[0] != pae.shape[1]):
@@ -399,16 +404,16 @@ class Boltz2Core(FoldingAlgorithm):
             return None
 
     def _convert_outputs_to_atomarray(
-        self, 
-        coords: np.ndarray, 
-        sequences: List[str], 
-        plddt: Optional[List[np.ndarray]] = None, 
-        chain_index: Optional[np.ndarray] = None
+        self,
+        coords: np.ndarray,
+        sequences: List[str],
+        plddt: Optional[List[np.ndarray]] = None,
+        chain_index: Optional[np.ndarray] = None,
     ) -> List[Any]:
         """Convert Boltz-2 outputs into Biotite AtomArrays.
 
         TODO: Might not work, and there might be an easier way to do this.
-        
+
         Parameters
         ----------
         coords : np.ndarray
@@ -419,7 +424,7 @@ class Boltz2Core(FoldingAlgorithm):
             pLDDT scores per sample, one array per sample
         chain_index : Optional[np.ndarray], optional
             Chain indices, shape (num_residues,)
-            
+
         Returns
         -------
         List[AtomArray]
@@ -427,15 +432,12 @@ class Boltz2Core(FoldingAlgorithm):
         """
         from biotite.structure import Atom, array
         from ...constants import restype_1to3
-        
+
         # Standard atom14 ordering (from OpenFold/AlphaFold convention)
         # This maps atom14 index to atom name for standard residues
         # Note: This is a simplified mapping - actual mapping varies by residue type
-        ATOM14_ORDER = [
-            "N", "CA", "C", "O", "CB", "CG", "CG1", "CG2", 
-            "CD", "CD1", "CD2", "CE", "CE1", "CE2"
-        ]
-        
+        ATOM14_ORDER = ["N", "CA", "C", "O", "CB", "CG", "CG1", "CG2", "CD", "CD1", "CD2", "CE", "CE1", "CE2"]
+
         # Residue-specific atom mappings (from ESMFold RESIDUE_ATOMS)
         RESIDUE_ATOMS: dict[str, list[str]] = {
             "ALA": ["C", "CA", "CB", "N", "O"],
@@ -459,26 +461,26 @@ class Boltz2Core(FoldingAlgorithm):
             "TYR": ["C", "CA", "CB", "CG", "CD1", "CD2", "CE1", "CE2", "CZ", "N", "O", "OH"],
             "VAL": ["C", "CA", "CB", "CG1", "CG2", "N", "O"],
         }
-        
+
         # Helper to map atom14 index to actual atom name for a residue
         def get_atom_name_for_residue(residue_type: str, atom14_idx: int) -> Optional[str]:
             """Map atom14 index to actual atom name for a given residue type."""
             residue_atoms = RESIDUE_ATOMS.get(residue_type, [])
             if atom14_idx >= len(ATOM14_ORDER):
                 return None
-            
+
             atom14_name = ATOM14_ORDER[atom14_idx]
-            
+
             # For backbone atoms (N, CA, C, O), always return them
             if atom14_name in ["N", "CA", "C", "O"]:
                 if atom14_name in residue_atoms:
                     return atom14_name
                 return None
-            
+
             # For sidechain atoms, check if this atom exists in the residue
             if atom14_name in residue_atoms:
                 return atom14_name
-            
+
             # Try to find a matching atom by checking if any atom in residue_atoms matches
             # This handles cases where atom14 ordering doesn't exactly match
             # For example, CG1 vs CG for ILE
@@ -486,18 +488,18 @@ class Boltz2Core(FoldingAlgorithm):
                 # Simple mapping: use the atom at the corresponding position
                 # This is approximate but should work for most cases
                 return residue_atoms[min(atom14_idx, len(residue_atoms) - 1)]
-            
+
             return None
-        
+
         # Parse sequences to get individual chains (flattened)
         all_chains: List[str] = []
         for entry in sequences:
             parts = entry.split(":") if ":" in entry else [entry]
             all_chains.extend([p.strip() for p in parts if p.strip()])
-        
+
         # Create a flat sequence string for residue lookup
         flat_sequence = "".join(all_chains)
-        
+
         # Handle different coordinate array shapes
         if coords.dtype == object:
             # Object array - each element is a separate sample
@@ -510,19 +512,19 @@ class Boltz2Core(FoldingAlgorithm):
             coords_list = [coords]
         else:
             raise ValueError(f"Unexpected coords shape: {coords.shape}")
-        
+
         atom_arrays = []
-        
+
         for sample_idx, sample_coords in enumerate(coords_list):
             atoms = []
             num_residues = sample_coords.shape[0]
             num_atoms_per_res = sample_coords.shape[1] if sample_coords.ndim >= 2 else 14
-            
+
             # Get pLDDT for this sample if available
             sample_plddt = None
             if plddt is not None and sample_idx < len(plddt):
                 sample_plddt = plddt[sample_idx]
-            
+
             # Reconstruct chain_index for this sample if not provided
             sample_chain_index = chain_index
             if sample_chain_index is None:
@@ -537,31 +539,31 @@ class Boltz2Core(FoldingAlgorithm):
                         end_offset = min(offset + len(chain_seq), num_residues)
                         sample_chain_index[offset:end_offset] = idx
                         offset = end_offset
-            
+
             # Process each residue
             for res_idx in range(num_residues):
                 # Determine which chain this residue belongs to
                 chain_idx = sample_chain_index[res_idx] if res_idx < len(sample_chain_index) else 0
                 chain_id = chr(65 + chain_idx)  # A, B, C, ...
-                
+
                 # Get residue type from sequence
                 if res_idx < len(flat_sequence):
                     residue_one_letter = flat_sequence[res_idx]
                     residue_three_letter = restype_1to3.get(residue_one_letter, "UNK")
                 else:
                     residue_three_letter = "UNK"
-                
+
                 # Process each atom14 position
                 for atom14_idx in range(min(num_atoms_per_res, 14)):
                     atom_name = get_atom_name_for_residue(residue_three_letter, atom14_idx)
                     if atom_name is None:
                         continue
-                    
+
                     # Get coordinates
                     coord = sample_coords[res_idx, atom14_idx]
                     if np.all(np.isnan(coord)) or np.all(coord == 0):
                         continue
-                    
+
                     # Get pLDDT if available (use residue-level pLDDT)
                     b_factor = 0.0
                     if sample_plddt is not None:
@@ -570,10 +572,10 @@ class Boltz2Core(FoldingAlgorithm):
                         elif sample_plddt.ndim == 2 and res_idx < sample_plddt.shape[0]:
                             # Use average if per-atom pLDDT
                             b_factor = float(np.mean(sample_plddt[res_idx]))
-                    
+
                     # Determine element from atom name
                     element = atom_name[0] if atom_name else "C"
-                    
+
                     atom = Atom(
                         coord=coord,
                         chain_id=chain_id,
@@ -584,14 +586,15 @@ class Boltz2Core(FoldingAlgorithm):
                         b_factor=b_factor,
                     )
                     atoms.append(atom)
-            
+
             atom_arrays.append(array(atoms))
-        
+
         return atom_arrays
 
     def _convert_outputs_to_pdb(self, atom_array):
         from biotite.structure.io.pdb import PDBFile, set_structure
         from io import StringIO
+
         structure_file = PDBFile()
         set_structure(structure_file, atom_array)
         string = StringIO()
@@ -601,15 +604,16 @@ class Boltz2Core(FoldingAlgorithm):
     def _convert_outputs_to_cif(self, atom_array):
         from biotite.structure.io.pdbx import CIFFile, set_structure
         from io import StringIO
+
         structure_file = CIFFile()
         set_structure(structure_file, atom_array)
         string = StringIO()
         structure_file.write(string)
         return string.getvalue()
-    
+
     def fold(self, sequences: Union[str, Sequence[str]], options: Optional[dict] = None) -> Boltz2Output:
         """Fold protein sequences (proteins only), keeping model resident in memory."""
-        
+
         # Merge static config with per-call options
         effective_config = self._merge_options(options)
 
@@ -618,11 +622,13 @@ class Boltz2Core(FoldingAlgorithm):
         self.metadata.sequence_lengths = self._compute_sequence_lengths(validated_sequences)
 
         # Always use a temporary working directory on the machine
-        cache_dir = (
-            Path(effective_config.get("cache_dir")).resolve()
-            if effective_config.get("cache_dir")
-            else Path(self.model_dir).resolve() / "boltz"
-        )
+        cache_dir_str = effective_config.get("cache_dir")
+        if cache_dir_str is not None:
+            cache_dir = Path(cache_dir_str).resolve()
+        else:
+            if self.model_dir is None:
+                raise ValueError("model_dir must be set when cache_dir is not provided")
+            cache_dir = Path(self.model_dir).resolve() / "boltz"
 
         with TemporaryDirectory() as tmp:
             work_path = Path(tmp).resolve()
@@ -637,11 +643,7 @@ class Boltz2Core(FoldingAlgorithm):
                 preds = self._predict_with_trainer(datamodule)
 
             # Extract and organize per-sample outputs succinctly
-            extracted = [
-                self._extract_sample_from_pred(item)
-                for item in (preds or [])
-                if isinstance(item, dict)
-            ]
+            extracted = [self._extract_sample_from_pred(item) for item in (preds or []) if isinstance(item, dict)]
 
             positions: List[np.ndarray] = [c for (c, _, _, _, _) in extracted if c is not None]
             confidences: List[Dict[str, Any]] = [a for (_, a, _, _, _) in extracted if a]
@@ -662,36 +664,37 @@ class Boltz2Core(FoldingAlgorithm):
             # Determine total number of residues for chain_index reconstruction
             # Handle object array where each element might have different shapes
             if positions_np.dtype == object:
-                total_residues = sum(pos.shape[0] if hasattr(pos, 'shape') and len(pos.shape) >= 1 else 0 for pos in positions_np)
+                total_residues = sum(
+                    pos.shape[0] if hasattr(pos, "shape") and len(pos.shape) >= 1 else 0 for pos in positions_np
+                )
             else:
-                total_residues = positions_np.shape[-3] if positions_np.ndim >= 3 else len(validated_sequences[0].replace(":", ""))
-            
+                total_residues = (
+                    positions_np.shape[-3] if positions_np.ndim >= 3 else len(validated_sequences[0].replace(":", ""))
+                )
+
             # Always generate atom_array
             chain_index = self._reconstruct_chain_index(validated_sequences, total_residues)
             atom_array_list = self._convert_outputs_to_atomarray(
-                positions_np, 
-                validated_sequences, 
-                plddt=plddts if plddts else None,
-                chain_index=chain_index
+                positions_np, validated_sequences, plddt=plddts if plddts else None, chain_index=chain_index
             )
 
             # Generate PDB/CIF only if requested via output_attributes
             output_attributes = effective_config.get("output_attributes")
             pdb_list: Optional[List[str]] = None
             cif_list: Optional[List[str]] = None
-            
+
             if output_attributes and ("*" in output_attributes or "pdb" in output_attributes):
                 pdb_list = []
                 for arr in atom_array_list:
                     pdb_list.append(self._convert_outputs_to_pdb(arr))
-            
+
             if output_attributes and ("*" in output_attributes or "cif" in output_attributes):
                 cif_list = []
                 for arr in atom_array_list:
                     cif_list.append(self._convert_outputs_to_cif(arr))
 
             self.metadata.prediction_time = t.duration
-            
+
             # Build full output with all attributes
             full_output = Boltz2Output(
                 positions=positions_np,
@@ -704,10 +707,10 @@ class Boltz2Core(FoldingAlgorithm):
                 cif=cif_list,
                 atom_array=atom_array_list,
             )
-            
-            # Apply filtering based on output_attributes
-            return self._filter_output_attributes(full_output, output_attributes)
 
+            # Apply filtering based on output_attributes
+            filtered = self._filter_output_attributes(full_output, output_attributes)
+            return cast(Boltz2Output, filtered)
 
 
 ############################################################
@@ -718,7 +721,7 @@ class Boltz2Core(FoldingAlgorithm):
     gpu="T4",
     timeout=20 * MINUTES,
     scaledown_window=10 * MINUTES,
-    volumes={MODAL_MODEL_DIR: model_weights}, # TODO: somehow link this to what Boltz-2 actually uses
+    volumes={MODAL_MODEL_DIR: model_weights},  # TODO: somehow link this to what Boltz-2 actually uses
 )
 class ModalBoltz2:
     """
@@ -736,9 +739,11 @@ class ModalBoltz2:
     def fold(self, sequences: Union[str, Sequence[str]], options: Optional[dict] = None) -> Boltz2Output:
         return self._core.fold(sequences, options=options)
 
+
 ############################################################
 # HIGH-LEVEL INTERFACE
 ############################################################
+
 
 class Boltz2(ModelWrapper):
     """
@@ -757,12 +762,14 @@ class Boltz2(ModelWrapper):
             config = {}
         self.config = config
         self.device = device
+        backend_instance: Backend
         if backend == "modal":
-            self._backend = ModalBackend(ModalBoltz2, config, device=device)
+            backend_instance = ModalBackend(ModalBoltz2, config, device=device)
         elif backend == "local":
-            self._backend = LocalBackend(Boltz2Core, config, device=device)
+            backend_instance = LocalBackend(Boltz2Core, config, device=device)
         else:
             raise ValueError(f"Backend {backend} not supported")
+        self._backend = backend_instance
         self._backend.start()
 
     def fold(self, sequences: Union[str, Sequence[str]], options: Optional[dict] = None) -> Boltz2Output:

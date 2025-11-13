@@ -17,4 +17,3 @@ available support, while a red cross indicates that the combination is not yet i
 | Model      | 🟢 Modal | 🐧 Apptainer (FastAPI) | 🐳 Docker (FastAPI) | 💻 Local (uv) | 💻 Local (Docker/Apptainer) |
 |------------|:--------:|:---------------------:|:------------------:|:-------------:|:--------------------------:|
 | ESM-2      | ✅       | ❌                    | ❌                 | ✅            | ❌                         |
-

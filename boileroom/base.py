@@ -6,7 +6,7 @@ import torch
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Union, Sequence, Optional, Protocol, List
+from typing import Any, Union, Sequence, Optional, Protocol, List, cast
 
 import numpy as np
 
@@ -94,17 +94,17 @@ class Algorithm(ABC):
 
     def _merge_options(self, options: Optional[dict] = None) -> dict:
         """Merge per-call options with static config, enforcing that static keys cannot be overridden.
-        
+
         Parameters
         ----------
         options : Optional[dict]
             Per-call options dictionary. Keys that are in STATIC_CONFIG_KEYS will raise ValueError.
-            
+
         Returns
         -------
         dict
             Merged configuration dictionary with options overriding non-static config values.
-            
+
         Raises
         ------
         ValueError
@@ -112,21 +112,21 @@ class Algorithm(ABC):
         """
         if options is None:
             options = {}
-        
-        static_keys = getattr(self, "STATIC_CONFIG_KEYS", set())
+
+        static_keys: set[str] = getattr(self, "STATIC_CONFIG_KEYS", set())
         if not isinstance(static_keys, set):
             static_keys = set(static_keys)
-        
+
         # Check for attempts to override static config keys
         conflicting_keys = set(options.keys()) & static_keys
         if conflicting_keys:
             raise ValueError(
                 f"The following config keys can only be set at initialization and cannot be overridden per-call: {sorted(conflicting_keys)}"
             )
-        
+
         # Merge: static config (from self.config) + dynamic options
         return {**self.config, **options}
-    
+
     @staticmethod
     def _initialize_metadata(model_name: str, model_version: str) -> PredictionMetadata:
         """Initialize metadata for the prediction.
@@ -214,65 +214,28 @@ class FoldingAlgorithm(Algorithm):
         return [len(seq) - seq.count(":") for seq in sequences]
 
     @staticmethod
-    def _validate_structure_output(output: StructurePrediction) -> None:
-        """Ensure structure predictions include atom_array or positions."""
-
-        has_atom_array = getattr(output, "atom_array", None) is not None
-        has_positions = getattr(output, "positions", None) is not None
-        if not (has_atom_array or has_positions):
-            raise ValueError(
-                "StructurePrediction outputs must include 'atom_array' or 'positions'."
-            )
-
-    @staticmethod
     def _filter_output_attributes(
         output: StructurePrediction,
         requested_attributes: Optional[List[str]],
     ) -> StructurePrediction:
         """Return a copy of ``output`` with attributes filtered per request."""
-
-        if not dataclasses.is_dataclass(output):
+        if not dataclasses.is_dataclass(output) or (requested_attributes and "*" in requested_attributes):
             return output
 
-        include_all = bool(requested_attributes) and "*" in requested_attributes
-        requested_set = {
-            attr for attr in (requested_attributes or []) if attr != "*"
+        # Cast to Any to help mypy understand this is a dataclass instance
+        dataclass_output: Any = output
+        always_include = {"metadata", "atom_array"}
+        available_fields = {field.name for field in dataclasses.fields(dataclass_output)}
+        fields_to_keep = always_include | (set(requested_attributes or []) & available_fields)
+
+        updates = {
+            field.name: None for field in dataclasses.fields(dataclass_output) if field.name not in fields_to_keep
         }
-
-        available_fields = {field.name for field in dataclasses.fields(output)}
-        invalid = requested_set - available_fields
-        if invalid:
-            logger.warning(
-                "Ignoring unknown structure output attributes: %s",
-                ", ".join(sorted(invalid)),
-            )
-            requested_set -= invalid
-
-        atom_array_present = getattr(output, "atom_array", None) is not None
-        always_include = {"metadata"}
-        if atom_array_present:
-            always_include.add("atom_array")
-        else:
-            always_include.add("positions")
-
-        if not requested_attributes:
-            requested_set = set()
-
-        updates: dict[str, Any] = {}
-        for field in dataclasses.fields(output):
-            name = field.name
-            if name in always_include:
-                continue
-            if include_all or name in requested_set:
-                continue
-            updates[name] = None
-
         if not updates:
-            return output
+            return cast(StructurePrediction, output)
 
-        filtered = dataclasses.replace(output, **updates)
-        FoldingAlgorithm._validate_structure_output(filtered)
-        return filtered
+        filtered = dataclasses.replace(dataclass_output, **updates)
+        return cast(StructurePrediction, filtered)
 
     def _prepare_multimer_sequences(self, sequences: List[str]) -> List[str]:
         """
@@ -325,41 +288,22 @@ class EmbeddingAlgorithm(Algorithm):
         requested_attributes: Optional[List[str]],
     ) -> EmbeddingPrediction:
         """Return a copy of ``output`` with attributes filtered per request."""
-
-        if not dataclasses.is_dataclass(output):
+        if not dataclasses.is_dataclass(output) or (requested_attributes and "*" in requested_attributes):
             return output
 
-        include_all = bool(requested_attributes) and "*" in requested_attributes
-        requested_set = {
-            attr for attr in (requested_attributes or []) if attr != "*"
-        }
-
-        available_fields = {field.name for field in dataclasses.fields(output)}
-        invalid = requested_set - available_fields
-        if invalid:
-            logger.warning(
-                "Ignoring unknown embedding output attributes: %s",
-                ", ".join(sorted(invalid)),
-            )
-            requested_set -= invalid
-
+        # Cast to Any to help mypy understand this is a dataclass instance
+        dataclass_output: Any = output
         always_include = {"metadata", "embeddings", "chain_index", "residue_index"}
-        if not requested_attributes:
-            requested_set = set()
+        available_fields = {field.name for field in dataclasses.fields(dataclass_output)}
+        fields_to_keep = always_include | (set(requested_attributes or []) & available_fields)
 
-        updates: dict[str, Any] = {}
-        for field in dataclasses.fields(output):
-            name = field.name
-            if name in always_include:
-                continue
-            if include_all or name in requested_set:
-                continue
-            updates[name] = None
-
+        updates = {
+            field.name: None for field in dataclasses.fields(dataclass_output) if field.name not in fields_to_keep
+        }
         if not updates:
-            return output
+            return cast(EmbeddingPrediction, output)
 
-        return dataclasses.replace(output, **updates)
+        return cast(EmbeddingPrediction, dataclasses.replace(dataclass_output, **updates))
 
 
 class ModelWrapper:
