@@ -195,11 +195,13 @@ class ESM2Core(EmbeddingAlgorithm):
             result = self._mask_linker_region(embeddings, hidden_states, **multimer_properties)
             embeddings, hidden_states, chain_index_output, residue_index_output = result
         else:  # only MONOMERs
-            chain_index_output = np.zeros((embeddings.shape[0], embeddings.shape[1]), dtype=np.int32)
-            residue_index_output = None  # HACK: for now, but given it's only monomers, it is clear what the res ids are
             if hidden_states is not None:
                 hidden_states = hidden_states[:, :, 1:-1, :]  # remove the first and last token
             embeddings = embeddings[:, 1:-1, :]  # remove the first and last token
+            # Generate chain_index and residue_index for monomers
+            batch_size, seq_len, _ = embeddings.shape
+            chain_index_output = np.zeros((batch_size, seq_len), dtype=np.int32)
+            residue_index_output = np.tile(np.arange(seq_len, dtype=np.int32), (batch_size, 1))
 
         self.metadata.prediction_time = prediction_time
 

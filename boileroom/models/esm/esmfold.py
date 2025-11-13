@@ -132,7 +132,6 @@ class ESMFoldOutput(StructurePrediction):
     # Required by StructurePrediction protocol
     metadata: PredictionMetadata
     atom_array: Optional[List[AtomArray]] = None  # Always generated, one AtomArray per sample
-    positions: Optional[np.ndarray] = None  # (model_layer, batch_size, residue, atom=14, xyz=3)
 
     # Additional ESMFold-specific outputs (all optional, filtered by output_attributes)
     frames: Optional[np.ndarray] = None  # (model_layer, batch_size, residue, qxyz=7)
@@ -464,8 +463,9 @@ class ESMFoldCore(FoldingAlgorithm):
         if output_attributes and ("*" in output_attributes or "cif" in output_attributes):
             outputs["cif"] = self._convert_outputs_to_cif(atom_array)
 
-        # Build full output with all attributes
-        full_output = ESMFoldOutput(metadata=self.metadata, **outputs)
+        # Build full output with all attributes (exclude positions as it's only used internally)
+        outputs_without_positions = {k: v for k, v in outputs.items() if k != "positions"}
+        full_output = ESMFoldOutput(metadata=self.metadata, **outputs_without_positions)
 
         # Apply filtering based on output_attributes
         filtered = self._filter_output_attributes(full_output, output_attributes)

@@ -10,10 +10,10 @@ from modal import enable_output
 
 # Each test instantiates its own model; keeping function scope avoids long-lived Modal handles.
 @pytest.fixture
-def chai1_model(config: Optional[dict] = None) -> Generator[Chai1, None, None]:
+def chai1_model(config: Optional[dict] = None, gpu_device: Optional[str] = None) -> Generator[Chai1, None, None]:
     model_config = dict(config) if config is not None else {}
     with enable_output():
-        yield Chai1(backend="modal", config=model_config)
+        yield Chai1(backend="modal", device=gpu_device, config=model_config)
 
 
 def test_chai1_minimal_output(test_sequences: dict[str, str], chai1_model: Chai1):
@@ -33,7 +33,6 @@ def test_chai1_minimal_output(test_sequences: dict[str, str], chai1_model: Chai1
     assert len(result.atom_array) > 0, "atom_array should contain at least one structure"
 
     # With minimal output, other fields should be None
-    assert result.positions is None, "positions should be None in minimal output"
     assert result.plddt is None, "plddt should be None in minimal output"
     assert result.pae is None, "pae should be None in minimal output"
     assert result.pde is None, "pde should be None in minimal output"
@@ -54,7 +53,6 @@ def test_chai1_full_output(test_sequences: dict[str, str], chai1_model: Chai1):
 
     assert isinstance(result, Chai1Output), "Result should be a Chai1Output"
     assert result.atom_array is not None, "atom_array should always be generated"
-    assert result.positions is not None, "positions should be present when requested"
     assert result.plddt is not None, "plddt should be present when requested"
     assert len(result.plddt) > 0, "plddt should contain values"
     assert np.all(np.array(result.plddt[0]) >= 0), "pLDDT scores should be non-negative"

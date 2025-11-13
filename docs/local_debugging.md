@@ -1,7 +1,10 @@
-Local Debugging Steps
-====================
-To debug, or just simply run in the local environment, one can execute the `LocalBackend`.
-This, however, requires that the execution python environment (of the main process) has all the required dependencies.
+🚧 **Local Debugging Not Yet Fully Supported**
+> ⚠️ This feature is still under active development and may not work reliably across all models. Expect rough edges—feedback welcome!
+
+Local Debugging Steps 🏗️
+========================
+To debug, or simply run in the local environment, you can execute the `LocalBackend`.
+However, your Python environment (of the main process) must satisfy all required dependencies.
 
 1. Install project dependencies manually: `uv pip install .`
 2. Some models specific version of some packages (e.g. NumPy, thus install it with: `uv pip install "numpy<2.0"`).

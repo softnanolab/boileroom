@@ -22,7 +22,7 @@ from ...utils import MINUTES, MODAL_MODEL_DIR, Timer
 
 with boltz_image.imports():
     import torch
-    from pytorch_lightning import Trainer
+    from pytorch_lightning import Trainer, seed_everything
     from boltz.main import (
         download_boltz2,
         process_inputs,
@@ -31,7 +31,8 @@ with boltz_image.imports():
         MSAModuleArgs,
         BoltzSteeringParams,
     )
-    from boltz.data.types import Manifest
+    from boltz.data.types import Manifest, StructureV2, Coords
+    from boltz.data.write.mmcif import to_mmcif
     from boltz.data.module.inferencev2 import Boltz2InferenceDataModule
     from boltz.model.models.boltz2 import Boltz2 as Boltz2Model
 
@@ -51,7 +52,6 @@ class Boltz2Output(StructurePrediction):
     # Required by StructurePrediction protocol
     metadata: PredictionMetadata
     atom_array: Optional[List[Any]] = None  # Always generated, one AtomArray per sample
-    positions: Optional[np.ndarray] = None  # (samples, residue, atom, xyz) or object array depending on sampler
 
     # Confidence-related outputs (one entry per sample)
     confidence: Optional[List[Dict[str, Any]]] = None
@@ -374,223 +374,6 @@ class Boltz2Core(FoldingAlgorithm):
         if pde is not None and (pde.ndim != 2 or pde.shape[0] != pde.shape[1]):
             raise ValueError(f"pde expected square matrix; got shape {pde.shape}")
 
-    def _reconstruct_chain_index(self, sequences: List[str], num_residues: int) -> Optional[np.ndarray]:
-        """Reconstruct chain indices from input sequences if explicit chain metadata is unavailable.
-
-        Chains are split by ':' and assigned indices 0,1,2,... in order (A,B,C,...).
-
-        Returns an array of shape (num_residues,) with chain indices, or None on mismatch.
-        """
-        try:
-            chains: List[str] = []
-            for entry in sequences:
-                parts = entry.split(":") if ":" in entry else [entry]
-                chains.extend([p.strip() for p in parts if p.strip()])
-            chain_lengths = [len(seq) for seq in chains]
-            if sum(chain_lengths) != num_residues:
-                logger.warning(
-                    "Chain reconstruction mismatch: sum(chain lengths)=%s != num_residues=%s",
-                    sum(chain_lengths),
-                    num_residues,
-                )
-                return None
-            chain_index = np.empty((num_residues,), dtype=np.int32)
-            offset = 0
-            for idx, length in enumerate(chain_lengths):
-                chain_index[offset : offset + length] = idx
-                offset += length
-            return chain_index
-        except Exception:
-            return None
-
-    def _convert_outputs_to_atomarray(
-        self,
-        coords: np.ndarray,
-        sequences: List[str],
-        plddt: Optional[List[np.ndarray]] = None,
-        chain_index: Optional[np.ndarray] = None,
-    ) -> List[Any]:
-        """Convert Boltz-2 outputs into Biotite AtomArrays.
-
-        TODO: Might not work, and there might be an easier way to do this.
-
-        Parameters
-        ----------
-        coords : np.ndarray
-            Coordinates array, shape varies but typically (samples, residue, atom14, xyz)
-        sequences : List[str]
-            Input sequences used to determine residue types
-        plddt : Optional[List[np.ndarray]], optional
-            pLDDT scores per sample, one array per sample
-        chain_index : Optional[np.ndarray], optional
-            Chain indices, shape (num_residues,)
-
-        Returns
-        -------
-        List[AtomArray]
-            List of AtomArray objects, one per sample
-        """
-        from biotite.structure import Atom, array
-        from ...constants import restype_1to3
-
-        # Standard atom14 ordering (from OpenFold/AlphaFold convention)
-        # This maps atom14 index to atom name for standard residues
-        # Note: This is a simplified mapping - actual mapping varies by residue type
-        ATOM14_ORDER = ["N", "CA", "C", "O", "CB", "CG", "CG1", "CG2", "CD", "CD1", "CD2", "CE", "CE1", "CE2"]
-
-        # Residue-specific atom mappings (from ESMFold RESIDUE_ATOMS)
-        RESIDUE_ATOMS: dict[str, list[str]] = {
-            "ALA": ["C", "CA", "CB", "N", "O"],
-            "ARG": ["C", "CA", "CB", "CG", "CD", "CZ", "N", "NE", "O", "NH1", "NH2"],
-            "ASP": ["C", "CA", "CB", "CG", "N", "O", "OD1", "OD2"],
-            "ASN": ["C", "CA", "CB", "CG", "N", "ND2", "O", "OD1"],
-            "CYS": ["C", "CA", "CB", "N", "O", "SG"],
-            "GLU": ["C", "CA", "CB", "CG", "CD", "N", "O", "OE1", "OE2"],
-            "GLN": ["C", "CA", "CB", "CG", "CD", "N", "NE2", "O", "OE1"],
-            "GLY": ["C", "CA", "N", "O"],
-            "HIS": ["C", "CA", "CB", "CG", "CD2", "CE1", "N", "ND1", "NE2", "O"],
-            "ILE": ["C", "CA", "CB", "CG1", "CG2", "CD1", "N", "O"],
-            "LEU": ["C", "CA", "CB", "CG", "CD1", "CD2", "N", "O"],
-            "LYS": ["C", "CA", "CB", "CG", "CD", "CE", "N", "NZ", "O"],
-            "MET": ["C", "CA", "CB", "CG", "CE", "N", "O", "SD"],
-            "PHE": ["C", "CA", "CB", "CG", "CD1", "CD2", "CE1", "CE2", "CZ", "N", "O"],
-            "PRO": ["C", "CA", "CB", "CG", "CD", "N", "O"],
-            "SER": ["C", "CA", "CB", "N", "O", "OG"],
-            "THR": ["C", "CA", "CB", "CG2", "N", "O", "OG1"],
-            "TRP": ["C", "CA", "CB", "CG", "CD1", "CD2", "CE2", "CE3", "CZ2", "CZ3", "CH2", "N", "NE1", "O"],
-            "TYR": ["C", "CA", "CB", "CG", "CD1", "CD2", "CE1", "CE2", "CZ", "N", "O", "OH"],
-            "VAL": ["C", "CA", "CB", "CG1", "CG2", "N", "O"],
-        }
-
-        # Helper to map atom14 index to actual atom name for a residue
-        def get_atom_name_for_residue(residue_type: str, atom14_idx: int) -> Optional[str]:
-            """Map atom14 index to actual atom name for a given residue type."""
-            residue_atoms = RESIDUE_ATOMS.get(residue_type, [])
-            if atom14_idx >= len(ATOM14_ORDER):
-                return None
-
-            atom14_name = ATOM14_ORDER[atom14_idx]
-
-            # For backbone atoms (N, CA, C, O), always return them
-            if atom14_name in ["N", "CA", "C", "O"]:
-                if atom14_name in residue_atoms:
-                    return atom14_name
-                return None
-
-            # For sidechain atoms, check if this atom exists in the residue
-            if atom14_name in residue_atoms:
-                return atom14_name
-
-            # Try to find a matching atom by checking if any atom in residue_atoms matches
-            # This handles cases where atom14 ordering doesn't exactly match
-            # For example, CG1 vs CG for ILE
-            if atom14_idx < len(residue_atoms):
-                # Simple mapping: use the atom at the corresponding position
-                # This is approximate but should work for most cases
-                return residue_atoms[min(atom14_idx, len(residue_atoms) - 1)]
-
-            return None
-
-        # Parse sequences to get individual chains (flattened)
-        all_chains: List[str] = []
-        for entry in sequences:
-            parts = entry.split(":") if ":" in entry else [entry]
-            all_chains.extend([p.strip() for p in parts if p.strip()])
-
-        # Create a flat sequence string for residue lookup
-        flat_sequence = "".join(all_chains)
-
-        # Handle different coordinate array shapes
-        if coords.dtype == object:
-            # Object array - each element is a separate sample
-            coords_list = [np.asarray(c) for c in coords]
-        elif coords.ndim == 4:
-            # Shape: (samples, residue, atom14, xyz)
-            coords_list = [coords[i] for i in range(coords.shape[0])]
-        elif coords.ndim == 3:
-            # Shape: (residue, atom14, xyz) - single sample
-            coords_list = [coords]
-        else:
-            raise ValueError(f"Unexpected coords shape: {coords.shape}")
-
-        atom_arrays = []
-
-        for sample_idx, sample_coords in enumerate(coords_list):
-            atoms = []
-            num_residues = sample_coords.shape[0]
-            num_atoms_per_res = sample_coords.shape[1] if sample_coords.ndim >= 2 else 14
-
-            # Get pLDDT for this sample if available
-            sample_plddt = None
-            if plddt is not None and sample_idx < len(plddt):
-                sample_plddt = plddt[sample_idx]
-
-            # Reconstruct chain_index for this sample if not provided
-            sample_chain_index = chain_index
-            if sample_chain_index is None:
-                sample_chain_index = self._reconstruct_chain_index(sequences, num_residues)
-                if sample_chain_index is None:
-                    # Fallback: create sequential chain indices
-                    sample_chain_index = np.zeros(num_residues, dtype=np.int32)
-                    offset = 0
-                    for idx, chain_seq in enumerate(all_chains):
-                        if offset >= num_residues:
-                            break
-                        end_offset = min(offset + len(chain_seq), num_residues)
-                        sample_chain_index[offset:end_offset] = idx
-                        offset = end_offset
-
-            # Process each residue
-            for res_idx in range(num_residues):
-                # Determine which chain this residue belongs to
-                chain_idx = sample_chain_index[res_idx] if res_idx < len(sample_chain_index) else 0
-                chain_id = chr(65 + chain_idx)  # A, B, C, ...
-
-                # Get residue type from sequence
-                if res_idx < len(flat_sequence):
-                    residue_one_letter = flat_sequence[res_idx]
-                    residue_three_letter = restype_1to3.get(residue_one_letter, "UNK")
-                else:
-                    residue_three_letter = "UNK"
-
-                # Process each atom14 position
-                for atom14_idx in range(min(num_atoms_per_res, 14)):
-                    atom_name = get_atom_name_for_residue(residue_three_letter, atom14_idx)
-                    if atom_name is None:
-                        continue
-
-                    # Get coordinates
-                    coord = sample_coords[res_idx, atom14_idx]
-                    if np.all(np.isnan(coord)) or np.all(coord == 0):
-                        continue
-
-                    # Get pLDDT if available (use residue-level pLDDT)
-                    b_factor = 0.0
-                    if sample_plddt is not None:
-                        if sample_plddt.ndim == 1 and res_idx < len(sample_plddt):
-                            b_factor = float(sample_plddt[res_idx])
-                        elif sample_plddt.ndim == 2 and res_idx < sample_plddt.shape[0]:
-                            # Use average if per-atom pLDDT
-                            b_factor = float(np.mean(sample_plddt[res_idx]))
-
-                    # Determine element from atom name
-                    element = atom_name[0] if atom_name else "C"
-
-                    atom = Atom(
-                        coord=coord,
-                        chain_id=chain_id,
-                        atom_name=atom_name,
-                        res_name=residue_three_letter,
-                        res_id=res_idx,  # 0-indexed
-                        element=element,
-                        b_factor=b_factor,
-                    )
-                    atoms.append(atom)
-
-            atom_arrays.append(array(atoms))
-
-        return atom_arrays
-
     def _convert_outputs_to_pdb(self, atom_array):
         from biotite.structure.io.pdb import PDBFile, set_structure
         from io import StringIO
@@ -601,21 +384,73 @@ class Boltz2Core(FoldingAlgorithm):
         structure_file.write(string)
         return string.getvalue()
 
-    def _convert_outputs_to_cif(self, atom_array):
-        from biotite.structure.io.pdbx import CIFFile, set_structure
+    def _convert_outputs_using_boltz_structure(
+        self,
+        coords: np.ndarray,
+        processed: Dict[str, Any],
+        plddt: Optional[List[np.ndarray]] = None,
+    ) -> tuple[List[Any], List[str]]:
+        """Convert outputs using boltz's StructureV2 and to_mmcif, return AtomArrays and CIF strings."""
+        from biotite.structure.io.pdbx import CIFFile, get_structure
         from io import StringIO
+        from dataclasses import replace
 
-        structure_file = CIFFile()
-        set_structure(structure_file, atom_array)
-        string = StringIO()
-        structure_file.write(string)
-        return string.getvalue()
+        record = processed["manifest"].records[0]
+        structure = StructureV2.load(processed["targets_dir"] / f"{record.id}.npz").remove_invalid_chains()
+
+        if coords.dtype == object:
+            coords_list = [np.asarray(c) for c in coords]
+        elif coords.ndim == 4:
+            coords_list = [coords[i] for i in range(coords.shape[0])]
+        elif coords.ndim == 3:
+            coords_list = [coords]
+        else:
+            raise ValueError(f"Unexpected coords shape: {coords.shape}")
+
+        atom_arrays = []
+        cif_strings = []
+
+        for sample_idx, sample_coords in enumerate(coords_list):
+            coord_unpad = sample_coords.reshape(-1, 3)[: len(structure.atoms)]
+
+            atoms = structure.atoms.copy()
+            atoms["coords"] = coord_unpad
+            atoms["is_present"] = True
+
+            updated_structure = replace(
+                structure,
+                atoms=atoms,
+                residues=structure.residues.copy(),
+                interfaces=np.array([], dtype=structure.interfaces.dtype),
+                coords=np.array([(x,) for x in coord_unpad], dtype=Coords),
+            )
+
+            sample_plddt = None
+            if plddt and sample_idx < len(plddt):
+                sample_plddt = (
+                    torch.from_numpy(plddt[sample_idx])
+                    if isinstance(plddt[sample_idx], np.ndarray)
+                    else plddt[sample_idx]
+                )
+
+            cif_string = to_mmcif(updated_structure, plddts=sample_plddt, boltz2=True)
+            cif_strings.append(cif_string)
+
+            atom_arrays.append(get_structure(CIFFile.read(StringIO(cif_string)), model=1))
+
+        return atom_arrays, cif_strings
 
     def fold(self, sequences: Union[str, Sequence[str]], options: Optional[dict] = None) -> Boltz2Output:
         """Fold protein sequences (proteins only), keeping model resident in memory."""
 
         # Merge static config with per-call options
         effective_config = self._merge_options(options)
+
+        # Set seed early for deterministic results (before any preprocessing or data loading)
+        # TODO: It has not been tested yet if this is actually deterministic.
+        seed = effective_config.get("seed")
+        if seed is not None:
+            seed_everything(seed)
 
         # Validate sequences and compute sequence lengths
         validated_sequences = self._validate_sequences(sequences)
@@ -645,7 +480,6 @@ class Boltz2Core(FoldingAlgorithm):
             # Extract and organize per-sample outputs succinctly
             extracted = [self._extract_sample_from_pred(item) for item in (preds or []) if isinstance(item, dict)]
 
-            positions: List[np.ndarray] = [c for (c, _, _, _, _) in extracted if c is not None]
             confidences: List[Dict[str, Any]] = [a for (_, a, _, _, _) in extracted if a]
             plddts: List[np.ndarray] = [p for (_, _, p, _, _) in extracted if p is not None]
             paes: List[np.ndarray] = [a for (_, _, _, a, _) in extracted if a is not None]
@@ -659,45 +493,26 @@ class Boltz2Core(FoldingAlgorithm):
             for arr in pdes:
                 self._validate_sample_arrays(None, None, arr)
 
-            positions_np = np.array(positions, dtype=object)
-
-            # Determine total number of residues for chain_index reconstruction
-            # Handle object array where each element might have different shapes
-            if positions_np.dtype == object:
-                total_residues = sum(
-                    pos.shape[0] if hasattr(pos, "shape") and len(pos.shape) >= 1 else 0 for pos in positions_np
-                )
-            else:
-                total_residues = (
-                    positions_np.shape[-3] if positions_np.ndim >= 3 else len(validated_sequences[0].replace(":", ""))
-                )
-
-            # Always generate atom_array
-            chain_index = self._reconstruct_chain_index(validated_sequences, total_residues)
-            atom_array_list = self._convert_outputs_to_atomarray(
-                positions_np, validated_sequences, plddt=plddts if plddts else None, chain_index=chain_index
+            # Extract coords directly for atom_array generation
+            coords_list = [c for (c, _, _, _, _) in extracted if c is not None]
+            coords_np = np.array(coords_list, dtype=object)
+            atom_array_list, cif_strings = self._convert_outputs_using_boltz_structure(
+                coords_np, processed, plddt=plddts if plddts else None
             )
 
-            # Generate PDB/CIF only if requested via output_attributes
             output_attributes = effective_config.get("output_attributes")
-            pdb_list: Optional[List[str]] = None
-            cif_list: Optional[List[str]] = None
-
+            pdb_list = None
             if output_attributes and ("*" in output_attributes or "pdb" in output_attributes):
-                pdb_list = []
-                for arr in atom_array_list:
-                    pdb_list.append(self._convert_outputs_to_pdb(arr))
+                pdb_list = [self._convert_outputs_to_pdb(arr) for arr in atom_array_list]
 
+            cif_list = None
             if output_attributes and ("*" in output_attributes or "cif" in output_attributes):
-                cif_list = []
-                for arr in atom_array_list:
-                    cif_list.append(self._convert_outputs_to_cif(arr))
+                cif_list = cif_strings
 
             self.metadata.prediction_time = t.duration
 
             # Build full output with all attributes
             full_output = Boltz2Output(
-                positions=positions_np,
                 metadata=self.metadata,
                 confidence=(confidences if confidences else None),
                 plddt=(plddts if plddts else None),

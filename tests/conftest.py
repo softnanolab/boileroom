@@ -13,11 +13,23 @@ def pytest_addoption(parser):
         choices=("modal",),
         help="Execution backend for models in tests: modal (default)",
     )
+    parser.addoption(
+        "--gpu",
+        action="store",
+        default=None,
+        help="GPU type for Modal backend tests (e.g., A100-40GB, A100-80GB, T4). Defaults to None (uses default T4).",
+    )
 
 
 @pytest.fixture(autouse=True, scope="session")
 def model_dir():
     os.environ["MODEL_DIR"] = str(pathlib.Path(__file__).parent.parent / ".model_cache")
+
+
+@pytest.fixture(scope="session")
+def gpu_device(request):
+    """Fixture that provides the GPU device type from the --gpu command-line option."""
+    return request.config.getoption("--gpu")
 
 
 @pytest.fixture

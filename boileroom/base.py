@@ -30,7 +30,6 @@ class StructurePrediction(Protocol):
 
     metadata: PredictionMetadata
     atom_array: Optional[List[Any]]  # Typically List[AtomArray]
-    positions: Optional[np.ndarray] = None
     pdb: Optional[list[str]] = None
     cif: Optional[list[str]] = None
 

@@ -43,7 +43,9 @@ sequence = "MLKNVHVLVLGAGDVGSVVVRLLEK"
 result = model.fold([sequence])
 
 # Access prediction results
-coordinates = result.positions
+# Extract coordinates from atom_array (which contains full metadata)
+atom_array = result.atom_array[0]  # Get first structure
+coordinates = atom_array.coord  # Get coordinates
 confidence = result.plddt
 ```
 
@@ -84,6 +86,14 @@ or only one test that's more verbose and shows print statements:
 ```bash
 uv run python -m pytest tests/test_basic.py::test_esmfold_batch -v -s
 ```
+
+To specify a GPU type for Modal backend tests (defaults to T4 if not specified):
+
+```bash
+uv run pytest --gpu A100-40GB
+```
+
+Available GPU options include `T4`, `A100-40GB`, `A100-80GB`, and other Modal-supported GPU types.
 
 ## License
 

@@ -44,7 +44,6 @@ class Chai1Output(StructurePrediction):
 
     metadata: PredictionMetadata
     atom_array: Optional[list[AtomArray]] = None  # Always generated, one AtomArray per sample
-    positions: Optional[np.ndarray] = None  # (batch_size, residue, atom=14, xyz=3)
 
     # Additional Chai-1-specific outputs (all optional, filtered by output_attributes)
     pae: Optional[list[np.ndarray]] = None
@@ -184,12 +183,10 @@ class Chai1Core(FoldingAlgorithm):
         self, candidate: "StructureCandidates", elapsed_time: float, effective_config: dict
     ) -> Chai1Output:
         pae, pde, plddt, ptm, iptm, per_chain_iptm = self._extract_confidence_metrics(candidate)
-        positions_list, cif_string_list, atom_array = self._process_cif(candidate.cif_paths[0], effective_config)
+        cif_string_list, atom_array = self._process_cif(candidate.cif_paths[0], effective_config)
         self.metadata.prediction_time = elapsed_time
 
         # Build full output with all attributes
-        # positions_list is a list with one element (single sample)
-        positions = positions_list[0] if positions_list and len(positions_list) > 0 else None
         # cif_string_list is a list with one element; convert [None] to None, keep [string] as [string]
         # Filter out None values to match type list[str]
         cif: Optional[list[str]] = None
@@ -197,7 +194,6 @@ class Chai1Core(FoldingAlgorithm):
             cif = [s for s in cif_string_list if s is not None]
 
         full_output = Chai1Output(
-            positions=positions,
             metadata=self.metadata,
             pae=pae if pae else None,
             pde=pde if pde else None,
@@ -226,13 +222,9 @@ class Chai1Core(FoldingAlgorithm):
 
     def _process_cif(
         self, cif_path: Path, config: dict
-    ) -> tuple[list[np.ndarray], list[Optional[str]], list[AtomArray]]:
+    ) -> tuple[list[Optional[str]], list[AtomArray]]:
         cif_file = CIFFile.read(str(cif_path))
         structure = get_structure(cif_file)
-        coords = []
-        for chain in structure:
-            coords.append(np.array(chain.coord, dtype=np.float32))
-        flattened = np.concatenate(coords, axis=0)
 
         # Always generate atom_array
         atom_array = [structure]
@@ -244,7 +236,7 @@ class Chai1Core(FoldingAlgorithm):
             with open(cif_path, "r") as f:
                 cif_string = f.read()
 
-        return [flattened], [cif_string], atom_array
+        return [cif_string], atom_array
 
     def _extract_confidence_metrics(
         self,

@@ -1,22 +1,26 @@
 import pytest
 import numpy as np
+from typing import Optional
 
 from boileroom import ESM2
 
 
 # Each test instantiates its own model; keeping function scope avoids long-lived Modal handles.
 @pytest.fixture
-def esm2_model_factory():
+def esm2_model_factory(gpu_device: Optional[str]):
     def _make_model(**kwargs):
         config = {**kwargs}
 
-        gpu_type: str
-        if "15B" in config["model_name"]:
-            gpu_type = "A100-80GB"
-        elif "3B" in config["model_name"]:
-            gpu_type = "A100-40GB"
+        # Use gpu_device from command line if provided, otherwise fall back to model-name-based selection
+        if gpu_device is not None:
+            gpu_type = gpu_device
         else:
-            gpu_type = "T4"
+            if "15B" in config["model_name"]:
+                gpu_type = "A100-80GB"
+            elif "3B" in config["model_name"]:
+                gpu_type = "A100-40GB"
+            else:
+                gpu_type = "T4"
 
         return ESM2(backend="modal", device=gpu_type, config=config)
 
