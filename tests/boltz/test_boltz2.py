@@ -103,7 +103,6 @@ def test_boltz2_nipah_matches_reference(gpu_device: Optional[str]):
     reference_atom_array = get_structure(CIFFile.read(cif_path), model=1)
     predicted_atom_array = out.atom_array[0]
 
-
     # Use CA atoms for backbone comparison (standard practice for protein structure comparison)
     predicted_ca = predicted_atom_array[predicted_atom_array.atom_name == "CA"]
     reference_ca = reference_atom_array[reference_atom_array.atom_name == "CA"]

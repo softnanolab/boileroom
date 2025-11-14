@@ -67,7 +67,7 @@ def ensure_cache_dir() -> Path:
 def get_model_dir() -> Path:
     """Resolve the model directory path using the MODEL_DIR environment variable or the default.
 
-    Reads the `MODEL_DIR` environment variable and falls back to `MODAL_MODEL_DIR` if unset. The returned Path has user home expansion applied (e.g., `~` resolved) but the directory is not created.
+    Reads the `MODEL_DIR` environment variable and falls back to `MODAL_MODEL_DIR` (the default constant) if unset. The returned Path has user home expansion applied (e.g., `~` resolved) but the directory is not created.
 
     Returns
     -------
