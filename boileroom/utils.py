@@ -1,10 +1,13 @@
 """Utility functions and constants for the BoilerRoom package."""
 
-import os
-import time
 import logging
+import os
+import tempfile
+import time
 from pathlib import Path
 from typing import Dict, Optional
+
+logger = logging.getLogger(__name__)
 
 
 # Time constants
@@ -13,7 +16,7 @@ MINUTES = 60
 HOURS = 60 * MINUTES
 
 # Directory constants
-MODEL_DIR = "/mnt/models"
+MODAL_MODEL_DIR = "/mnt/models"
 CACHE_DIR = os.path.expanduser("~/.cache/boileroom")
 
 # Amino acid constants
@@ -27,14 +30,20 @@ GPUS_AVAIL_ON_MODAL = ["T4", "L4", "A10G", "A100-40GB", "A100-80GB", "L40S", "H1
 def validate_sequence(sequence: str) -> bool:
     """Validate that a sequence contains only valid amino acids.
 
-    Args:
-        sequence: A string of amino acids in single-letter code
+    Parameters
+    ----------
+    sequence : str
+        A string of amino acids in single-letter code.
 
-    Returns:
-        bool: True if sequence is valid
+    Returns
+    -------
+    bool
+        True if sequence is valid.
 
-    Raises:
-        ValueError: If sequence contains invalid characters
+    Raises
+    ------
+    ValueError
+        If sequence contains invalid characters.
     """
     sequence = sequence.replace(":", "")  # remove any linkers first ":"
     invalid_chars = set(sequence) - VALID_AMINO_ACIDS
@@ -46,24 +55,74 @@ def validate_sequence(sequence: str) -> bool:
 
 
 def ensure_cache_dir() -> Path:
-    """Ensure the cache directory exists.
+    """Create the cache directory (including parent directories) if it does not exist and return its path.
 
-    Returns:
-        Path: Path to cache directory
+    Returns
+    -------
+    Path
+        Path to the cache directory.
     """
     cache_path = Path(CACHE_DIR)
     cache_path.mkdir(parents=True, exist_ok=True)
     return cache_path
 
 
+def get_model_dir() -> Path:
+    """Resolve and set the MODEL_DIR environment variable to a user-writable cache location following XDG conventions.
+
+    Precedence:
+    1) Respect existing MODEL_DIR if set.
+    2) Use XDG_CACHE_HOME if defined; otherwise default to ~/.cache.
+    3) Append "boileroom/models" and create the directory if it does not exist.
+
+    If the resolved directory cannot be created, falls back to a temporary directory.
+
+    Returns
+    -------
+    Path
+        Absolute path to the resolved model directory.
+    """
+    try:
+        if os.environ.get("MODEL_DIR"):
+            resolved = Path(os.environ["MODEL_DIR"]).expanduser().resolve()
+        else:
+            xdg_cache_home = os.getenv("XDG_CACHE_HOME")
+            if xdg_cache_home:
+                base_cache_dir = Path(xdg_cache_home).expanduser().resolve()
+            else:
+                base_cache_dir = Path.home() / ".cache"
+
+            resolved = (base_cache_dir / "boileroom" / "models").resolve()
+
+        resolved.mkdir(parents=True, exist_ok=True)
+        os.environ["MODEL_DIR"] = str(resolved)
+        return resolved
+    except (OSError, PermissionError) as exc:
+        logger.warning(f"Falling back to a temporary model cache due to filesystem error: {str(exc)}")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"Falling back to a temporary model cache due to unexpected error: {str(exc)}")
+
+    # Fallback to a user-writable temporary directory; ensure directory exists
+    fallback_base = Path(tempfile.gettempdir()) / "boileroom" / "models"
+    fallback_base.mkdir(parents=True, exist_ok=True)
+    os.environ["MODEL_DIR"] = str(fallback_base)
+    return fallback_base
+
+
 def format_time(seconds: float) -> str:
-    """Format time in seconds to human readable string.
+    """Convert a duration in seconds to a compact human-readable string.
 
-    Args:
-        seconds: Time in seconds
+    The output includes hours and minutes only when their values are greater than zero. Seconds are included when no larger unit is present or when seconds are greater than zero; fractional seconds are discarded (floored).
 
-    Returns:
-        str: Formatted time string (e.g. "2h 30m 15s")
+    Parameters
+    ----------
+    seconds : float
+        Duration in seconds.
+
+    Returns
+    -------
+    str
+        A string like "2h 30m 15s", omitting any zero-valued hour/minute components.
     """
     hours = int(seconds // HOURS)
     minutes = int((seconds % HOURS) // MINUTES)
@@ -83,9 +142,11 @@ def format_time(seconds: float) -> str:
 def get_gpu_memory_info() -> Optional[Dict[str, int]]:
     """Get GPU memory information if available.
 
-    Returns:
-        Optional[Dict[str, int]]: Dictionary with 'total' and 'free' memory in MB,
-                                 or None if no GPU is available
+    Returns
+    -------
+    Optional[Dict[str, int]]
+        Dictionary with 'total' and 'free' memory in MB,
+        or None if no GPU is available.
     """
     try:
         import torch

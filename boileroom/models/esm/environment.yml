@@ -1,0 +1,17 @@
+name: boileroom-esm
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.12
+  - numpy
+  - pip
+  - pip:
+    - torch>=2.5.1,<2.7.0
+    - torch-tensorrt
+    - transformers==4.49.0
+    - biotite>=1.0.1
+    - fastapi
+    - uvicorn
+    - pydantic
+

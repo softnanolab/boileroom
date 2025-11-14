@@ -2,18 +2,21 @@
 
 import os
 import logging
+import json
 from dataclasses import dataclass
-from typing import Optional, List, Union
+from typing import Optional, Sequence, Union, List, cast
 
 import modal
 import numpy as np
 from biotite.structure import AtomArray
 
-from ... import app
-from ...base import FoldingAlgorithm, StructurePrediction, PredictionMetadata
-from ...images import esm_image
+from ...backend import LocalBackend, ModalBackend
+from ...backend.base import Backend
+from ...backend.modal import app
+from ...base import FoldingAlgorithm, StructurePrediction, PredictionMetadata, ModelWrapper
+from .image import esm_image
 from ...images.volumes import model_weights
-from ...utils import MINUTES, MODEL_DIR, GPUS_AVAIL_ON_MODAL, Timer
+from ...utils import MINUTES, MODAL_MODEL_DIR, Timer
 from .linker import compute_position_ids, store_multimer_properties
 
 # ESMFold-Specific: A list of atoms (excluding hydrogen) for each AA type. PDB naming convention.
@@ -117,45 +120,47 @@ with esm_image.imports():
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+############################################################
+# CORE ALGORITHM
+############################################################
 
-# TODO: turn this into a Pydantic model instead
+
 @dataclass
 class ESMFoldOutput(StructurePrediction):
     """Output from ESMFold prediction including all model outputs."""
 
-    # TODO: we should figure out what should be the verbosity of the output,
-    # as a usual user does not need all of this information
-
     # Required by StructurePrediction protocol
-    positions: np.ndarray  # (model_layer, batch_size, residue, atom=14, xyz=3)
     metadata: PredictionMetadata
+    atom_array: Optional[List[AtomArray]] = None  # Always generated, one AtomArray per sample
 
-    # Additional ESMFold-specific outputs
-    frames: np.ndarray  # (model_layer, batch_size, residue, qxyz=7)
-    sidechain_frames: np.ndarray  # (model_layer, batch_size, residue, 8, 4, 4) [rot matrix per sidechain]
-    unnormalized_angles: np.ndarray  # (model_layer, batch_size, residue, 7, 2) [torsion angles]
-    angles: np.ndarray  # (model_layer, batch_size, residue, 7, 2) [torsion angles]
-    states: np.ndarray  # (model_layer, batch_size, residue, ???)
-    s_s: np.ndarray  # (batch_size, residue, 1024)
-    s_z: np.ndarray  # (batch_size, residue, residue, 128)
-    distogram_logits: np.ndarray  # (batch_size, residue, residue, 64) ???
-    lm_logits: np.ndarray  # (batch_size, residue, 23) ???
-    aatype: np.ndarray  # (batch_size, residue) amino acid identity
-    atom14_atom_exists: np.ndarray  # (batch_size, residue, atom=14)
-    residx_atom14_to_atom37: np.ndarray  # (batch_size, residue, atom=14)
-    residx_atom37_to_atom14: np.ndarray  # (batch_size, residue, atom=37)
-    atom37_atom_exists: np.ndarray  # (batch_size, residue, atom=37)
-    residue_index: np.ndarray  # (batch_size, residue)
-    lddt_head: np.ndarray  # (model_layer, batch_size, residue, atom=37, 50) ??
-    plddt: np.ndarray  # (batch_size, residue, atom=37)
-    ptm_logits: np.ndarray  # (batch_size, residue, residue, 64) ???
-    ptm: np.ndarray  # float # TODO: make it into a float when sending to the client
-    aligned_confidence_probs: np.ndarray  # (batch_size, residue, residue, 64)
-    predicted_aligned_error: np.ndarray  # (batch_size, residue, residue)
-    max_predicted_aligned_error: np.ndarray  # float # TODO: make it into a float when sending to the client
-    chain_index: np.ndarray  # (batch_size, residue)
-    # TODO: maybe add this to the output to clearly indicate padded residues
-    atom_array: Optional[AtomArray] = None  # 0-indexed
+    # Additional ESMFold-specific outputs (all optional, filtered by include_fields)
+    frames: Optional[np.ndarray] = None  # (model_layer, batch_size, residue, qxyz=7)
+    sidechain_frames: Optional[np.ndarray] = (
+        None  # (model_layer, batch_size, residue, 8, 4, 4) [rot matrix per sidechain]
+    )
+    unnormalized_angles: Optional[np.ndarray] = None  # (model_layer, batch_size, residue, 7, 2) [torsion angles]
+    angles: Optional[np.ndarray] = None  # (model_layer, batch_size, residue, 7, 2) [torsion angles]
+    states: Optional[np.ndarray] = None  # (model_layer, batch_size, residue, ???)
+    s_s: Optional[np.ndarray] = None  # (batch_size, residue, 1024)
+    s_z: Optional[np.ndarray] = None  # (batch_size, residue, residue, 128)
+    distogram_logits: Optional[np.ndarray] = None  # (batch_size, residue, residue, 64) ???
+    lm_logits: Optional[np.ndarray] = None  # (batch_size, residue, 23) ???
+    aatype: Optional[np.ndarray] = None  # (batch_size, residue) amino acid identity
+    atom14_atom_exists: Optional[np.ndarray] = None  # (batch_size, residue, atom=14)
+    residx_atom14_to_atom37: Optional[np.ndarray] = None  # (batch_size, residue, atom=14)
+    residx_atom37_to_atom14: Optional[np.ndarray] = None  # (batch_size, residue, atom=37)
+    atom37_atom_exists: Optional[np.ndarray] = None  # (batch_size, residue, atom=37)
+    residue_index: Optional[np.ndarray] = None  # (batch_size, residue)
+    lddt_head: Optional[np.ndarray] = None  # (model_layer, batch_size, residue, atom=37, 50) ??
+    plddt: Optional[np.ndarray] = None  # (batch_size, residue, atom=37)
+    ptm_logits: Optional[np.ndarray] = None  # (batch_size, residue, residue, 64) ???
+    ptm: Optional[np.ndarray] = None  # float # TODO: make it into a float when sending to the client
+    aligned_confidence_probs: Optional[np.ndarray] = None  # (batch_size, residue, residue, 64)
+    predicted_aligned_error: Optional[np.ndarray] = None  # (batch_size, residue, residue)
+    max_predicted_aligned_error: Optional[np.ndarray] = (
+        None  # float # TODO: make it into a float when sending to the client
+    )
+    chain_index: Optional[np.ndarray] = None  # (batch_size, residue)
     pdb: Optional[list[str]] = None  # 0-indexed
     cif: Optional[list[str]] = None  # 0-indexed
 
@@ -164,36 +169,18 @@ class ESMFoldOutput(StructurePrediction):
     # (see test_esmfold_batch_multimer_linkers for the exact batched shapes)
 
 
-GPU_TO_USE = os.environ.get("BOILEROOM_GPU", "T4")
-
-if GPU_TO_USE not in GPUS_AVAIL_ON_MODAL:
-    raise ValueError(
-        f"GPU specified in BOILEROOM_GPU environment variable ('{GPU_TO_USE}') not available on "
-        f"Modal. Please choose from: {GPUS_AVAIL_ON_MODAL}"
-    )
-
-
-@app.cls(
-    image=esm_image,
-    gpu=GPU_TO_USE,
-    timeout=20 * MINUTES,
-    container_idle_timeout=10 * MINUTES,
-    volumes={MODEL_DIR: model_weights},
-)
-class ESMFold(FoldingAlgorithm):
+class ESMFoldCore(FoldingAlgorithm):
     """ESMFold protein structure prediction model."""
 
-    # TODO: maybe this config should be input to the fold function, so that it can
-    # changed programmatically on a single ephermal app, rather than re-creating the app?
     DEFAULT_CONFIG = {
-        # ESMFold model config
-        "output_pdb": False,
-        "output_cif": False,
-        "output_atomarray": False,
+        "device": "cuda:0",
         # Chain linking and positioning config
         "glycine_linker": "",
         "position_ids_skip": 512,
+        "include_fields": None,  # Optional[List[str]] - controls which fields to include in output
     }
+    # Static config keys that can only be set at initialization
+    STATIC_CONFIG_KEYS = {"device"}
 
     # We need to properly asses whether using this or the original ESMFold is better
     # based on speed, accuracy, bugs, etc.; as well as customizability
@@ -201,76 +188,140 @@ class ESMFold(FoldingAlgorithm):
     # TODO: we should add a settings dictionary or something, that would make it easier to add new options
     # TODO: maybe use OmegaConf instead to make it easier instead of config
     def __init__(self, config: dict = {}) -> None:
-        """Initialize ESMFold."""
+        """Create an ESMFold core instance and initialize runtime fields and placeholders.
+
+        Initializes model metadata (name and version). Resolves model_dir from the environment variable `MODEL_DIR` falling back to the packaged `MODAL_MODEL_DIR`. Prepares placeholders for device (`_device`), tokenizer (`tokenizer`), and model (`model`) that will be populated during lazy loading.
+
+        Parameters
+        ----------
+        config : dict
+            Configuration overrides for the predictor (merged with DEFAULT_CONFIG at runtime).
+        """
         super().__init__(config)
         self.metadata = self._initialize_metadata(
             model_name="ESMFold",
             model_version="v4.49.0",  # HuggingFace transformers version
         )
-        self.model_dir: Optional[str] = os.environ.get("MODEL_DIR", MODEL_DIR)
+        self.model_dir: Optional[str] = os.environ.get("MODEL_DIR", MODAL_MODEL_DIR)
+        self._device: torch.device | None = None
         self.tokenizer: Optional[AutoTokenizer] = None
         self.model: Optional[EsmForProteinFolding] = None
 
-    @modal.enter()
     def _initialize(self) -> None:
         """Initialize the model during container startup. This helps us determine whether we run locally or remotely."""
         self._load()
 
     def _load(self) -> None:
-        """Load the ESMFold model and tokenizer."""
+        """Ensure the tokenizer and folding model are loaded and prepare the model for inference.
+
+        Loads the tokenizer and model into the instance if absent, resolves and sets the device,
+        moves the model to that device, switches the model to evaluation mode, configures the
+        trunk chunk size, and marks the predictor as ready for use.
+        """
         if self.tokenizer is None:
             self.tokenizer = AutoTokenizer.from_pretrained("facebook/esmfold_v1", cache_dir=self.model_dir)
         if self.model is None:
             self.model = EsmForProteinFolding.from_pretrained("facebook/esmfold_v1", cache_dir=self.model_dir)
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.model = self.model.to(self.device)
+        self._device = self._resolve_device()
+        self.model = self.model.to(self._device)
         self.model.eval()
         self.model.trunk.set_chunk_size(64)
         self.ready = True
 
-    @modal.method()
-    def fold(self, sequences: Union[str, List[str]]) -> ESMFoldOutput:
-        """Predict protein structure(s) using ESMFold."""
+    def fold(self, sequences: Union[str, Sequence[str]], options: Optional[dict] = None) -> ESMFoldOutput:
+        """Predict protein structure(s) from one or more amino acid sequence(s) using the ESMFold model.
+
+        If the model is not loaded, this method will load it lazily before running inference. Updates self.metadata.sequence_lengths with the processed sequence lengths.
+
+        Parameters
+        ----------
+        sequences : str | Sequence[str]
+            A single amino acid sequence or an iterable of sequences to predict.
+        options : dict, optional
+            Per-call configuration merged with the instance's static config (for example, `include_fields` to select which output fields to return).
+
+        Returns
+        -------
+        ESMFoldOutput
+            Predicted structure(s) and optional auxiliary outputs. The set of returned fields honors the merged configuration (e.g., `include_fields` controls presence of pdb/cif and other model-specific outputs).
+        """
+        # Merge static config with per-call options (validate before loading model)
+        effective_config = self._merge_options(options)
+
         if self.tokenizer is None or self.model is None:
             logger.warning("Model not loaded. Forcing the model to load... Next time call _load() first.")
             self._load()
         assert self.tokenizer is not None and self.model is not None, "Model not loaded"
 
-        if isinstance(sequences, str):
-            sequences = [sequences]
+        validated_sequences = self._validate_sequences(sequences)
+        self.metadata.sequence_lengths = self._compute_sequence_lengths(validated_sequences)
 
-        sequences = self._validate_sequences(sequences)
-        self.metadata.sequence_lengths = self._compute_sequence_lengths(sequences)
-
-        tokenized_input, multimer_properties = self._tokenize_sequences(sequences)
+        tokenized_input, multimer_properties = self._tokenize_sequences(validated_sequences, effective_config)
 
         with Timer("Model Inference") as timer:
             with torch.inference_mode():
                 outputs = self.model(**tokenized_input)
 
-        outputs = self._convert_outputs(outputs, multimer_properties, timer.duration)
+        outputs = self._convert_outputs(outputs, multimer_properties, timer.duration, effective_config)
         return outputs
 
-    def _tokenize_sequences(self, sequences: List[str]) -> tuple[dict, dict[str, torch.Tensor] | None]:
+    def _tokenize_sequences(self, sequences: List[str], config: dict) -> tuple[dict, dict[str, torch.Tensor] | None]:
+        """Tokenize one or more protein sequences for model input, handling multimer and monomer cases.
+
+        Parameters
+        ----------
+        sequences : List[str]
+            Protein sequences; presence of ':' in any sequence triggers multimer tokenization.
+        config : dict
+            Per-call configuration used for multimer tokenization (position ids, linker handling, etc.).
+
+        Returns
+        -------
+        tuple
+            A pair (tokenized, multimer_properties_or_none) where:
+            - tokenized (dict): Tokenizer output tensors placed on the model device (keys like 'input_ids', 'attention_mask', etc.).
+            - multimer_properties_or_none (dict[str, torch.Tensor] | None): Multimer-specific tensors (e.g., linker map, residue indices, chain indices) when multimer tokenization was used, otherwise `None`.
+        """
         assert self.tokenizer is not None, "Tokenizer not loaded"
         if ":" in "".join(sequences):  # MULTIMER setting
-            tokenized, multimer_properties = self._tokenize_multimer(sequences)
+            tokenized, multimer_properties = self._tokenize_multimer(sequences, config)
         else:  # MONOMER setting
             tokenized = self.tokenizer(
                 sequences, return_tensors="pt", add_special_tokens=False, padding=True, truncation=True, max_length=1024
             )
             multimer_properties = None
-        tokenized = {k: v.to(self.device) for k, v in tokenized.items()}
+        tokenized = {k: v.to(self._device) for k, v in tokenized.items()}
 
         return tokenized, multimer_properties
 
-    def _tokenize_multimer(self, sequences: List[str]) -> torch.Tensor:
+    def _tokenize_multimer(self, sequences: List[str], config: dict) -> torch.Tensor:
+        """Prepare tokenized inputs and multimer metadata for sequences containing chain separators.
+
+        Parameters
+        ----------
+        sequences : List[str]
+            Input sequences where different chains are separated by ":".
+        config : dict
+            Configuration containing:
+            - "glycine_linker": string used to replace ":" when constructing multimer inputs.
+            - "position_ids_skip": integer flag/offset passed to position id computation.
+
+        Returns
+        -------
+        tuple
+            A tuple containing:
+            - tokenized (Mapping[str, torch.Tensor]): Tokenizer output tensors including input ids, attention mask, and computed position_ids.
+            - multimer_properties (dict): Dictionary with keys:
+                - "linker_map" (torch.Tensor): Per-position mask indicating kept residues (1) vs linker/padding (-1 or 0).
+                - "residue_index" (torch.Tensor): Residue indices mapping token positions to residue numbers.
+                - "chain_index" (torch.Tensor): Chain indices mapping token positions to original chain ids.
+        """
         assert self.tokenizer is not None, "Tokenizer not loaded"
         # Store multimer properties first
-        linker_map, residue_index, chain_index = store_multimer_properties(sequences, self.config["glycine_linker"])
+        glycine_linker = config["glycine_linker"]
+        linker_map, residue_index, chain_index = store_multimer_properties(sequences, glycine_linker)
 
         # Create tokenized input using list comprehension directly
-        glycine_linker = self.config["glycine_linker"]
         tokenized = self.tokenizer(
             [seq.replace(":", glycine_linker) for seq in sequences],
             padding=True,
@@ -280,7 +331,7 @@ class ESMFold(FoldingAlgorithm):
         )
 
         # Add position IDs
-        tokenized["position_ids"] = compute_position_ids(sequences, glycine_linker, self.config["position_ids_skip"])
+        tokenized["position_ids"] = compute_position_ids(sequences, glycine_linker, config["position_ids_skip"])
 
         # Create attention mask (1 means keep, 0 means mask)
         # This also masks padding tokens, which are -1
@@ -296,13 +347,18 @@ class ESMFold(FoldingAlgorithm):
         chain_index: torch.Tensor,
     ) -> dict:
         """Mask the linker region in the outputs and track padding information.
+
         This includes all the metrics.
 
-        Args:
-            outputs: Dictionary containing model outputs
+        Parameters
+        ----------
+        outputs : dict
+            Dictionary containing model outputs.
 
-        Returns:
-            dict: Updated outputs with linker regions masked and padding information
+        Returns
+        -------
+        dict
+            Updated outputs with linker regions masked and padding information.
         """
         assert isinstance(linker_map, torch.Tensor), "linker_map must be a tensor"
 
@@ -377,14 +433,21 @@ class ESMFold(FoldingAlgorithm):
         ) -> np.ndarray:
             """Pad arrays to match the largest size in the residue dimension and stack them in the batch dimension.
 
-            Args:
-                arrays: List of NumPy arrays to pad and stack
-                residue_dim: Dimension(s) to pad to match sizes
-                batch_dim: Dimension to stack the arrays along
-                intermediate_dim: Whether the array has an intermediate dimension to preserve
+            Parameters
+            ----------
+            arrays : list[np.ndarray]
+                List of NumPy arrays to pad and stack.
+            residue_dim : Union[int, List[int]]
+                Dimension(s) to pad to match sizes.
+            batch_dim : int
+                Dimension to stack the arrays along.
+            intermediate_dim : bool, optional
+                Whether the array has an intermediate dimension to preserve.
 
-            Returns:
-                Stacked and padded NumPy array
+            Returns
+            -------
+            np.ndarray
+                Stacked and padded NumPy array.
             """
             if isinstance(residue_dim, int):
                 max_size = max(arr.shape[residue_dim] for arr in arrays)
@@ -453,8 +516,26 @@ class ESMFold(FoldingAlgorithm):
         outputs: dict,
         multimer_properties: dict[str, torch.Tensor] | None,
         prediction_time: float,
+        config: dict,
     ) -> ESMFoldOutput:
-        """Convert model outputs to ESMFoldOutput format."""
+        """Convert raw model outputs and optional multimer metadata into a populated ESMFoldOutput.
+
+        Parameters
+        ----------
+        outputs : dict
+            Raw model outputs (tensor values) produced by the folding model.
+        multimer_properties : dict[str, torch.Tensor] | None
+            Multimer-related tensors (e.g., linker map, residue and chain indices). When provided, linker regions are masked and per-chain residue mappings are applied.
+        prediction_time : float
+            Elapsed time (seconds) for the prediction; recorded in the output metadata.
+        config : dict
+            Per-call configuration; the "include_fields" entry controls which optional fields (for example, "pdb" or "cif") are produced and which fields are retained in the returned output.
+
+        Returns
+        -------
+        ESMFoldOutput
+            Structured prediction containing metadata and outputs. An atom_array is always generated; PDB/CIF strings and other optional fields are included only if requested via config["include_fields"]. The returned output has internal-only fields (such as raw positions) removed and is filtered according to include_fields.
+        """
 
         outputs = {k: v.cpu().numpy() for k, v in outputs.items()}
         if multimer_properties is not None:
@@ -465,24 +546,44 @@ class ESMFold(FoldingAlgorithm):
 
         self.metadata.prediction_time = prediction_time
 
+        # Always generate atom_array
         atom_array = self._convert_outputs_to_atomarray(outputs)
-        if self.config["output_pdb"]:
+        outputs["atom_array"] = atom_array
+
+        # Generate PDB/CIF only if requested via include_fields
+        include_fields = config.get("include_fields")
+        if include_fields and ("*" in include_fields or "pdb" in include_fields):
             outputs["pdb"] = self._convert_outputs_to_pdb(atom_array)
-        if self.config["output_cif"]:
+        if include_fields and ("*" in include_fields or "cif" in include_fields):
             outputs["cif"] = self._convert_outputs_to_cif(atom_array)
-        if self.config["output_atomarray"]:
-            outputs["atom_array"] = atom_array
 
-        return ESMFoldOutput(metadata=self.metadata, **outputs)
+        # Build full output with all fields (exclude positions as it's only used internally)
+        outputs_without_positions = {k: v for k, v in outputs.items() if k != "positions"}
+        full_output = ESMFoldOutput(metadata=self.metadata, **outputs_without_positions)
 
-    def _convert_outputs_to_atomarray(self, outputs: dict) -> AtomArray:
-        """Convert ESMFold outputs to a Biotite AtomArray.
+        # Apply filtering based on include_fields
+        filtered = self._filter_include_fields(full_output, include_fields)
+        return cast(ESMFoldOutput, filtered)
 
-        Args:
-            outputs: Dictionary containing ESMFold model outputs
+    def _convert_outputs_to_atomarray(self, outputs: dict) -> List[AtomArray]:
+        """Create a list of Biotite AtomArray objects from model prediction tensors.
 
-        Returns:
-            AtomArray: Biotite structure representation
+        Parameters
+        ----------
+        outputs : dict
+            Model outputs containing at least the keys:
+            - "positions": atom positions (used to derive atom37 coordinates),
+            - "atom37_atom_exists": boolean mask of existing atom37 atoms,
+            - "chain_index": per-residue chain indices,
+            - "aatype": per-residue amino acid type ids,
+            - "residue_index": per-residue residue indices,
+            - "plddt": per-residue confidence scores.
+            The function expects these tensors/arrays to be indexed by batch and residue.
+
+        Returns
+        -------
+        List[AtomArray]
+            One Biotite AtomArray per batch element. Each AtomArray contains only atoms marked as existing, with coordinates, chain_id, atom_name, three-letter residue name, residue index, chemical element, and b_factor populated from `plddt`.
         """
         from biotite.structure import Atom, array
         from transformers.models.esm.openfold_utils.feats import atom14_to_atom37
@@ -569,10 +670,125 @@ class ESMFold(FoldingAlgorithm):
         return cifs
 
 
-def get_esmfold(gpu_type="T4", config: dict = {}):
+############################################################
+# MODAL-SPECIFIC WRAPPER
+############################################################
+@app.cls(
+    image=esm_image,
+    gpu="T4",
+    timeout=20 * MINUTES,
+    scaledown_window=10 * MINUTES,
+    volumes={MODAL_MODEL_DIR: model_weights},
+)
+class ModalESMFold:
     """
-    Note that the app will still show that's using T4, but the actual method / function call will use the correct GPU,
-    and display accordingly in the Modal dashboard.
+    Modal-specific wrapper around `ESMFoldCore`.
     """
-    Model = ESMFold.with_options(gpu=gpu_type)  # type: ignore
-    return Model(config=config)
+
+    config: bytes = modal.parameter(default=b"{}")
+
+    @modal.enter()
+    def _initialize(self) -> None:
+        """Create an ESMFoldCore from this object's JSON-encoded config and initialize it.
+
+        This sets the instance attribute `self._core` to the constructed ESMFoldCore and calls its initialization routine.
+        """
+        self._core = ESMFoldCore(json.loads(self.config.decode("utf-8")))
+        self._core._initialize()
+
+    @modal.method()
+    def fold(self, sequences: Union[str, Sequence[str]], options: Optional[dict] = None) -> ESMFoldOutput:
+        """Run structure prediction for one or more protein sequences using the configured backend.
+
+        Parameters
+        ----------
+        sequences : str | Sequence[str]
+            A single amino-acid sequence or a sequence of sequences to predict.
+        options : dict, optional
+            Per-call configuration overrides (for example, include_fields to select which output fields to include). Keys in this dict override non-static entries of the model config for this prediction.
+
+        Returns
+        -------
+        ESMFoldOutput
+            Prediction results and associated metadata for each input sequence.
+        """
+        return self._core.fold(sequences, options=options)
+
+
+############################################################
+# HIGH-LEVEL INTERFACE
+############################################################
+
+
+class ESMFold(ModelWrapper):
+    """
+    Interface for ESMFold protein structure prediction model.
+    # TODO: This is the user-facing interface. It should give all the relevant details possible.
+    # with proper documentation.
+    """
+
+    def __init__(self, backend: str = "modal", device: Optional[str] = None, config: Optional[dict] = None) -> None:
+        """Initialize the ESMFold high-level model wrapper and start the selected backend.
+
+        Parameters
+        ----------
+        backend : str
+            Backend type to use. Supported values:
+            - "modal": Use Modal backend (default)
+            - "local": Use local backend (requires dependencies in current environment)
+            - "conda": Use conda backend with auto-detection (micromamba > mamba > conda)
+            - "mamba": Use mamba explicitly
+            - "micromamba": Use micromamba explicitly
+        device : Optional[str]
+            Optional device specifier to pass to the backend (e.g., "cuda:0" or "cpu").
+        config : Optional[dict]
+            Optional configuration passed to the backend; if omitted an empty dict is used.
+
+        Raises
+        ------
+        ValueError
+            If an unsupported backend string is provided, or if conda backend is
+            requested but no compatible tool (conda/mamba/micromamba) is available.
+        """
+        if config is None:
+            config = {}
+        self.config = config
+        self.device = device
+        backend_instance: Backend
+        if backend == "modal":
+            backend_instance = ModalBackend(ModalESMFold, config, device=device)
+        elif backend == "local":
+            backend_instance = LocalBackend(ESMFoldCore, config, device=device)
+        elif backend in ("conda", "mamba", "micromamba"):
+            from pathlib import Path
+            from ...backend.conda import CondaBackend
+
+            environment_yml = Path(__file__).parent / "environment.yml"
+            # Pass Core class as string path to avoid importing it in main process
+            # This keeps dependencies completely independent between Boiler Room and conda servers
+            core_class_path = "boileroom.models.esm.esmfold.ESMFoldCore"
+            # Pass backend string directly as runner_command
+            backend_instance = CondaBackend(
+                core_class_path, config or {}, device=device, environment_yml_path=environment_yml, runner_command=backend
+            )
+        else:
+            raise ValueError(f"Backend {backend} not supported")
+        self._backend = backend_instance
+        self._backend.start()
+
+    def fold(self, sequences: Union[str, Sequence[str]], options: Optional[dict] = None) -> ESMFoldOutput:
+        """Predict protein structure(s) for the provided sequence or sequences using the configured backend.
+
+        Parameters
+        ----------
+        sequences : str | Sequence[str]
+            A single amino-acid sequence or a sequence of amino-acid sequences to predict.
+        options : dict, optional
+            Per-call configuration overrides (for example `include_fields` to control which output fields are returned); keys override the instance's static config for this call.
+
+        Returns
+        -------
+        ESMFoldOutput
+            Prediction results and associated metadata, including generated atom arrays and any requested model outputs.
+        """
+        return self._call_backend_method("fold", sequences, options=options)

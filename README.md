@@ -8,6 +8,10 @@
 
 `boileroom` is a Python package that provides a unified interface to various protein prediction models, running them efficiently on Modal's serverless infrastructure.
 
+> 🚨🚨🚨 **v0.3.0** introduced major changes, including new models and inference backends. If you're upgrading from v0.2, please see the [Migration Guide](docs/migration_v0.2_to_v0.3.md) for details on breaking changes and how to update your code. 🚨🚨🚨
+
+> ⚠️ **Note:** This package is currently in active development. The API and features may change between versions. We recommend pinning your version in production environments.
+
 ## Features
 
 - 🚀 Serverless execution of protein models
@@ -32,18 +36,20 @@ modal token new
 ## Quick Start
 
 ```python
-from boileroom import app, ESMFold
+from boileroom import ESMFold
 
 # Initialize the model
-model = ESMFold()
+model = ESMFold(backend="modal")
 
 # Predict structure for a protein sequence
 sequence = "MLKNVHVLVLGAGDVGSVVVRLLEK"
-with app.run():
-    result = model.fold.remote([sequence])
+
+result = model.fold([sequence])
 
 # Access prediction results
-coordinates = result.positions
+# Extract coordinates from atom_array (which contains full metadata)
+atom_array = result.atom_array[0]  # Get first structure
+coordinates = atom_array.coord  # Get coordinates
 confidence = result.plddt
 ```
 
@@ -53,6 +59,8 @@ confidence = result.plddt
 |------------|--------|------------------------------------------------|--------------------------------------------------------|
 | ESMFold    | ✅      | Fast protein structure prediction   | [Facebook (now Meta)](https://github.com/facebookresearch/esm)     |
 | ESM-2    | ✅      | MSA-free embedding model   | [Facebook (now Meta)](https://github.com/facebookresearch/esm)     |
+| Chai-1    | ✅      | Protein design and structure prediction model | [Chai Discovery](https://github.com/chaidiscovery/chai-lab) |
+| Boltz-2   | ✅      | Diffusion-based protein structure prediction | [Boltz / MIT](https://github.com/jwohlwend/boltz) |
 
 ## Development
 
@@ -82,6 +90,14 @@ or only one test that's more verbose and shows print statements:
 ```bash
 uv run python -m pytest tests/test_basic.py::test_esmfold_batch -v -s
 ```
+
+To specify a GPU type for Modal backend tests (defaults to T4 if not specified):
+
+```bash
+uv run pytest --gpu A100-40GB
+```
+
+Available GPU options include `T4`, `A100-40GB`, `A100-80GB`, and other Modal-supported GPU types.
 
 ## License
 

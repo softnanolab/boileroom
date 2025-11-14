@@ -8,3 +8,5 @@ __pycache__/
 .model_cache/
 .venv/
 dist/
+.cursor/
+script.py
