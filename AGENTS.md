@@ -18,7 +18,8 @@
 - Type hints are required; CI enforces `mypy` (config in `.pre-commit-config.yaml`). Prefer builtin generics (list[int], dict[str, float]) and X | Y for unions (Python 3.9+ / 3.10+).
 - `ruff` manages linting and formatting with a 120-character line budget; prefer auto-fixes via pre-commit.
 - Place Modal configuration constants in `boileroom/constants.py`; avoid duplicating literal IDs across modules.
-- Use f-strings and not any other way fo doing strings, e.g., f"Today is {date}".
+- Use f-strings and not any other way of doing strings, e.g., f"Today is {date}".
+- Use Numpy Style docstring convention. Do not use Google ones or others.
 
 ## Testing Expectations
 - Prefer pytest-style `test_*` functions and fixtures; see `tests/test_utils.py` for style cues.

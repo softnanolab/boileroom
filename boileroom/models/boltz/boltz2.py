@@ -98,13 +98,14 @@ class Boltz2Core(FoldingAlgorithm):
     STATIC_CONFIG_KEYS = {"device", "cache_dir", "no_kernels"}
 
     def __init__(self, config: dict = {}) -> None:
-        """
-        Create a Boltz-2 core instance configured for inference.
-        
-        Parameters:
-            config (dict): Runtime configuration options that override the class defaults.
-                Keys listed in STATIC_CONFIG_KEYS are treated as fixed at initialization.
-                The configuration is used later when loading model weights and preparing the trainer.
+        """Create a Boltz-2 core instance configured for inference.
+
+        Parameters
+        ----------
+        config : dict
+            Runtime configuration options that override the class defaults.
+            Keys listed in STATIC_CONFIG_KEYS are treated as fixed at initialization.
+            The configuration is used later when loading model weights and preparing the trainer.
         """
         super().__init__(config)
         self.metadata = self._initialize_metadata(
@@ -116,26 +117,26 @@ class Boltz2Core(FoldingAlgorithm):
         self._trainer: Optional[Any] = None
 
     def _initialize(self) -> None:
-        """
-        Prepare the core Boltz-2 runtime for inference by loading model weights and constructing the persistent trainer.
-        
+        """Prepare the core Boltz-2 runtime for inference by loading model weights and constructing the persistent trainer.
+
         After this call the core's model and trainer are initialized and ready for predictions (self.model, self._trainer), and the ready flag is set.
         """
         self._load()
 
     def _load(self) -> None:
-        """
-        Load Boltz-2 weights and resources, initialize the model on the configured device, and create a persistent PyTorch Lightning Trainer.
-        
+        """Load Boltz-2 weights and resources, initialize the model on the configured device, and create a persistent PyTorch Lightning Trainer.
+
         This configures and populates the instance by:
         - Ensuring a cache directory exists and downloading required Boltz-2 assets into it.
         - Loading the Boltz2Model checkpoint into self.model with inference-related arguments.
         - Moving the model to the configured device, falling back to CPU if device assignment fails.
         - Creating and assigning a persistent Trainer to self._trainer.
         - Marking the core as ready by setting self.ready = True.
-        
-        Raises:
-            ValueError: If neither a cache directory nor a model directory is available to resolve required assets.
+
+        Raises
+        ------
+        ValueError
+            If neither a cache directory nor a model directory is available to resolve required assets.
         """
         # Resolve cache and weights
         cache_dir_str = self.config.get("cache_dir")
@@ -214,18 +215,21 @@ class Boltz2Core(FoldingAlgorithm):
         self.ready = True
 
     def _sequences_to_fasta(self, sequences: List[str]) -> str:
-        """
-        Convert input protein sequences into a Boltz-2 FASTA formatted string.
-        
+        """Convert input protein sequences into a Boltz-2 FASTA formatted string.
+
         Accepts a list of sequence entries where each entry is either a single sequence (e.g., "SEQ")
         or a colon-separated multimer entry (e.g., "A:B"). Whitespace is trimmed and empty parts are ignored.
         Chain identifiers are assigned sequentially as A, B, C, ... and used as FASTA headers.
-        
-        Parameters:
-            sequences (List[str]): Sequence entries or colon-separated multimer entries.
-        
-        Returns:
-            str: FASTA-formatted text where each chain has a header of the form `>X|protein|` followed
+
+        Parameters
+        ----------
+        sequences : List[str]
+            Sequence entries or colon-separated multimer entries.
+
+        Returns
+        -------
+        str
+            FASTA-formatted text where each chain has a header of the form `>X|protein|` followed
             by the corresponding sequence on the next line.
         """
         chains: List[str] = []
@@ -242,30 +246,36 @@ class Boltz2Core(FoldingAlgorithm):
         return "\n".join(headers)
 
     def _prepare_inputs(self, fasta_text: str, work_dir: Path, cache_dir: Path, config: dict) -> Dict[str, Any]:
-        """
-        Prepare input files and run Boltz-2 preprocessing to produce a processed manifest and standard input/output directories.
-        
+        """Prepare input files and run Boltz-2 preprocessing to produce a processed manifest and standard input/output directories.
+
         Creates a FASTA file from `fasta_text` in `work_dir`, runs the Boltz-2 preprocessing pipeline (MSA generation and related data preparation), and returns paths and the loaded manifest needed for downstream inference.
-        
-        Parameters:
-            fasta_text (str): FASTA-formatted sequence data (single or multi-sequence).
-            work_dir (Path): Working directory where input and output subdirectories will be created.
-            cache_dir (Path): Directory containing or receiving Boltz-2 resources and auxiliary files.
-            config (dict): Preprocessing options. Recognized keys:
-                - use_msa_server (bool): whether to use an external MSA server (default True).
-                - msa_server_url (str): URL of the MSA server (default "https://api.colabfold.com").
-                - msa_pairing_strategy (str): MSA pairing strategy (e.g., "greedy").
-                - max_msa_seqs (int): maximum number of MSA sequences to request (default 8192).
-        
-        Returns:
-            Dict[str, Any]: A mapping containing:
-                - "manifest": Manifest object loaded from processed/manifest.json.
-                - "targets_dir": Path to processed structures directory.
-                - "msa_dir": Path to processed MSA directory.
-                - "constraints_dir": Path to processed constraints directory.
-                - "template_dir": Path to processed templates directory.
-                - "extra_mols_dir": Path to processed extra molecules directory.
-                - "predictions_dir": Path to predictions output directory.
+
+        Parameters
+        ----------
+        fasta_text : str
+            FASTA-formatted sequence data (single or multi-sequence).
+        work_dir : Path
+            Working directory where input and output subdirectories will be created.
+        cache_dir : Path
+            Directory containing or receiving Boltz-2 resources and auxiliary files.
+        config : dict
+            Preprocessing options. Recognized keys:
+            - use_msa_server (bool): whether to use an external MSA server (default True).
+            - msa_server_url (str): URL of the MSA server (default "https://api.colabfold.com").
+            - msa_pairing_strategy (str): MSA pairing strategy (e.g., "greedy").
+            - max_msa_seqs (int): maximum number of MSA sequences to request (default 8192).
+
+        Returns
+        -------
+        Dict[str, Any]
+            A mapping containing:
+            - "manifest": Manifest object loaded from processed/manifest.json.
+            - "targets_dir": Path to processed structures directory.
+            - "msa_dir": Path to processed MSA directory.
+            - "constraints_dir": Path to processed constraints directory.
+            - "template_dir": Path to processed templates directory.
+            - "extra_mols_dir": Path to processed extra molecules directory.
+            - "predictions_dir": Path to predictions output directory.
         """
         data_dir = work_dir / "inputs"
         data_dir.mkdir(parents=True, exist_ok=True)
@@ -319,18 +329,24 @@ class Boltz2Core(FoldingAlgorithm):
     def _build_datamodule(
         self, processed: Dict[str, Any], num_workers: int, cache_dir: Path, override_method: Optional[str] = None
     ) -> Any:
-        """
-        Create a Boltz2InferenceDataModule configured for inference from preprocessed inputs.
-        
-        Parameters:
-            processed (Dict[str, Any]): Dictionary produced by _prepare_inputs containing at least the keys
-                "manifest", "targets_dir", "msa_dir", "constraints_dir", "template_dir", and "extra_mols_dir".
-            num_workers (int): Number of worker processes for data loading.
-            cache_dir (Path): Base cache directory; a "mols" subdirectory under this path will be used for molecule files.
-            override_method (Optional[str]): Optional override for the data loading/preprocessing method.
-        
-        Returns:
-            Boltz2InferenceDataModule: A configured data module ready to be passed to the trainer for prediction.
+        """Create a Boltz2InferenceDataModule configured for inference from preprocessed inputs.
+
+        Parameters
+        ----------
+        processed : Dict[str, Any]
+            Dictionary produced by _prepare_inputs containing at least the keys
+            "manifest", "targets_dir", "msa_dir", "constraints_dir", "template_dir", and "extra_mols_dir".
+        num_workers : int
+            Number of worker processes for data loading.
+        cache_dir : Path
+            Base cache directory; a "mols" subdirectory under this path will be used for molecule files.
+        override_method : Optional[str]
+            Optional override for the data loading/preprocessing method.
+
+        Returns
+        -------
+        Boltz2InferenceDataModule
+            A configured data module ready to be passed to the trainer for prediction.
         """
         return Boltz2InferenceDataModule(
             manifest=processed["manifest"],
@@ -346,14 +362,17 @@ class Boltz2Core(FoldingAlgorithm):
         )
 
     def _predict_with_trainer(self, datamodule: Any) -> list:
-        """
-        Run the initialized trainer to perform prediction over the provided datamodule.
-        
-        Parameters:
-            datamodule (Any): Data module supplying batches for prediction.
-        
-        Returns:
-            list: Prediction results produced by the trainer, as returned by the Trainer.predict call.
+        """Run the initialized trainer to perform prediction over the provided datamodule.
+
+        Parameters
+        ----------
+        datamodule : Any
+            Data module supplying batches for prediction.
+
+        Returns
+        -------
+        list
+            Prediction results produced by the trainer, as returned by the Trainer.predict call.
         """
         assert self._trainer is not None and self.model is not None
         with torch.inference_mode():
@@ -368,27 +387,30 @@ class Boltz2Core(FoldingAlgorithm):
         Optional[np.ndarray],
         Optional[np.ndarray],
     ]:
-        """
-        Extract per-sample atom coordinates and confidence metrics from a prediction dictionary.
-        
-        Parameters:
-            item (Dict[str, Any]): Prediction dictionary produced by the model inference step. Expected keys (optional) include:
-                - "sample_atom_coords" or "coords": per-sample atom coordinates (tensor/array).
-                - "plddt": per-residue confidence scores.
-                - "pae", "pde": pairwise error/confidence matrices.
-                - Any of: "confidence_score", "ptm", "iptm", "ligand_iptm", "protein_iptm",
-                  "complex_plddt", "complex_iplddt", "complex_pde", "complex_ipde" (scalars or arrays).
-                - "pair_chains_iptm": either a dict or an array-like pairwise inter-chain scores.
-        
-        Returns:
-            tuple:
-                coords (Optional[np.ndarray]): Atom coordinates as a NumPy array or None if not present.
-                aggregated_confidence_dict (Dict[str, Any]): Collected scalar and array confidence metrics converted to
-                    NumPy/float form; includes processed "pair_chains_iptm" as a nested dict when present and a
-                    derived "chains_ptm" mapping of self-pair scores when available.
-                plddt (Optional[np.ndarray]): 1D per-residue pLDDT array or None.
-                pae (Optional[np.ndarray]): 2D pairwise alignment error (PAE) matrix or None.
-                pde (Optional[np.ndarray]): 2D pairwise distance error (PDE) matrix or None.
+        """Extract per-sample atom coordinates and confidence metrics from a prediction dictionary.
+
+        Parameters
+        ----------
+        item : Dict[str, Any]
+            Prediction dictionary produced by the model inference step. Expected keys (optional) include:
+            - "sample_atom_coords" or "coords": per-sample atom coordinates (tensor/array).
+            - "plddt": per-residue confidence scores.
+            - "pae", "pde": pairwise error/confidence matrices.
+            - Any of: "confidence_score", "ptm", "iptm", "ligand_iptm", "protein_iptm",
+              "complex_plddt", "complex_iplddt", "complex_pde", "complex_ipde" (scalars or arrays).
+            - "pair_chains_iptm": either a dict or an array-like pairwise inter-chain scores.
+
+        Returns
+        -------
+        tuple
+            A tuple containing:
+            - coords (Optional[np.ndarray]): Atom coordinates as a NumPy array or None if not present.
+            - aggregated_confidence_dict (Dict[str, Any]): Collected scalar and array confidence metrics converted to
+              NumPy/float form; includes processed "pair_chains_iptm" as a nested dict when present and a
+              derived "chains_ptm" mapping of self-pair scores when available.
+            - plddt (Optional[np.ndarray]): 1D per-residue pLDDT array or None.
+            - pae (Optional[np.ndarray]): 2D pairwise alignment error (PAE) matrix or None.
+            - pde (Optional[np.ndarray]): 2D pairwise distance error (PDE) matrix or None.
         """
         coords_like = item.get("sample_atom_coords") or item.get("coords")
         coords = (
@@ -464,18 +486,21 @@ class Boltz2Core(FoldingAlgorithm):
     def _validate_sample_arrays(
         self, plddt: Optional[np.ndarray], pae: Optional[np.ndarray], pde: Optional[np.ndarray]
     ) -> None:
-        """
-        Validate shapes of per-sample confidence arrays.
-        
+        """Validate shapes of per-sample confidence arrays.
+
         Raises a ValueError if:
         - `plddt` is provided and is not a 1-dimensional array.
         - `pae` is provided and is not a 2-dimensional square matrix.
         - `pde` is provided and is not a 2-dimensional square matrix.
-        
-        Parameters:
-            plddt (Optional[np.ndarray]): Per-residue confidence scores; expected shape (L,).
-            pae (Optional[np.ndarray]): Predicted aligned error matrix; expected shape (L, L).
-            pde (Optional[np.ndarray]): Predicted distance error matrix; expected shape (L, L).
+
+        Parameters
+        ----------
+        plddt : Optional[np.ndarray]
+            Per-residue confidence scores; expected shape (L,).
+        pae : Optional[np.ndarray]
+            Predicted aligned error matrix; expected shape (L, L).
+        pde : Optional[np.ndarray]
+            Predicted distance error matrix; expected shape (L, L).
         """
         if plddt is not None and plddt.ndim != 1:
             raise ValueError(f"plddt expected 1D per-token array; got shape {plddt.shape}")
@@ -485,13 +510,16 @@ class Boltz2Core(FoldingAlgorithm):
             raise ValueError(f"pde expected square matrix; got shape {pde.shape}")
 
     def _convert_outputs_to_pdb(self, atom_array):
-        """
-        Convert a Biotite atom array into a PDB-formatted string.
-        
-        Parameters:
-            atom_array: A Biotite AtomArray or equivalent structure describing atomic coordinates and metadata.
-        
-        Returns:
+        """Convert a Biotite atom array into a PDB-formatted string.
+
+        Parameters
+        ----------
+        atom_array : Any
+            A Biotite AtomArray or equivalent structure describing atomic coordinates and metadata.
+
+        Returns
+        -------
+        str
             A string containing the PDB representation of the provided atom array.
         """
         from biotite.structure.io.pdb import PDBFile, set_structure
@@ -509,18 +537,23 @@ class Boltz2Core(FoldingAlgorithm):
         processed: Dict[str, Any],
         plddt: Optional[List[np.ndarray]] = None,
     ) -> tuple[List[Any], List[str]]:
-        """
-        Convert model coordinates into Boltz-2 structure objects and MMCIF strings.
-        
+        """Convert model coordinates into Boltz-2 structure objects and MMCIF strings.
+
         Given per-sample coordinates and the processed input manifest, produce a list of Biotite AtomArray structures and corresponding MMCIF-formatted strings. If `plddt` is provided, the per-residue pLDDT values are attached to each MMCIF entry.
-        
-        Parameters:
-            coords (np.ndarray): Model output coordinates; may be a 3D array for a single sample, a 4D array for multiple samples, or an object-dtype sequence of per-sample arrays.
-            processed (Dict[str, Any]): Processed inputs dictionary produced by the preprocessing step; must include a manifest with a target record and a `targets_dir` containing the template structure.
-            plddt (Optional[List[np.ndarray]]): Optional list of per-sample pLDDT arrays to embed into the MMCIF output.
-        
-        Returns:
-            tuple[List[Any], List[str]]: A tuple (atom_arrays, cif_strings) where `atom_arrays` is a list of Biotite AtomArray-like structures (one per sample) and `cif_strings` is a list of corresponding MMCIF-formatted strings.
+
+        Parameters
+        ----------
+        coords : np.ndarray
+            Model output coordinates; may be a 3D array for a single sample, a 4D array for multiple samples, or an object-dtype sequence of per-sample arrays.
+        processed : Dict[str, Any]
+            Processed inputs dictionary produced by the preprocessing step; must include a manifest with a target record and a `targets_dir` containing the template structure.
+        plddt : Optional[List[np.ndarray]]
+            Optional list of per-sample pLDDT arrays to embed into the MMCIF output.
+
+        Returns
+        -------
+        tuple[List[Any], List[str]]
+            A tuple (atom_arrays, cif_strings) where `atom_arrays` is a list of Biotite AtomArray-like structures (one per sample) and `cif_strings` is a list of corresponding MMCIF-formatted strings.
         """
         from biotite.structure.io.pdbx import CIFFile, get_structure
         from io import StringIO
@@ -572,15 +605,19 @@ class Boltz2Core(FoldingAlgorithm):
         return atom_arrays, cif_strings
 
     def fold(self, sequences: Union[str, Sequence[str]], options: Optional[dict] = None) -> Boltz2Output:
-        """
-        Predicts 3D structures for the given protein sequences using the resident Boltz-2 model.
-        
-        Parameters:
-            sequences (Union[str, Sequence[str]]): One or more protein sequences. Accepted formats include a single sequence string, a chain-delimited string like "A:B" for multiple chains, or a sequence/list of individual chain strings.
-            options (Optional[dict]): Optional runtime configuration overrides for this call. Supported keys include `seed` (int) to control randomness, `cache_dir` (str) for resource caching, `num_workers` (int) for data loading, and `include_fields` (iterable) to request additional output fields such as `"pdb"` or `"cif"`.
-        
-        Returns:
-            Boltz2Output: Prediction results including metadata and per-sample outputs such as atom arrays, confidence metrics, `plddt`, `pae`, `pde`, and optional PDB/MMCIF strings depending on `include_fields`.
+        """Predicts 3D structures for the given protein sequences using the resident Boltz-2 model.
+
+        Parameters
+        ----------
+        sequences : Union[str, Sequence[str]]
+            One or more protein sequences. Accepted formats include a single sequence string, a chain-delimited string like "A:B" for multiple chains, or a sequence/list of individual chain strings.
+        options : Optional[dict]
+            Optional runtime configuration overrides for this call. Supported keys include `seed` (int) to control randomness, `cache_dir` (str) for resource caching, `num_workers` (int) for data loading, and `include_fields` (iterable) to request additional output fields such as `"pdb"` or `"cif"`.
+
+        Returns
+        -------
+        Boltz2Output
+            Prediction results including metadata and per-sample outputs such as atom arrays, confidence metrics, `plddt`, `pae`, `pde`, and optional PDB/MMCIF strings depending on `include_fields`.
         """
 
         # Merge static config with per-call options
@@ -687,9 +724,8 @@ class ModalBoltz2:
 
     @modal.enter()
     def _initialize(self) -> None:
-        """
-        Initialize the internal Boltz-2 core from the JSON-encoded `self.config` and prepare it for use.
-        
+        """Initialize the internal Boltz-2 core from the JSON-encoded `self.config` and prepare it for use.
+
         Decodes the stored JSON configuration, constructs a Boltz2Core instance assigned to `self._core`, and runs its initialization routine.
         """
         self._core = Boltz2Core(json.loads(self.config.decode("utf-8")))
@@ -697,15 +733,19 @@ class ModalBoltz2:
 
     @modal.method()
     def fold(self, sequences: Union[str, Sequence[str]], options: Optional[dict] = None) -> Boltz2Output:
-        """
-        Predict protein structure(s) for the provided sequence or sequences using the configured Boltz-2 backend.
-        
-        Parameters:
-            sequences (str | Sequence[str]): A single amino-acid sequence or an iterable of sequences. For multi-chain constructs a single string may use colon-separated chains (e.g., "A:B") or pass a sequence of chain sequences.
-            options (dict, optional): Per-call configuration overrides (for example: include_fields, seed, device, cache_dir, msa_server, num_samples). Keys mirror Boltz-2 config options and override instance defaults for this run.
-        
-        Returns:
-            Boltz2Output: Prediction results including metadata, per-sample atom arrays, confidence metrics (plddt/pae/pde), and optional serialized structures (PDB/CIF).
+        """Predict protein structure(s) for the provided sequence or sequences using the configured Boltz-2 backend.
+
+        Parameters
+        ----------
+        sequences : str | Sequence[str]
+            A single amino-acid sequence or an iterable of sequences. For multi-chain constructs a single string may use colon-separated chains (e.g., "A:B") or pass a sequence of chain sequences.
+        options : dict, optional
+            Per-call configuration overrides (for example: include_fields, seed, device, cache_dir, msa_server, num_samples). Keys mirror Boltz-2 config options and override instance defaults for this run.
+
+        Returns
+        -------
+        Boltz2Output
+            Prediction results including metadata, per-sample atom arrays, confidence metrics (plddt/pae/pde), and optional serialized structures (PDB/CIF).
         """
         return self._core.fold(sequences, options=options)
 
@@ -728,16 +768,21 @@ class Boltz2(ModelWrapper):
     """
 
     def __init__(self, backend: str = "modal", device: Optional[str] = None, config: Optional[dict] = None) -> None:
-        """
-        Create a Boltz-2 model wrapper that selects and starts a backend.
-        
-        Parameters:
-            backend (str): Which backend to use; "modal" to run in a Modal instance or "local" to run directly in-process.
-            device (Optional[str]): Device hint passed to the chosen backend (e.g., "cuda" or "cpu"); may be ignored by some backends.
-            config (Optional[dict]): Runtime configuration forwarded to the backend and underlying Boltz-2 core.
-        
-        Raises:
-            ValueError: If an unsupported backend name is provided.
+        """Create a Boltz-2 model wrapper that selects and starts a backend.
+
+        Parameters
+        ----------
+        backend : str
+            Which backend to use; "modal" to run in a Modal instance or "local" to run directly in-process.
+        device : Optional[str]
+            Device hint passed to the chosen backend (e.g., "cuda" or "cpu"); may be ignored by some backends.
+        config : Optional[dict]
+            Runtime configuration forwarded to the backend and underlying Boltz-2 core.
+
+        Raises
+        ------
+        ValueError
+            If an unsupported backend name is provided.
         """
         if config is None:
             config = {}
@@ -754,14 +799,18 @@ class Boltz2(ModelWrapper):
         self._backend.start()
 
     def fold(self, sequences: Union[str, Sequence[str]], options: Optional[dict] = None) -> Boltz2Output:
-        """
-        Run the Boltz-2 folding workflow for one or more protein sequences.
-        
-        Parameters:
-            sequences (str | Sequence[str]): A single amino-acid sequence or an iterable of sequences representing one or more chains/targets.
-            options (dict, optional): Per-call configuration overrides for the run (e.g., sampling/recycling settings, device selection, include_fields). Keys mirror those in the core configuration.
-        
-        Returns:
-            Boltz2Output: Prediction results and associated metadata, including per-sample atom arrays, confidence metrics (plddt, pae, pde), and optional PDB/MMCIF strings.
+        """Run the Boltz-2 folding workflow for one or more protein sequences.
+
+        Parameters
+        ----------
+        sequences : str | Sequence[str]
+            A single amino-acid sequence or an iterable of sequences representing one or more chains/targets.
+        options : dict, optional
+            Per-call configuration overrides for the run (e.g., sampling/recycling settings, device selection, include_fields). Keys mirror those in the core configuration.
+
+        Returns
+        -------
+        Boltz2Output
+            Prediction results and associated metadata, including per-sample atom arrays, confidence metrics (plddt, pae, pde), and optional PDB/MMCIF strings.
         """
         return self._call_backend_method("fold", sequences, options=options)

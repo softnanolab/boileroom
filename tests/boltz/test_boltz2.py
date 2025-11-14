@@ -18,15 +18,19 @@ nipah_virus_sequence = "ICLQKTSNQILKPKLISYTLGQSGTCITDPLLAMDEGYFAYSHLERIGSCSRGVSK
 
 @pytest.fixture(scope="module")
 def boltz2_model(config: Optional[dict] = None, gpu_device: Optional[str] = None) -> Generator[Boltz2, None, None]:
-    """
-    Provide a Boltz2 model instance configured for the Modal backend.
-    
-    Parameters:
-        config (Optional[dict]): Optional model configuration overrides to apply when constructing the Boltz2 instance.
-        gpu_device (Optional[str]): Optional device identifier to run the model on (for example, "cuda:0" or similar).
-    
-    Returns:
-        boltz (Boltz2): A Boltz2 instance configured with backend="modal", the specified device, and the provided configuration.
+    """Provide a Boltz2 model instance configured for the Modal backend.
+
+    Parameters
+    ----------
+    config : Optional[dict]
+        Optional model configuration overrides to apply when constructing the Boltz2 instance.
+    gpu_device : Optional[str]
+        Optional device identifier to run the model on (for example, "cuda:0" or similar).
+
+    Yields
+    ------
+    Boltz2
+        A Boltz2 instance configured with backend="modal", the specified device, and the provided configuration.
     """
     model_config = dict(config) if config is not None else {}
     with enable_output():
@@ -34,14 +38,17 @@ def boltz2_model(config: Optional[dict] = None, gpu_device: Optional[str] = None
 
 
 def _recover_chain_sequences(atomarray: AtomArray) -> list[str]:
-    """
-    Extract one-letter amino-acid sequences for each chain in an AtomArray.
-    
-    Parameters:
-    	atomarray (AtomArray): Biotite AtomArray containing residues with `chain_id`, `res_id`, and three-letter `res_name` fields.
-    
-    Returns:
-    	list[str]: A list of one-letter sequences, one string per unique chain in the order of numpy.unique on `chain_id`.
+    """Extract one-letter amino-acid sequences for each chain in an AtomArray.
+
+    Parameters
+    ----------
+    atomarray : AtomArray
+        Biotite AtomArray containing residues with `chain_id`, `res_id`, and three-letter `res_name` fields.
+
+    Returns
+    -------
+    list[str]
+        A list of one-letter sequences, one string per unique chain in the order of numpy.unique on `chain_id`.
     """
     chains = []
     for chain_id in np.unique(atomarray.chain_id):
@@ -54,13 +61,14 @@ def _recover_chain_sequences(atomarray: AtomArray) -> list[str]:
 
 
 def test_boltz2_nipah_matches_reference(gpu_device: Optional[str]):
-    """
-    Run Boltz2 on the Nipah virus sequence and validate the predicted structure against reference data.
-    
+    """Run Boltz2 on the Nipah virus sequence and validate the predicted structure against reference data.
+
     Checks that required reference files exist, runs the model requesting all output fields, verifies an atom array was produced, compares C-alpha (CA) atoms between the predicted and reference structures, and asserts the superimposed CA RMSD is less than 0.5 Å.
-    
-    Parameters:
-        gpu_device (Optional[str]): GPU device identifier to use for the model, or `None` to run on CPU.
+
+    Parameters
+    ----------
+    gpu_device : Optional[str]
+        GPU device identifier to use for the model, or `None` to run on CPU.
     """
     base_dir = pathlib.Path(__file__).resolve().parents[1] / "data" / "boltz"
     conf_path = base_dir / "confidence_0_model_0.json"
@@ -95,7 +103,6 @@ def test_boltz2_nipah_matches_reference(gpu_device: Optional[str]):
     reference_atom_array = get_structure(CIFFile.read(cif_path), model=1)
     predicted_atom_array = out.atom_array[0]
 
-    breakpoint()
 
     # Use CA atoms for backbone comparison (standard practice for protein structure comparison)
     predicted_ca = predicted_atom_array[predicted_atom_array.atom_name == "CA"]
@@ -131,13 +138,14 @@ def test_boltz2_minimal_output(test_sequences: dict[str, str], gpu_device: Optio
 
 
 def test_boltz2_invalid_amino_acids_validation(test_sequences: dict[str, str]):
-    """
-    Verify that Boltz2Core's sequence validator raises a ValueError for invalid amino-acid sequences.
-    
+    """Verify that Boltz2Core's sequence validator raises a ValueError for invalid amino-acid sequences.
+
     This test calls Boltz2Core._validate_sequences with a sequence labelled "invalid" in the provided fixtures and expects a ValueError to be raised.
-    
-    Parameters:
-        test_sequences (dict[str, str]): Mapping of named test sequences; must include an "invalid" entry containing a sequence with invalid/unsupported amino-acid codes.
+
+    Parameters
+    ----------
+    test_sequences : dict[str, str]
+        Mapping of named test sequences; must include an "invalid" entry containing a sequence with invalid/unsupported amino-acid codes.
     """
     # Use the core's validator directly to ensure it raises for invalid inputs
     from boileroom.models.boltz.boltz2 import Boltz2Core

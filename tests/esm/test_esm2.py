@@ -8,18 +8,22 @@ from boileroom import ESM2
 # Each test instantiates its own model; keeping function scope avoids long-lived Modal handles.
 @pytest.fixture
 def esm2_model_factory(gpu_device: Optional[str]):
+    """Create a factory that builds configured ESM2 model instances.
+
+    Parameters
+    ----------
+    gpu_device : Optional[str]
+        If provided, forces the model device to this value; otherwise the device is inferred from the provided model_name in the factory call:
+        - model_name containing "15B" → "A100-80GB"
+        - model_name containing "3B" → "A100-40GB"
+        - otherwise → "T4"
+
+    Returns
+    -------
+    Callable[..., ESM2]
+        A function that accepts model configuration kwargs (must include `model_name`) and returns an ESM2 instance with backend "modal" and device chosen as described above.
     """
-    Create a factory that builds configured ESM2 model instances.
-    
-    Parameters:
-        gpu_device (Optional[str]): If provided, forces the model device to this value; otherwise the device is inferred from the provided model_name in the factory call:
-            - model_name containing "15B" → "A100-80GB"
-            - model_name containing "3B" → "A100-40GB"
-            - otherwise → "T4"
-    
-    Returns:
-        factory (Callable[..., ESM2]): A function that accepts model configuration kwargs (must include `model_name`) and returns an ESM2 instance with backend "modal" and device chosen as described above.
-    """
+
     def _make_model(**kwargs):
         config = {**kwargs}
 
@@ -111,7 +115,7 @@ def test_esm2_embed_hidden_states(esm2_model_factory):
 def test_esm2_embed_multimer(esm2_model_factory, test_sequences):
     """
     Validate ESM2 multimer embedding produces correct embeddings, chain and residue indices, padding behavior, and optional hidden states.
-    
+
     Tests multimer handling across scenarios: varying glycine linker lengths, a simple multimer, a complex multimer, and a batched set of sequences with different chain counts and lengths. Verifies:
     - embeddings and hidden_states shapes match expected sequence and model dimensions,
     - chain_index and residue_index shape and per-chain numbering,

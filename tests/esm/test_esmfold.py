@@ -18,15 +18,19 @@ from biotite.structure.io.pdb import PDBFile
 # Module scope keeps a single Modal container alive for the duration of the suite.
 @pytest.fixture(scope="module")
 def esmfold_model(config: Optional[dict] = None, gpu_device: Optional[str] = None) -> Generator[ESMFold, None, None]:
-    """
-    Provide a configured ESMFold model instance for tests.
-    
-    Parameters:
-        config (Optional[dict]): Optional configuration overrides passed to the ESMFold constructor.
-        gpu_device (Optional[str]): Optional device identifier (e.g., "cuda:0" or "cpu") to initialize the model on.
-    
-    Returns:
-        ESMFold: A configured ESMFold instance ready for use in tests.
+    """Provide a configured ESMFold model instance for tests.
+
+    Parameters
+    ----------
+    config : Optional[dict]
+        Optional configuration overrides passed to the ESMFold constructor.
+    gpu_device : Optional[str]
+        Optional device identifier (e.g., "cuda:0" or "cpu") to initialize the model on.
+
+    Yields
+    ------
+    ESMFold
+        A configured ESMFold instance ready for use in tests.
     """
     model_config = dict(config) if config is not None else {}
     with enable_output():
@@ -280,25 +284,28 @@ def test_esmfold_static_config_enforcement(test_sequences: dict[str, str]):
 def test_esmfold_output_pdb_cif(data_dir: pathlib.Path, test_sequences: dict[str, str], gpu_device: Optional[str]):
     """
     Validate that ESMFold produces consistent PDB and AtomArray outputs and matches saved reference PDB files.
-    
+
     This test:
     - Requests only `pdb` and `atom_array` outputs from ESMFold and asserts that `pdb` is produced, `cif` is not, and `atom_array` is produced.
     - For both short and medium sequences, verifies residues are 0-indexed, the sequence recovered from the AtomArray equals the input sequence, coordinates match between the PDB and AtomArray within 0.1 Å, and `chain_id`, `res_id`, `res_name`, and `atom_name` match exactly.
     - Compares produced PDB structures to saved reference PDB files by RMSD and requires RMSD < 1.5 Å.
     - Compares predicted B-factors from the AtomArray to the saved reference B-factors and requires agreement within an absolute tolerance of 0.05.
-    
+
     No return value.
     """
 
     def recover_sequence(atomarray: AtomArray) -> str:
-        """
-        Reconstructs the amino-acid sequence from an AtomArray by mapping unique residue IDs to one-letter codes in ascending residue order.
-        
-        Parameters:
-            atomarray (AtomArray): AtomArray containing `res_id` (residue identifiers) and `res_name` (three-letter residue codes).
-        
-        Returns:
-            str: Concatenated one-letter amino-acid sequence corresponding to the residues ordered by ascending `res_id`.
+        """Reconstructs the amino-acid sequence from an AtomArray by mapping unique residue IDs to one-letter codes in ascending residue order.
+
+        Parameters
+        ----------
+        atomarray : AtomArray
+            AtomArray containing `res_id` (residue identifiers) and `res_name` (three-letter residue codes).
+
+        Returns
+        -------
+        str
+            Concatenated one-letter amino-acid sequence corresponding to the residues ordered by ascending `res_id`.
         """
         unique_res_ids = np.unique(atomarray.res_id)
         three_letter_codes = [atomarray.res_name[atomarray.res_id == res_id][0] for res_id in unique_res_ids]

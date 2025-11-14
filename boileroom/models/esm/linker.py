@@ -45,17 +45,24 @@ def compute_position_ids(sequences: List[str], glycine_linker: str, position_ids
 
 def store_multimer_properties(_sequences: List[str], glycine_linker: str):
     """Store properties needed for multimer processing.
-    Args:
-        _sequences: List of sequences, each containing chains separated by ":"
-        glycine_linker: The glycine linker string used between chains
-    Returns:
-        tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-            - linker_map: tensor of shape (batch_size, sequence_length) where 0 indicates
-            linker positions and 1 indicates chain positions
-            - residue_index: tensor of shape (batch_size, sequence_length) containing
-            residue indices that restart at 1 for each chain
-            - chain_index: tensor of shape (batch_size, sequence_length) containing
-            chain indices (0, 1, 2, etc.)
+
+    Parameters
+    ----------
+    _sequences : List[str]
+        List of sequences, each containing chains separated by ":".
+    glycine_linker : str
+        The glycine linker string used between chains.
+
+    Returns
+    -------
+    tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+        A tuple containing:
+        - linker_map: tensor of shape (batch_size, sequence_length) where 0 indicates
+          linker positions and 1 indicates chain positions.
+        - residue_index: tensor of shape (batch_size, sequence_length) containing
+          residue indices that restart at 1 for each chain.
+        - chain_index: tensor of shape (batch_size, sequence_length) containing
+          chain indices (0, 1, 2, etc.).
     """
     linker_map = []
     residue_index = []

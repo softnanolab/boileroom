@@ -59,15 +59,14 @@ class ESM2Core(EmbeddingAlgorithm):
     STATIC_CONFIG_KEYS = {"device", "model_name"}
 
     def __init__(self, config: dict = {}) -> None:
-        """
-        Initialize the ESM2Core with the provided configuration and prepare internal state for model loading.
-        
-        Parameters:
-            config (dict): Configuration overrides for the model (merged with defaults). Recognized keys include at least `model_name` and `device`.
-        
-        Description:
-            - Sets up model metadata (name and version), resolves the model directory from the `MODEL_DIR` environment variable or a default, and initializes runtime attributes (`_device`, `tokenizer`, `model`) to None.
-            - Validates that the configured `model_name` is supported.
+        """Initialize the ESM2Core with the provided configuration and prepare internal state for model loading.
+
+        Sets up model metadata (name and version), resolves the model directory from the `MODEL_DIR` environment variable or a default, and initializes runtime attributes (`_device`, `tokenizer`, `model`) to None. Validates that the configured `model_name` is supported.
+
+        Parameters
+        ----------
+        config : dict
+            Configuration overrides for the model (merged with defaults). Recognized keys include at least `model_name` and `device`.
         """
         super().__init__(config)
         self.metadata = self._initialize_metadata(
@@ -107,9 +106,8 @@ class ESM2Core(EmbeddingAlgorithm):
         self._load()
 
     def _load(self) -> None:
-        """
-        Ensure the tokenizer and model are loaded, move the model to the resolved device, set it to evaluation mode, and mark the instance as ready.
-        
+        """Ensure the tokenizer and model are loaded, move the model to the resolved device, set it to evaluation mode, and mark the instance as ready.
+
         If the tokenizer or model are already present, they are not reloaded. This method also resolves and stores the target device and transfers the model there.
         """
         if self.tokenizer is None:
@@ -124,17 +122,21 @@ class ESM2Core(EmbeddingAlgorithm):
         self.ready = True
 
     def embed(self, sequences: Union[str, Sequence[str]], options: Optional[dict] = None) -> ESM2Output:
-        """
-        Compute embeddings for one or more protein sequences using the configured ESM-2 model.
-        
+        """Compute embeddings for one or more protein sequences using the configured ESM-2 model.
+
         This method accepts a single sequence or a list of sequences, merges per-call `options` with the model's static configuration, and returns an ESM2Output containing token-level embeddings and associated metadata. If any sequence contains ":" it is treated as a multimer (inter-chain separator) and multimer-specific preprocessing (glycine linker replacement, position id construction, and attention masking) will be applied. The method will load the model automatically if it is not already loaded and respects the `include_fields` option to determine whether hidden states are produced.
-        
-        Parameters:
-            sequences (str | Sequence[str]): A single protein sequence string or an iterable of sequence strings. A sequence containing ":" is interpreted as a multimer.
-            options (dict | None): Per-call configuration that is merged with the core config; can control model_name, glycine_linker, position_ids_skip, include_fields, and other runtime options.
-        
-        Returns:
-            ESM2Output: Prediction container with embeddings, metadata, chain_index and residue_index arrays, and optional hidden_states depending on `include_fields`.
+
+        Parameters
+        ----------
+        sequences : str | Sequence[str]
+            A single protein sequence string or an iterable of sequence strings. A sequence containing ":" is interpreted as a multimer.
+        options : dict | None, optional
+            Per-call configuration that is merged with the core config; can control model_name, glycine_linker, position_ids_skip, include_fields, and other runtime options.
+
+        Returns
+        -------
+        ESM2Output
+            Prediction container with embeddings, metadata, chain_index and residue_index arrays, and optional hidden_states depending on `include_fields`.
         """
         if self.tokenizer is None or self.model is None:
             logger.warning("Model not loaded. Forcing the model to load... Next time call _load() first.")
@@ -188,31 +190,38 @@ class ESM2Core(EmbeddingAlgorithm):
         return outputs
 
     def _should_compute_hidden_states(self, include_fields: Optional[list[str]]) -> bool:
-        """
-        Determine whether hidden states should be computed from the provided include_fields.
-        
-        Parameters:
-            include_fields (Optional[list[str]]): List of field names to include in the output, or None to indicate no per-call includes.
-        
-        Returns:
-            bool: `True` if `include_fields` contains `"hidden_states"` or `"*"`, `False` otherwise.
+        """Determine whether hidden states should be computed from the provided include_fields.
+
+        Parameters
+        ----------
+        include_fields : Optional[list[str]]
+            List of field names to include in the output, or None to indicate no per-call includes.
+
+        Returns
+        -------
+        bool
+            `True` if `include_fields` contains `"hidden_states"` or `"*"`, `False` otherwise.
         """
         return include_fields is not None and ("hidden_states" in include_fields or "*" in include_fields)
 
     @staticmethod
     def _store_multimer_properties(sequences: List[str], glycine_linker: str) -> dict[str, torch.Tensor]:
-        """
-        Prepare multimer metadata tensors and pad them to account for special <cls> and <eos> tokens.
-        
-        Parameters:
-            sequences (List[str]): List of input chain sequences comprising the multimer.
-            glycine_linker (str): Linker string used to represent chain joins when tokenizing multimers.
-        
-        Returns:
-            dict[str, torch.Tensor]: A dictionary with three tensors:
-                - `linker_map`: per-position linker mask with `-1` padding inserted at the start and end.
-                - `residue_index`: per-position residue indices with `-1` padding at start and end.
-                - `chain_index`: per-position chain indices with `-1` padding at start and end.
+        """Prepare multimer metadata tensors and pad them to account for special <cls> and <eos> tokens.
+
+        Parameters
+        ----------
+        sequences : List[str]
+            List of input chain sequences comprising the multimer.
+        glycine_linker : str
+            Linker string used to represent chain joins when tokenizing multimers.
+
+        Returns
+        -------
+        dict[str, torch.Tensor]
+            A dictionary with three tensors:
+            - `linker_map`: per-position linker mask with `-1` padding inserted at the start and end.
+            - `residue_index`: per-position residue indices with `-1` padding at start and end.
+            - `chain_index`: per-position chain indices with `-1` padding at start and end.
         """
         linker_map, residue_index, chain_index = store_multimer_properties(sequences, glycine_linker)
         # Add <cls> and <eos> as effective padding
@@ -229,17 +238,23 @@ class ESM2Core(EmbeddingAlgorithm):
         prediction_time: float,
         config: dict,
     ) -> ESM2Output:
-        """
-        Convert raw HuggingFace model outputs into a finalized ESM2Output, applying multimer linker masking when provided and filtering fields according to config.
-        
-        Parameters:
-            outputs: The model output object containing `last_hidden_state` and optionally `hidden_states`.
-            multimer_properties (dict | None): When present, provides tensors for `linker_map`, `residue_index`, and `chain_index` used to mask and reshape multimer embeddings.
-            prediction_time (float): Elapsed time in seconds for the prediction; stored in the output metadata.
-            config (dict): Effective configuration for this call; may include `include_fields` to control which fields are retained in the returned output.
-        
-        Returns:
-            ESM2Output: Structured prediction containing `embeddings`, optional `hidden_states`, `chain_index`, `residue_index`, and updated `metadata` with `prediction_time`.
+        """Convert raw HuggingFace model outputs into a finalized ESM2Output, applying multimer linker masking when provided and filtering fields according to config.
+
+        Parameters
+        ----------
+        outputs : BaseModelOutputWithPoolingAndCrossAttentions
+            The model output object containing `last_hidden_state` and optionally `hidden_states`.
+        multimer_properties : dict | None
+            When present, provides tensors for `linker_map`, `residue_index`, and `chain_index` used to mask and reshape multimer embeddings.
+        prediction_time : float
+            Elapsed time in seconds for the prediction; stored in the output metadata.
+        config : dict
+            Effective configuration for this call; may include `include_fields` to control which fields are retained in the returned output.
+
+        Returns
+        -------
+        ESM2Output
+            Structured prediction containing `embeddings`, optional `hidden_states`, `chain_index`, `residue_index`, and updated `metadata` with `prediction_time`.
         """
 
         embeddings = outputs.last_hidden_state.cpu().numpy()
@@ -289,22 +304,29 @@ class ESM2Core(EmbeddingAlgorithm):
         residue_index: torch.Tensor,
         chain_index: torch.Tensor,
     ) -> tuple[np.ndarray, np.ndarray, torch.Tensor, torch.Tensor]:
-        """
-        Mask linker regions from model outputs and return per-batch arrays padded to equal sequence lengths.
-        
-        Parameters:
-            embeddings (np.ndarray): Model token embeddings with shape (batch, seq_len, embedding_dim).
-            hidden_states (np.ndarray | None): Optional hidden states with shape (batch, num_layers, seq_len, embedding_dim) or None.
-            linker_map (torch.Tensor): Per-batch mask with values 1 for residues to keep and -1 (or 0) for linker/padding positions.
-            residue_index (torch.Tensor): Per-batch residue indices aligned to the input tokens.
-            chain_index (torch.Tensor): Per-batch chain indices aligned to the input tokens.
-        
-        Returns:
-            tuple:
-                embeddings (np.ndarray): Filtered and padded embeddings with shape (batch, kept_seq_len_max, embedding_dim). Padded positions are zero.
-                hidden_states (np.ndarray | None): If provided, filtered and padded hidden states with shape (batch, kept_seq_len_max, num_layers, embedding_dim); otherwise None. Padded positions are zero.
-                chain_index (np.ndarray): Filtered and padded chain indices with shape (batch, kept_seq_len_max). Padded positions use -1.
-                residue_index (np.ndarray): Filtered and padded residue indices with shape (batch, kept_seq_len_max). Padded positions use -1.
+        """Mask linker regions from model outputs and return per-batch arrays padded to equal sequence lengths.
+
+        Parameters
+        ----------
+        embeddings : np.ndarray
+            Model token embeddings with shape (batch, seq_len, embedding_dim).
+        hidden_states : np.ndarray | None
+            Optional hidden states with shape (batch, num_layers, seq_len, embedding_dim) or None.
+        linker_map : torch.Tensor
+            Per-batch mask with values 1 for residues to keep and -1 (or 0) for linker/padding positions.
+        residue_index : torch.Tensor
+            Per-batch residue indices aligned to the input tokens.
+        chain_index : torch.Tensor
+            Per-batch chain indices aligned to the input tokens.
+
+        Returns
+        -------
+        tuple
+            A tuple containing:
+            - embeddings (np.ndarray): Filtered and padded embeddings with shape (batch, kept_seq_len_max, embedding_dim). Padded positions are zero.
+            - hidden_states (np.ndarray | None): If provided, filtered and padded hidden states with shape (batch, kept_seq_len_max, num_layers, embedding_dim); otherwise None. Padded positions are zero.
+            - chain_index (np.ndarray): Filtered and padded chain indices with shape (batch, kept_seq_len_max). Padded positions use -1.
+            - residue_index (np.ndarray): Filtered and padded residue indices with shape (batch, kept_seq_len_max). Padded positions use -1.
         """
         assert isinstance(linker_map, torch.Tensor), "linker_map must be a tensor"
 
@@ -332,14 +354,21 @@ class ESM2Core(EmbeddingAlgorithm):
         ) -> np.ndarray:
             """Pad arrays to match the largest size in the residue dimension and stack them in the batch dimension.
 
-            Args:
-                arrays: List of NumPy arrays to pad and stack
-                residue_dim: Dimension to pad to match sizes
-                batch_dim: Dimension to stack the arrays along
-                constant_value: Value to use for padding (default: 0)
+            Parameters
+            ----------
+            arrays : list[np.ndarray]
+                List of NumPy arrays to pad and stack.
+            residue_dim : int
+                Dimension to pad to match sizes.
+            batch_dim : int
+                Dimension to stack the arrays along.
+            constant_value : int, optional
+                Value to use for padding (default: 0).
 
-            Returns:
-                Stacked and padded NumPy array
+            Returns
+            -------
+            np.ndarray
+                Stacked and padded NumPy array.
             """
             max_size = max(arr.shape[residue_dim] for arr in arrays)
             padded_arrays = []
@@ -380,9 +409,8 @@ class ModalESM2:
 
     @modal.enter()
     def _initialize(self) -> None:
-        """
-        Create and initialize the ESM2Core backend instance from the encoded configuration.
-        
+        """Create and initialize the ESM2Core backend instance from the encoded configuration.
+
         Decodes the JSON bytes stored in self.config, constructs an ESM2Core using that config, assigns it to self._core, and calls its initialization routine.
         """
         self._core = ESM2Core(config=json.loads(self.config.decode("utf-8")))
@@ -390,15 +418,19 @@ class ModalESM2:
 
     @modal.method()
     def embed(self, sequences: Union[str, Sequence[str]], options: Optional[dict] = None) -> ESM2Output:
-        """
-        Compute embeddings for one or more protein sequences using the configured ESM-2 model.
-        
-        Parameters:
-            sequences (str | Sequence[str]): A single protein sequence string or an iterable of sequence strings.
-            options (dict | None): Per-call options that override the instance configuration (e.g., model selection, glycine_linker, position_ids_skip, include_fields). Only provided keys are merged with the static configuration.
-        
-        Returns:
-            ESM2Output: Prediction container with fields including `embeddings`, `metadata`, `chain_index`, `residue_index`, and `hidden_states` when requested.
+        """Compute embeddings for one or more protein sequences using the configured ESM-2 model.
+
+        Parameters
+        ----------
+        sequences : str | Sequence[str]
+            A single protein sequence string or an iterable of sequence strings.
+        options : dict | None, optional
+            Per-call options that override the instance configuration (e.g., model selection, glycine_linker, position_ids_skip, include_fields). Only provided keys are merged with the static configuration.
+
+        Returns
+        -------
+        ESM2Output
+            Prediction container with fields including `embeddings`, `metadata`, `chain_index`, `residue_index`, and `hidden_states` when requested.
         """
         assert self._core is not None, "ModalESM2 has not been initialized"
         return self._core.embed(sequences, options=options)
@@ -411,16 +443,21 @@ class ESM2(ModelWrapper):
     """Interface for running ESM2 embeddings via Modal."""
 
     def __init__(self, backend: str = "modal", device: Optional[str] = None, config: Optional[dict] = None) -> None:
-        """
-        Initialize the ESM2 high-level interface and start the selected backend.
-        
-        Parameters:
-            backend (str): Backend type to use; supported values are "modal" and "local".
-            device (Optional[str]): Device identifier for model execution (for example "cuda:0" or "cpu").
-            config (Optional[dict]): Configuration passed to the backend and underlying model.
-        
-        Raises:
-            ValueError: If an unsupported backend string is provided.
+        """Initialize the ESM2 high-level interface and start the selected backend.
+
+        Parameters
+        ----------
+        backend : str
+            Backend type to use; supported values are "modal" and "local".
+        device : Optional[str]
+            Device identifier for model execution (for example "cuda:0" or "cpu").
+        config : Optional[dict]
+            Configuration passed to the backend and underlying model.
+
+        Raises
+        ------
+        ValueError
+            If an unsupported backend string is provided.
         """
         if config is None:
             config = {}
@@ -437,14 +474,18 @@ class ESM2(ModelWrapper):
         self._backend.start()
 
     def embed(self, sequences: Union[str, Sequence[str]], options: Optional[dict] = None) -> ESM2Output:
-        """
-        Compute ESM-2 embeddings for one or more protein sequences using the configured backend.
-        
-        Parameters:
-            sequences (str | Sequence[str]): A single protein sequence string or a sequence of protein sequences. Multimer inputs may be provided by including ":" characters to separate chains within a sequence.
-            options (dict | None): Per-call options merged with the backend's static configuration to adjust behavior for this call (for example: model_name, include_fields, glycine_linker, position_ids_skip). Keys not present in `options` fall back to the configured defaults.
-        
-        Returns:
-            ESM2Output: Embeddings and associated metadata (embeddings, chain_index, residue_index, metadata, and optional hidden_states) for the provided sequences.
+        """Compute ESM-2 embeddings for one or more protein sequences using the configured backend.
+
+        Parameters
+        ----------
+        sequences : str | Sequence[str]
+            A single protein sequence string or a sequence of protein sequences. Multimer inputs may be provided by including ":" characters to separate chains within a sequence.
+        options : dict | None, optional
+            Per-call options merged with the backend's static configuration to adjust behavior for this call (for example: model_name, include_fields, glycine_linker, position_ids_skip). Keys not present in `options` fall back to the configured defaults.
+
+        Returns
+        -------
+        ESM2Output
+            Embeddings and associated metadata (embeddings, chain_index, residue_index, metadata, and optional hidden_states) for the provided sequences.
         """
         return self._call_backend_method("embed", sequences, options=options)

@@ -188,16 +188,14 @@ class ESMFoldCore(FoldingAlgorithm):
     # TODO: we should add a settings dictionary or something, that would make it easier to add new options
     # TODO: maybe use OmegaConf instead to make it easier instead of config
     def __init__(self, config: dict = {}) -> None:
-        """
-        Create an ESMFold core instance and initialize runtime fields and placeholders.
-        
-        Parameters:
-            config (dict): Configuration overrides for the predictor (merged with DEFAULT_CONFIG at runtime).
-        
-        Detailed behavior:
-            - Initializes model metadata (name and version).
-            - Resolves model_dir from the environment variable `MODEL_DIR` falling back to the packaged `MODAL_MODEL_DIR`.
-            - Prepares placeholders for device (`_device`), tokenizer (`tokenizer`), and model (`model`) that will be populated during lazy loading.
+        """Create an ESMFold core instance and initialize runtime fields and placeholders.
+
+        Initializes model metadata (name and version). Resolves model_dir from the environment variable `MODEL_DIR` falling back to the packaged `MODAL_MODEL_DIR`. Prepares placeholders for device (`_device`), tokenizer (`tokenizer`), and model (`model`) that will be populated during lazy loading.
+
+        Parameters
+        ----------
+        config : dict
+            Configuration overrides for the predictor (merged with DEFAULT_CONFIG at runtime).
         """
         super().__init__(config)
         self.metadata = self._initialize_metadata(
@@ -214,9 +212,8 @@ class ESMFoldCore(FoldingAlgorithm):
         self._load()
 
     def _load(self) -> None:
-        """
-        Ensure the tokenizer and folding model are loaded and prepare the model for inference.
-        
+        """Ensure the tokenizer and folding model are loaded and prepare the model for inference.
+
         Loads the tokenizer and model into the instance if absent, resolves and sets the device,
         moves the model to that device, switches the model to evaluation mode, configures the
         trunk chunk size, and marks the predictor as ready for use.
@@ -232,19 +229,21 @@ class ESMFoldCore(FoldingAlgorithm):
         self.ready = True
 
     def fold(self, sequences: Union[str, Sequence[str]], options: Optional[dict] = None) -> ESMFoldOutput:
-        """
-        Predict protein structure(s) from one or more amino acid sequence(s) using the ESMFold model.
-        
-        Parameters:
-            sequences (str | Sequence[str]): A single amino acid sequence or an iterable of sequences to predict.
-            options (dict, optional): Per-call configuration merged with the instance's static config (for example, `include_fields` to select which output fields to return).
-        
-        Returns:
-            ESMFoldOutput: Predicted structure(s) and optional auxiliary outputs. The set of returned fields honors the merged configuration (e.g., `include_fields` controls presence of pdb/cif and other model-specific outputs).
-        
-        Notes:
-            - If the model is not loaded, this method will load it lazily before running inference.
-            - Updates self.metadata.sequence_lengths with the processed sequence lengths.
+        """Predict protein structure(s) from one or more amino acid sequence(s) using the ESMFold model.
+
+        If the model is not loaded, this method will load it lazily before running inference. Updates self.metadata.sequence_lengths with the processed sequence lengths.
+
+        Parameters
+        ----------
+        sequences : str | Sequence[str]
+            A single amino acid sequence or an iterable of sequences to predict.
+        options : dict, optional
+            Per-call configuration merged with the instance's static config (for example, `include_fields` to select which output fields to return).
+
+        Returns
+        -------
+        ESMFoldOutput
+            Predicted structure(s) and optional auxiliary outputs. The set of returned fields honors the merged configuration (e.g., `include_fields` controls presence of pdb/cif and other model-specific outputs).
         """
         if self.tokenizer is None or self.model is None:
             logger.warning("Model not loaded. Forcing the model to load... Next time call _load() first.")
@@ -267,17 +266,21 @@ class ESMFoldCore(FoldingAlgorithm):
         return outputs
 
     def _tokenize_sequences(self, sequences: List[str], config: dict) -> tuple[dict, dict[str, torch.Tensor] | None]:
-        """
-        Tokenize one or more protein sequences for model input, handling multimer and monomer cases.
-        
-        Parameters:
-            sequences (List[str]): Protein sequences; presence of ':' in any sequence triggers multimer tokenization.
-            config (dict): Per-call configuration used for multimer tokenization (position ids, linker handling, etc.).
-        
-        Returns:
-            tuple: A pair (tokenized, multimer_properties_or_none) where:
-                - tokenized (dict): Tokenizer output tensors placed on the model device (keys like 'input_ids', 'attention_mask', etc.).
-                - multimer_properties_or_none (dict[str, torch.Tensor] | None): Multimer-specific tensors (e.g., linker map, residue indices, chain indices) when multimer tokenization was used, otherwise `None`.
+        """Tokenize one or more protein sequences for model input, handling multimer and monomer cases.
+
+        Parameters
+        ----------
+        sequences : List[str]
+            Protein sequences; presence of ':' in any sequence triggers multimer tokenization.
+        config : dict
+            Per-call configuration used for multimer tokenization (position ids, linker handling, etc.).
+
+        Returns
+        -------
+        tuple
+            A pair (tokenized, multimer_properties_or_none) where:
+            - tokenized (dict): Tokenizer output tensors placed on the model device (keys like 'input_ids', 'attention_mask', etc.).
+            - multimer_properties_or_none (dict[str, torch.Tensor] | None): Multimer-specific tensors (e.g., linker map, residue indices, chain indices) when multimer tokenization was used, otherwise `None`.
         """
         assert self.tokenizer is not None, "Tokenizer not loaded"
         if ":" in "".join(sequences):  # MULTIMER setting
@@ -292,22 +295,26 @@ class ESMFoldCore(FoldingAlgorithm):
         return tokenized, multimer_properties
 
     def _tokenize_multimer(self, sequences: List[str], config: dict) -> torch.Tensor:
-        """
-        Prepare tokenized inputs and multimer metadata for sequences containing chain separators.
-        
-        Parameters:
-            sequences (List[str]): Input sequences where different chains are separated by ":".
-            config (dict): Configuration containing:
-                - "glycine_linker": string used to replace ":" when constructing multimer inputs.
-                - "position_ids_skip": integer flag/offset passed to position id computation.
-        
-        Returns:
-            tuple:
-                - tokenized (Mapping[str, torch.Tensor]): Tokenizer output tensors including input ids, attention mask, and computed position_ids.
-                - multimer_properties (dict): Dictionary with keys:
-                    - "linker_map" (torch.Tensor): Per-position mask indicating kept residues (1) vs linker/padding (-1 or 0).
-                    - "residue_index" (torch.Tensor): Residue indices mapping token positions to residue numbers.
-                    - "chain_index" (torch.Tensor): Chain indices mapping token positions to original chain ids.
+        """Prepare tokenized inputs and multimer metadata for sequences containing chain separators.
+
+        Parameters
+        ----------
+        sequences : List[str]
+            Input sequences where different chains are separated by ":".
+        config : dict
+            Configuration containing:
+            - "glycine_linker": string used to replace ":" when constructing multimer inputs.
+            - "position_ids_skip": integer flag/offset passed to position id computation.
+
+        Returns
+        -------
+        tuple
+            A tuple containing:
+            - tokenized (Mapping[str, torch.Tensor]): Tokenizer output tensors including input ids, attention mask, and computed position_ids.
+            - multimer_properties (dict): Dictionary with keys:
+                - "linker_map" (torch.Tensor): Per-position mask indicating kept residues (1) vs linker/padding (-1 or 0).
+                - "residue_index" (torch.Tensor): Residue indices mapping token positions to residue numbers.
+                - "chain_index" (torch.Tensor): Chain indices mapping token positions to original chain ids.
         """
         assert self.tokenizer is not None, "Tokenizer not loaded"
         # Store multimer properties first
@@ -340,13 +347,18 @@ class ESMFoldCore(FoldingAlgorithm):
         chain_index: torch.Tensor,
     ) -> dict:
         """Mask the linker region in the outputs and track padding information.
+
         This includes all the metrics.
 
-        Args:
-            outputs: Dictionary containing model outputs
+        Parameters
+        ----------
+        outputs : dict
+            Dictionary containing model outputs.
 
-        Returns:
-            dict: Updated outputs with linker regions masked and padding information
+        Returns
+        -------
+        dict
+            Updated outputs with linker regions masked and padding information.
         """
         assert isinstance(linker_map, torch.Tensor), "linker_map must be a tensor"
 
@@ -421,14 +433,21 @@ class ESMFoldCore(FoldingAlgorithm):
         ) -> np.ndarray:
             """Pad arrays to match the largest size in the residue dimension and stack them in the batch dimension.
 
-            Args:
-                arrays: List of NumPy arrays to pad and stack
-                residue_dim: Dimension(s) to pad to match sizes
-                batch_dim: Dimension to stack the arrays along
-                intermediate_dim: Whether the array has an intermediate dimension to preserve
+            Parameters
+            ----------
+            arrays : list[np.ndarray]
+                List of NumPy arrays to pad and stack.
+            residue_dim : Union[int, List[int]]
+                Dimension(s) to pad to match sizes.
+            batch_dim : int
+                Dimension to stack the arrays along.
+            intermediate_dim : bool, optional
+                Whether the array has an intermediate dimension to preserve.
 
-            Returns:
-                Stacked and padded NumPy array
+            Returns
+            -------
+            np.ndarray
+                Stacked and padded NumPy array.
             """
             if isinstance(residue_dim, int):
                 max_size = max(arr.shape[residue_dim] for arr in arrays)
@@ -499,17 +518,23 @@ class ESMFoldCore(FoldingAlgorithm):
         prediction_time: float,
         config: dict,
     ) -> ESMFoldOutput:
-        """
-        Convert raw model outputs and optional multimer metadata into a populated ESMFoldOutput.
-        
-        Parameters:
-            outputs (dict): Raw model outputs (tensor values) produced by the folding model.
-            multimer_properties (dict[str, torch.Tensor] | None): Multimer-related tensors (e.g., linker map, residue and chain indices). When provided, linker regions are masked and per-chain residue mappings are applied.
-            prediction_time (float): Elapsed time (seconds) for the prediction; recorded in the output metadata.
-            config (dict): Per-call configuration; the "include_fields" entry controls which optional fields (for example, "pdb" or "cif") are produced and which fields are retained in the returned output.
-        
-        Returns:
-            ESMFoldOutput: Structured prediction containing metadata and outputs. An atom_array is always generated; PDB/CIF strings and other optional fields are included only if requested via config["include_fields"]. The returned output has internal-only fields (such as raw positions) removed and is filtered according to include_fields.
+        """Convert raw model outputs and optional multimer metadata into a populated ESMFoldOutput.
+
+        Parameters
+        ----------
+        outputs : dict
+            Raw model outputs (tensor values) produced by the folding model.
+        multimer_properties : dict[str, torch.Tensor] | None
+            Multimer-related tensors (e.g., linker map, residue and chain indices). When provided, linker regions are masked and per-chain residue mappings are applied.
+        prediction_time : float
+            Elapsed time (seconds) for the prediction; recorded in the output metadata.
+        config : dict
+            Per-call configuration; the "include_fields" entry controls which optional fields (for example, "pdb" or "cif") are produced and which fields are retained in the returned output.
+
+        Returns
+        -------
+        ESMFoldOutput
+            Structured prediction containing metadata and outputs. An atom_array is always generated; PDB/CIF strings and other optional fields are included only if requested via config["include_fields"]. The returned output has internal-only fields (such as raw positions) removed and is filtered according to include_fields.
         """
 
         outputs = {k: v.cpu().numpy() for k, v in outputs.items()}
@@ -541,21 +566,24 @@ class ESMFoldCore(FoldingAlgorithm):
         return cast(ESMFoldOutput, filtered)
 
     def _convert_outputs_to_atomarray(self, outputs: dict) -> List[AtomArray]:
-        """
-        Create a list of Biotite AtomArray objects from model prediction tensors.
-        
-        Parameters:
-            outputs (dict): Model outputs containing at least the keys
-                - "positions": atom positions (used to derive atom37 coordinates),
-                - "atom37_atom_exists": boolean mask of existing atom37 atoms,
-                - "chain_index": per-residue chain indices,
-                - "aatype": per-residue amino acid type ids,
-                - "residue_index": per-residue residue indices,
-                - "plddt": per-residue confidence scores.
+        """Create a list of Biotite AtomArray objects from model prediction tensors.
+
+        Parameters
+        ----------
+        outputs : dict
+            Model outputs containing at least the keys:
+            - "positions": atom positions (used to derive atom37 coordinates),
+            - "atom37_atom_exists": boolean mask of existing atom37 atoms,
+            - "chain_index": per-residue chain indices,
+            - "aatype": per-residue amino acid type ids,
+            - "residue_index": per-residue residue indices,
+            - "plddt": per-residue confidence scores.
             The function expects these tensors/arrays to be indexed by batch and residue.
-        
-        Returns:
-            List[AtomArray]: One Biotite AtomArray per batch element. Each AtomArray contains only atoms marked as existing, with coordinates, chain_id, atom_name, three-letter residue name, residue index, chemical element, and b_factor populated from `plddt`.
+
+        Returns
+        -------
+        List[AtomArray]
+            One Biotite AtomArray per batch element. Each AtomArray contains only atoms marked as existing, with coordinates, chain_id, atom_name, three-letter residue name, residue index, chemical element, and b_factor populated from `plddt`.
         """
         from biotite.structure import Atom, array
         from transformers.models.esm.openfold_utils.feats import atom14_to_atom37
@@ -661,9 +689,8 @@ class ModalESMFold:
 
     @modal.enter()
     def _initialize(self) -> None:
-        """
-        Create an ESMFoldCore from this object's JSON-encoded config and initialize it.
-        
+        """Create an ESMFoldCore from this object's JSON-encoded config and initialize it.
+
         This sets the instance attribute `self._core` to the constructed ESMFoldCore and calls its initialization routine.
         """
         self._core = ESMFoldCore(json.loads(self.config.decode("utf-8")))
@@ -671,15 +698,19 @@ class ModalESMFold:
 
     @modal.method()
     def fold(self, sequences: Union[str, Sequence[str]], options: Optional[dict] = None) -> ESMFoldOutput:
-        """
-        Run structure prediction for one or more protein sequences using the configured backend.
-        
-        Parameters:
-            sequences (str | Sequence[str]): A single amino-acid sequence or a sequence of sequences to predict.
-            options (dict, optional): Per-call configuration overrides (for example, include_fields to select which output fields to include). Keys in this dict override non-static entries of the model config for this prediction.
-        
-        Returns:
-            ESMFoldOutput: Prediction results and associated metadata for each input sequence.
+        """Run structure prediction for one or more protein sequences using the configured backend.
+
+        Parameters
+        ----------
+        sequences : str | Sequence[str]
+            A single amino-acid sequence or a sequence of sequences to predict.
+        options : dict, optional
+            Per-call configuration overrides (for example, include_fields to select which output fields to include). Keys in this dict override non-static entries of the model config for this prediction.
+
+        Returns
+        -------
+        ESMFoldOutput
+            Prediction results and associated metadata for each input sequence.
         """
         return self._core.fold(sequences, options=options)
 
@@ -697,16 +728,21 @@ class ESMFold(ModelWrapper):
     """
 
     def __init__(self, backend: str = "modal", device: Optional[str] = None, config: Optional[dict] = None) -> None:
-        """
-        Initialize the ESMFold high-level model wrapper and start the selected backend.
-        
-        Parameters:
-            backend (str): Backend identifier; supported values are "modal" to use ModalBackend and "local" to use LocalBackend.
-            device (Optional[str]): Optional device specifier to pass to the backend (e.g., "cuda:0" or "cpu").
-            config (Optional[dict]): Optional configuration passed to the backend; if omitted an empty dict is used.
-        
-        Raises:
-            ValueError: If `backend` is not one of the supported backends.
+        """Initialize the ESMFold high-level model wrapper and start the selected backend.
+
+        Parameters
+        ----------
+        backend : str
+            Backend identifier; supported values are "modal" to use ModalBackend and "local" to use LocalBackend.
+        device : Optional[str]
+            Optional device specifier to pass to the backend (e.g., "cuda:0" or "cpu").
+        config : Optional[dict]
+            Optional configuration passed to the backend; if omitted an empty dict is used.
+
+        Raises
+        ------
+        ValueError
+            If `backend` is not one of the supported backends.
         """
         if config is None:
             config = {}
@@ -723,14 +759,18 @@ class ESMFold(ModelWrapper):
         self._backend.start()
 
     def fold(self, sequences: Union[str, Sequence[str]], options: Optional[dict] = None) -> ESMFoldOutput:
-        """
-        Predict protein structure(s) for the provided sequence or sequences using the configured backend.
-        
-        Parameters:
-            sequences (str | Sequence[str]): A single amino-acid sequence or a sequence of amino-acid sequences to predict.
-            options (dict, optional): Per-call configuration overrides (for example `include_fields` to control which output fields are returned); keys override the instance's static config for this call.
-        
-        Returns:
-            ESMFoldOutput: Prediction results and associated metadata, including generated atom arrays and any requested model outputs.
+        """Predict protein structure(s) for the provided sequence or sequences using the configured backend.
+
+        Parameters
+        ----------
+        sequences : str | Sequence[str]
+            A single amino-acid sequence or a sequence of amino-acid sequences to predict.
+        options : dict, optional
+            Per-call configuration overrides (for example `include_fields` to control which output fields are returned); keys override the instance's static config for this call.
+
+        Returns
+        -------
+        ESMFoldOutput
+            Prediction results and associated metadata, including generated atom arrays and any requested model outputs.
         """
         return self._call_backend_method("fold", sequences, options=options)

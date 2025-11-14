@@ -27,14 +27,20 @@ GPUS_AVAIL_ON_MODAL = ["T4", "L4", "A10G", "A100-40GB", "A100-80GB", "L40S", "H1
 def validate_sequence(sequence: str) -> bool:
     """Validate that a sequence contains only valid amino acids.
 
-    Args:
-        sequence: A string of amino acids in single-letter code
+    Parameters
+    ----------
+    sequence : str
+        A string of amino acids in single-letter code.
 
-    Returns:
-        bool: True if sequence is valid
+    Returns
+    -------
+    bool
+        True if sequence is valid.
 
-    Raises:
-        ValueError: If sequence contains invalid characters
+    Raises
+    ------
+    ValueError
+        If sequence contains invalid characters.
     """
     sequence = sequence.replace(":", "")  # remove any linkers first ":"
     invalid_chars = set(sequence) - VALID_AMINO_ACIDS
@@ -46,11 +52,12 @@ def validate_sequence(sequence: str) -> bool:
 
 
 def ensure_cache_dir() -> Path:
-    """
-    Create the cache directory (including parent directories) if it does not exist and return its path.
-    
-    Returns:
-        Path: Path to the cache directory.
+    """Create the cache directory (including parent directories) if it does not exist and return its path.
+
+    Returns
+    -------
+    Path
+        Path to the cache directory.
     """
     cache_path = Path(CACHE_DIR)
     cache_path.mkdir(parents=True, exist_ok=True)
@@ -58,27 +65,32 @@ def ensure_cache_dir() -> Path:
 
 
 def get_model_dir() -> Path:
-    """
-    Resolve the model directory path using the MODEL_DIR environment variable or the default.
-    
+    """Resolve the model directory path using the MODEL_DIR environment variable or the default.
+
     Reads the `MODEL_DIR` environment variable and falls back to `MODAL_MODEL_DIR` if unset. The returned Path has user home expansion applied (e.g., `~` resolved) but the directory is not created.
-    Returns:
-        Path: Path to the model directory with user expansion applied.
+
+    Returns
+    -------
+    Path
+        Path to the model directory with user expansion applied.
     """
     value = os.environ.get("MODEL_DIR", MODAL_MODEL_DIR)
     return Path(value).expanduser()
 
 
 def format_time(seconds: float) -> str:
-    """
-    Convert a duration in seconds to a compact human-readable string.
-    
+    """Convert a duration in seconds to a compact human-readable string.
+
     The output includes hours and minutes only when their values are greater than zero. Seconds are included when no larger unit is present or when seconds are greater than zero; fractional seconds are discarded (floored).
-    
-    Parameters:
-        seconds: Duration in seconds.
-    
-    Returns:
+
+    Parameters
+    ----------
+    seconds : float
+        Duration in seconds.
+
+    Returns
+    -------
+    str
         A string like "2h 30m 15s", omitting any zero-valued hour/minute components.
     """
     hours = int(seconds // HOURS)
@@ -99,9 +111,11 @@ def format_time(seconds: float) -> str:
 def get_gpu_memory_info() -> Optional[Dict[str, int]]:
     """Get GPU memory information if available.
 
-    Returns:
-        Optional[Dict[str, int]]: Dictionary with 'total' and 'free' memory in MB,
-                                 or None if no GPU is available
+    Returns
+    -------
+    Optional[Dict[str, int]]
+        Dictionary with 'total' and 'free' memory in MB,
+        or None if no GPU is available.
     """
     try:
         import torch
