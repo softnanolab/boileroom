@@ -11,7 +11,7 @@ set -euo pipefail
 # Options:
 #   --platform=linux/amd64     Target platform (default linux/amd64)
 #   --no-cache                 Do not use build cache
-#   -h|--help                  Show help
+# usage prints usage information that shows the build order and available command-line options.
 
 usage() {
   cat <<EOF
@@ -75,7 +75,6 @@ echo ""
 echo "Build complete:"
 echo "  Base : ${BASE_IMAGE_TAG}"
 echo "  Chai1: ${CHAI1_IMAGE_TAG}"
-
 
 
 

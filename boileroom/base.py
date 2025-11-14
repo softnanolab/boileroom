@@ -52,7 +52,12 @@ class Algorithm(ABC):
     STATIC_CONFIG_KEYS: set[str] = set()
 
     def __init__(self, config: dict = {}) -> None:
-        """Initialize the algorithm."""
+        """
+        Initialize the algorithm instance and set its default runtime attributes.
+        
+        Parameters:
+            config (dict): Configuration overrides merged into the class DEFAULT_CONFIG; keys in this dict take precedence over defaults.
+        """
         self.config = {**self.DEFAULT_CONFIG, **config}
         self.name: str = self.__class__.__name__
         self.version: str = ""  # Should be overridden by implementations
@@ -74,9 +79,12 @@ class Algorithm(ABC):
 
     def update_config(self, config: dict) -> None:
         """
-        Update the config with the default values.
-
-        This does not work with Modal and remote execution. Create a new instance instead.
+        Merge provided configuration entries into the algorithm's current configuration.
+        
+        This updates the instance's `config` in place; keys in `config` override existing values. This method is not compatible with Modal/remote execution and should not be relied on to update remote instances.
+        
+        Parameters:
+            config (dict): Configuration keys and values to merge into the existing config.
         """
         logger.warning("This does not work with Modal and remote execution. Create a new instance instead.")
         # TODO: Make this work smartly with remote Modal, calling _load() again, etc. and thus programmatically
@@ -84,6 +92,14 @@ class Algorithm(ABC):
         self.config = {**self.config, **config}
 
     def _resolve_device(self) -> torch.device:
+        """
+        Select the computation device based on instance configuration and system capability.
+        
+        If the instance config contains a "device" entry, that device is returned; otherwise return "cuda:0" when CUDA is available, falling back to "cpu" when not.
+        
+        Returns:
+            torch.device: The resolved device.
+        """
         requested = self.config.get("device")
         if requested is not None:
             return torch.device(requested)
@@ -92,22 +108,17 @@ class Algorithm(ABC):
         return torch.device("cpu")
 
     def _merge_options(self, options: Optional[dict] = None) -> dict:
-        """Merge per-call options with static config, enforcing that static keys cannot be overridden.
-
-        Parameters
-        ----------
-        options : Optional[dict]
-            Per-call options dictionary. Keys that are in STATIC_CONFIG_KEYS will raise ValueError.
-
-        Returns
-        -------
-        dict
-            Merged configuration dictionary with options overriding non-static config values.
-
-        Raises
-        ------
-        ValueError
-            If options contains any keys that are in STATIC_CONFIG_KEYS.
+        """
+        Merge per-call options into the instance configuration while preventing overrides of static configuration keys.
+        
+        Parameters:
+            options (Optional[dict]): Per-call configuration that will override non-static keys in the instance config.
+            
+        Returns:
+            dict: The merged configuration dictionary with values from `options` taking precedence for non-static keys.
+        
+        Raises:
+            ValueError: If `options` contains any keys present in `STATIC_CONFIG_KEYS`.
         """
         if options is None:
             options = {}
@@ -128,19 +139,11 @@ class Algorithm(ABC):
 
     @staticmethod
     def _initialize_metadata(model_name: str, model_version: str) -> PredictionMetadata:
-        """Initialize metadata for the prediction.
-
-        Parameters
-        ----------
-        model_name : str
-            Name of the model
-        model_version : str
-            Version of the model
-
-        Returns
-        -------
-        PredictionMetadata
-            Metadata for the prediction
+        """
+        Create PredictionMetadata for a model prediction.
+        
+        Returns:
+            PredictionMetadata: instance with `model_name` and `model_version` set to the provided values, and `prediction_time` and `sequence_lengths` initialized to None.
         """
         return PredictionMetadata(
             model_name=model_name, model_version=model_version, prediction_time=None, sequence_lengths=None
@@ -208,7 +211,13 @@ class FoldingAlgorithm(Algorithm):
 
     def _compute_sequence_lengths(self, sequences: List[str]) -> List[int]:
         """
-        Compute the sequence lengths for multimer sequences.
+        Compute residue counts for each multimer sequence.
+        
+        Parameters:
+            sequences (List[str]): Sequences where chains may be joined with ':' separators.
+        
+        Returns:
+            List[int]: Number of residues for each sequence, treating ':' characters as chain separators and not counting them toward residue length.
         """
         return [len(seq) - seq.count(":") for seq in sequences]
 
@@ -217,7 +226,21 @@ class FoldingAlgorithm(Algorithm):
         output: StructurePrediction,
         include_fields: Optional[List[str]],
     ) -> StructurePrediction:
-        """Return a copy of ``output`` with fields filtered per request."""
+        """
+        Filter fields of a StructurePrediction dataclass according to an inclusion list.
+        
+        When `output` is a dataclass instance, returns a copy where any dataclass fields not listed in `include_fields`
+        are set to `None`, while always preserving `metadata` and `atom_array`. If `include_fields` is `None`,
+        empty, or contains `"*"`, or if `output` is not a dataclass, the original `output` is returned unchanged.
+        
+        Parameters:
+            output (StructurePrediction): The prediction dataclass to filter.
+            include_fields (Optional[List[str]]): Names of fields to retain in addition to the always-included fields.
+        
+        Returns:
+            StructurePrediction: A dataclass instance with non-kept fields set to `None`, or the original `output`
+            unchanged when filtering is not applicable.
+        """
         if not dataclasses.is_dataclass(output) or (include_fields and "*" in include_fields):
             return output
 
@@ -238,18 +261,18 @@ class FoldingAlgorithm(Algorithm):
 
     def _prepare_multimer_sequences(self, sequences: List[str]) -> List[str]:
         """
-        Prepare multimer sequences for prediction.
-        This method is model-specific and how they handle multimers.
-
-        Parameters
-        ----------
-        sequences : List[str]
-            List of protein sequences
-
-        Returns
-        -------
-        List[str]
-            List of prepared sequences"
+        Prepare multimer sequences for model-specific prediction.
+        
+        Implementations should transform the provided input sequences into the sequence format required by the model for multimer (multi-chain) prediction.
+        
+        Parameters:
+            sequences (List[str]): Input protein sequences; each element may represent a single chain or a multimer component.
+        
+        Returns:
+            List[str]: Sequences formatted for the model's multimer prediction pipeline.
+        
+        Raises:
+            NotImplementedError: Always raised by the base implementation — subclasses must override this method.
         """
         raise NotImplementedError
 
@@ -286,7 +309,24 @@ class EmbeddingAlgorithm(Algorithm):
         output: EmbeddingPrediction,
         include_fields: Optional[List[str]],
     ) -> EmbeddingPrediction:
-        """Return a copy of ``output`` with fields filtered per request."""
+        """
+        Filter an EmbeddingPrediction dataclass to include only the requested fields.
+        
+        If `output` is not a dataclass or `include_fields` contains `"*"`, the original
+        `output` is returned unchanged. Otherwise, the returned dataclass keeps the
+        always-included fields `metadata`, `embeddings`, `chain_index`, and
+        `residue_index`, plus any names present in `include_fields`. All other fields
+        are set to `None`.
+        
+        Parameters:
+            output: The EmbeddingPrediction dataclass to filter.
+            include_fields: Optional list of field names to include in addition to the
+                always-included fields. If `None`, only the always-included fields are kept.
+        
+        Returns:
+            An EmbeddingPrediction with non-kept fields set to `None`, or the original
+            `output` if no filtering is performed.
+        """
         if not dataclasses.is_dataclass(output) or (include_fields and "*" in include_fields):
             return output
 
@@ -307,13 +347,35 @@ class EmbeddingAlgorithm(Algorithm):
 
 class ModelWrapper:
     def __init__(self, backend: str = "modal", device: str | None = None, config: dict | None = None) -> None:
-        """Initialize the model wrapper."""
+        """
+        Create a ModelWrapper configured to use a specified backend, execution device, and optional configuration.
+        
+        Parameters:
+            backend (str): Backend identifier to use (default: "modal").
+            device (str | None): Preferred execution device (e.g., "cuda", "cpu"); None leaves device selection to the backend or later resolution.
+            config (dict | None): Optional backend-specific configuration; empty dict used if None.
+        """
         self.backend = backend
         self.device = device
         self.config = config or {}
 
     def _call_backend_method(self, method_name: str, *args: Any, **kwargs: Any) -> Any:
-        """Invoke a method on the underlying backend model, handling remote calls if needed."""
+        """
+        Call a named method on the configured backend model, preferring a `remote` callable if present.
+        
+        Parameters:
+            method_name (str): Name of the method to invoke on the backend model.
+            *args: Positional arguments forwarded to the backend method.
+            **kwargs: Keyword arguments forwarded to the backend method.
+        
+        Returns:
+            Any: The value returned by the backend method invocation.
+        
+        Raises:
+            RuntimeError: If the wrapper has no initialized backend.
+            AttributeError: If the backend model does not expose `method_name`.
+            TypeError: If the attribute `method_name` exists but is not callable.
+        """
         backend = getattr(self, "_backend", None)
         if backend is None:
             raise RuntimeError("Backend is not initialized for this model wrapper.")

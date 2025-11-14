@@ -10,7 +10,7 @@ set -euo pipefail
 #
 # Options:
 #   --tool=docker|podman      Container tool to use (default docker)
-#   -h|--help                 Show help
+# usage prints the script usage, available options, and prerequisites to stdout.
 
 usage() {
   cat <<EOF
@@ -56,5 +56,4 @@ for image in "${IMAGES[@]}"; do
 done
 
 echo "Done."
-
 

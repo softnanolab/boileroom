@@ -11,6 +11,16 @@ from modal import enable_output
 # Each test instantiates its own model; keeping function scope avoids long-lived Modal handles.
 @pytest.fixture
 def chai1_model(config: Optional[dict] = None, gpu_device: Optional[str] = None) -> Generator[Chai1, None, None]:
+    """
+    Provide a Chai1 model instance configured to run with the Modal backend.
+    
+    Parameters:
+        config (Optional[dict]): Optional model configuration mapping used when creating the model.
+        gpu_device (Optional[str]): Optional device identifier passed to the model (e.g., "cpu" or a CUDA device string).
+    
+    Returns:
+        Chai1: A Chai1 model instance yielded by the generator for use in tests.
+    """
     model_config = dict(config) if config is not None else {}
     with enable_output():
         yield Chai1(backend="modal", device=gpu_device, config=model_config)
@@ -40,7 +50,11 @@ def test_chai1_minimal_output(test_sequences: dict[str, str], chai1_model: Chai1
 
 
 def test_chai1_full_output(test_sequences: dict[str, str], chai1_model: Chai1):
-    """Test Chai1 with full output requested."""
+    """
+    Verify that Chai1.fold returns all requested output fields and that reported pLDDT scores are valid.
+    
+    Checks that an atom array is produced, that the pLDDT field is present and non-empty, and that all pLDDT values are between 0 and 100 inclusive.
+    """
     quick_options = {
         "num_diffn_samples": 1,
         "num_trunk_samples": 1,
