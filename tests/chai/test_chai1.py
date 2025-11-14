@@ -80,6 +80,7 @@ def test_chai1_full_output(test_sequences: dict[str, str], chai1_model: Chai1):
 
     # TODO: add a reference cif from the web server, and then compare the results to some tolerance
 
+
 # def test_chai1_multimer(test_sequences: dict[str, str], chai1_model: Chai1):
 #     """Test Chai-1 multimer functionality."""
 #     result = chai1_model.fold(test_sequences["multimer"])
