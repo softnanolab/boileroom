@@ -7,6 +7,8 @@ from boileroom.models.chai.chai1 import Chai1Output
 from typing import Generator, Optional
 from modal import enable_output
 
+nipah_virus_sequence = "ICLQKTSNQILKPKLISYTLGQSGTCITDPLLAMDEGYFAYSHLERIGSCSRGVSKQRIIGVGEVLDRGDEVPSLFMTNVWTPPNPNTVYHCSAVYNNEFYYVLCAVSTVGDPILNSTYWSGSLMMTRLAVKPKSNGGGYNQHQLALRSIEKGRYDKVMPYGPSGIKQGDTLYFPAVGFLVRTEFKYNDSNCPITKCQYSKPENCRLSMGIRPNSHYILRSGLLKYNLSDGENPKVVFIEISDQRLSIGSPSKIYDSLGQPVFYQASFSWDTMIKFGDVLTVNPLVVNWRNNTVISRPGQSQCPRFNTCPEICWEGVYNDAFLIDRINWISAGVFLDSNQTAENPVFTVFKDNEILYRAQLASEDTNAQKTITNCFLLKNKIWCISLVEIYDTGDNVIRPKLFAVKIPEQCTH"
+
 
 # Each test instantiates its own model; keeping function scope avoids long-lived Modal handles.
 @pytest.fixture
@@ -67,7 +69,7 @@ def test_chai1_full_output(test_sequences: dict[str, str], chai1_model: Chai1):
         "num_diffn_timesteps": 10,
         "include_fields": ["*"],  # Request all fields
     }
-    result = chai1_model.fold(test_sequences["short"], options=quick_options)
+    result = chai1_model.fold(nipah_virus_sequence, options=quick_options)
 
     assert isinstance(result, Chai1Output), "Result should be a Chai1Output"
     assert result.atom_array is not None, "atom_array should always be generated"
@@ -76,6 +78,7 @@ def test_chai1_full_output(test_sequences: dict[str, str], chai1_model: Chai1):
     assert np.all(np.array(result.plddt[0]) >= 0), "pLDDT scores should be non-negative"
     assert np.all(np.array(result.plddt[0]) <= 100), "pLDDT scores should be less than or equal to 100"
 
+    # TODO: add a reference cif from the web server, and then compare the results to some tolerance
 
 # def test_chai1_multimer(test_sequences: dict[str, str], chai1_model: Chai1):
 #     """Test Chai-1 multimer functionality."""

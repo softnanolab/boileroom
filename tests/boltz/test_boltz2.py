@@ -77,6 +77,7 @@ def test_boltz2_nipah_matches_reference(gpu_device: Optional[str]):
     pae_npz = base_dir / "pae_0_model_0.npz"
     pde_npz = base_dir / "pde_0_model_0.npz"
     assert conf_path.exists(), "tests/data/boltz/confidence_0_model_0.json must exist"
+    assert cif_path.exists(), "tests/data/boltz/0_model_0.cif must exist"
     assert plddt_npz.exists(), "tests/data/boltz/plddt_0_model_0.npz must exist"
     assert pae_npz.exists(), "tests/data/boltz/pae_0_model_0.npz must exist"
     assert pde_npz.exists(), "tests/data/boltz/pde_0_model_0.npz must exist"
