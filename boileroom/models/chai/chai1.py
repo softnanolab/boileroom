@@ -374,13 +374,16 @@ class Chai1Core(FoldingAlgorithm):
 
         ranking_data = candidates.ranking_data
         if len(ranking_data) != 1:
-            logger.warning(f"Expected 1 ranking data, got {len(ranking_data)}. More not supported yet.")
+            logger.warning(
+                f"Expected exactly 1 ranking data entry; got {len(ranking_data)}. Skipping ptm/iptm/per_chain_iptm."
+            )
             return pae, pde, plddt, None, None, None
 
-        ptm = ranking_data[0].ptm_scores.complex_ptm
-        iptm = ranking_data[0].ptm_scores.interface_ptm
-        per_chain_iptm = ranking_data[0].ptm_scores.per_chain_pair_iptm
-        return [pae], [pde], [plddt], [ptm], [iptm], [per_chain_iptm]
+        ptm = np.asarray(ranking_data[0].ptm_scores.complex_ptm)
+        iptm = np.asarray(ranking_data[0].ptm_scores.interface_ptm)
+        per_chain_iptm = np.asarray(ranking_data[0].ptm_scores.per_chain_pair_iptm)
+
+        return pae, pde, plddt, [ptm], [iptm], [per_chain_iptm]
 
     def _collect_matrix(
         self,
