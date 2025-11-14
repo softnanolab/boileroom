@@ -203,7 +203,7 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3.4" },
     { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.14.0" },
     { name = "pytest-xdist", marker = "extra == 'dev'", specifier = ">=3.6.1" },
-    { name = "torch", specifier = ">=2.5.1,<2.7.0" },
+    { name = "torch", specifier = ">=2.6.0,<2.7.0" },
     { name = "transformers", marker = "extra == 'esm'", specifier = ">=4.49.0" },
 ]
 provides-extras = ["dev", "esm"]

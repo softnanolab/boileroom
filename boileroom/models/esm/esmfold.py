@@ -133,7 +133,7 @@ class ESMFoldOutput(StructurePrediction):
     metadata: PredictionMetadata
     atom_array: Optional[List[AtomArray]] = None  # Always generated, one AtomArray per sample
 
-    # Additional ESMFold-specific outputs (all optional, filtered by output_attributes)
+    # Additional ESMFold-specific outputs (all optional, filtered by include_fields)
     frames: Optional[np.ndarray] = None  # (model_layer, batch_size, residue, qxyz=7)
     sidechain_frames: Optional[np.ndarray] = (
         None  # (model_layer, batch_size, residue, 8, 4, 4) [rot matrix per sidechain]
@@ -177,7 +177,7 @@ class ESMFoldCore(FoldingAlgorithm):
         # Chain linking and positioning config
         "glycine_linker": "",
         "position_ids_skip": 512,
-        "output_attributes": None,  # Optional[List[str]] - controls which attributes to include in output
+        "include_fields": None,  # Optional[List[str]] - controls which fields to include in output
     }
     # Static config keys that can only be set at initialization
     STATIC_CONFIG_KEYS = {"device"}
@@ -456,19 +456,19 @@ class ESMFoldCore(FoldingAlgorithm):
         atom_array = self._convert_outputs_to_atomarray(outputs)
         outputs["atom_array"] = atom_array
 
-        # Generate PDB/CIF only if requested via output_attributes
-        output_attributes = config.get("output_attributes")
-        if output_attributes and ("*" in output_attributes or "pdb" in output_attributes):
+        # Generate PDB/CIF only if requested via include_fields
+        include_fields = config.get("include_fields")
+        if include_fields and ("*" in include_fields or "pdb" in include_fields):
             outputs["pdb"] = self._convert_outputs_to_pdb(atom_array)
-        if output_attributes and ("*" in output_attributes or "cif" in output_attributes):
+        if include_fields and ("*" in include_fields or "cif" in include_fields):
             outputs["cif"] = self._convert_outputs_to_cif(atom_array)
 
-        # Build full output with all attributes (exclude positions as it's only used internally)
+        # Build full output with all fields (exclude positions as it's only used internally)
         outputs_without_positions = {k: v for k, v in outputs.items() if k != "positions"}
         full_output = ESMFoldOutput(metadata=self.metadata, **outputs_without_positions)
 
-        # Apply filtering based on output_attributes
-        filtered = self._filter_output_attributes(full_output, output_attributes)
+        # Apply filtering based on include_fields
+        filtered = self._filter_include_fields(full_output, include_fields)
         return cast(ESMFoldOutput, filtered)
 
     def _convert_outputs_to_atomarray(self, outputs: dict) -> List[AtomArray]:

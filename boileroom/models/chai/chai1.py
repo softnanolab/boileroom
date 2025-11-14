@@ -45,7 +45,7 @@ class Chai1Output(StructurePrediction):
     metadata: PredictionMetadata
     atom_array: Optional[list[AtomArray]] = None  # Always generated, one AtomArray per sample
 
-    # Additional Chai-1-specific outputs (all optional, filtered by output_attributes)
+    # Additional Chai-1-specific outputs (all optional, filtered by include_fields)
     pae: Optional[list[np.ndarray]] = None
     pde: Optional[list[np.ndarray]] = None
     plddt: Optional[list[np.ndarray]] = None
@@ -67,7 +67,7 @@ class Chai1Core(FoldingAlgorithm):
         "use_esm_embeddings": False,
         "use_msa_server": False,
         "use_templates_server": False,
-        "output_attributes": None,  # Optional[List[str]] - controls which attributes to include in output
+        "include_fields": None,  # Optional[List[str]] - controls which fields to include in output
     }
     # Static config keys that can only be set at initialization
     STATIC_CONFIG_KEYS = {"device"}
@@ -205,9 +205,9 @@ class Chai1Core(FoldingAlgorithm):
             atom_array=atom_array,
         )
 
-        # Apply filtering based on output_attributes
-        output_attributes = effective_config.get("output_attributes")
-        filtered = self._filter_output_attributes(full_output, output_attributes)
+        # Apply filtering based on include_fields
+        include_fields = effective_config.get("include_fields")
+        filtered = self._filter_include_fields(full_output, include_fields)
         return cast(Chai1Output, filtered)
 
     def _write_fasta(self, sequences: list[str], buffer_dir: Path) -> Path:
@@ -220,19 +220,17 @@ class Chai1Core(FoldingAlgorithm):
         fasta_path.write_text("\n".join(entries))
         return fasta_path
 
-    def _process_cif(
-        self, cif_path: Path, config: dict
-    ) -> tuple[list[Optional[str]], list[AtomArray]]:
+    def _process_cif(self, cif_path: Path, config: dict) -> tuple[list[Optional[str]], list[AtomArray]]:
         cif_file = CIFFile.read(str(cif_path))
         structure = get_structure(cif_file)
 
         # Always generate atom_array
         atom_array = [structure]
 
-        # Generate CIF string only if requested via output_attributes
+        # Generate CIF string only if requested via include_fields
         cif_string = None
-        output_attributes = config.get("output_attributes")
-        if output_attributes and ("*" in output_attributes or "cif" in output_attributes):
+        include_fields = config.get("include_fields")
+        if include_fields and ("*" in include_fields or "cif" in include_fields):
             with open(cif_path, "r") as f:
                 cif_string = f.read()
 

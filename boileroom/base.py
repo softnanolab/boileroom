@@ -213,19 +213,19 @@ class FoldingAlgorithm(Algorithm):
         return [len(seq) - seq.count(":") for seq in sequences]
 
     @staticmethod
-    def _filter_output_attributes(
+    def _filter_include_fields(
         output: StructurePrediction,
-        requested_attributes: Optional[List[str]],
+        include_fields: Optional[List[str]],
     ) -> StructurePrediction:
-        """Return a copy of ``output`` with attributes filtered per request."""
-        if not dataclasses.is_dataclass(output) or (requested_attributes and "*" in requested_attributes):
+        """Return a copy of ``output`` with fields filtered per request."""
+        if not dataclasses.is_dataclass(output) or (include_fields and "*" in include_fields):
             return output
 
         # Cast to Any to help mypy understand this is a dataclass instance
         dataclass_output: Any = output
         always_include = {"metadata", "atom_array"}
         available_fields = {field.name for field in dataclasses.fields(dataclass_output)}
-        fields_to_keep = always_include | (set(requested_attributes or []) & available_fields)
+        fields_to_keep = always_include | (set(include_fields or []) & available_fields)
 
         updates = {
             field.name: None for field in dataclasses.fields(dataclass_output) if field.name not in fields_to_keep
@@ -282,19 +282,19 @@ class EmbeddingAlgorithm(Algorithm):
         raise NotImplementedError
 
     @staticmethod
-    def _filter_output_attributes(
+    def _filter_include_fields(
         output: EmbeddingPrediction,
-        requested_attributes: Optional[List[str]],
+        include_fields: Optional[List[str]],
     ) -> EmbeddingPrediction:
-        """Return a copy of ``output`` with attributes filtered per request."""
-        if not dataclasses.is_dataclass(output) or (requested_attributes and "*" in requested_attributes):
+        """Return a copy of ``output`` with fields filtered per request."""
+        if not dataclasses.is_dataclass(output) or (include_fields and "*" in include_fields):
             return output
 
         # Cast to Any to help mypy understand this is a dataclass instance
         dataclass_output: Any = output
         always_include = {"metadata", "embeddings", "chain_index", "residue_index"}
         available_fields = {field.name for field in dataclasses.fields(dataclass_output)}
-        fields_to_keep = always_include | (set(requested_attributes or []) & available_fields)
+        fields_to_keep = always_include | (set(include_fields or []) & available_fields)
 
         updates = {
             field.name: None for field in dataclasses.fields(dataclass_output) if field.name not in fields_to_keep

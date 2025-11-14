@@ -47,7 +47,7 @@ def test_chai1_full_output(test_sequences: dict[str, str], chai1_model: Chai1):
         "use_esm_embeddings": True,
         "num_trunk_recycles": 1,
         "num_diffn_timesteps": 10,
-        "output_attributes": ["*"],  # Request all attributes
+        "include_fields": ["*"],  # Request all fields
     }
     result = chai1_model.fold(test_sequences["short"], options=quick_options)
 

@@ -39,7 +39,7 @@ def test_esmfold_basic(test_sequences: dict[str, str], esmfold_model: ESMFold):
 def test_esmfold_full_output(test_sequences: dict[str, str], gpu_device: Optional[str]):
     """Test ESMFold with full output requested."""
     with enable_output():
-        model = ESMFold(backend="modal", device=gpu_device, config={"output_attributes": ["*"]})
+        model = ESMFold(backend="modal", device=gpu_device, config={"include_fields": ["*"]})
         result = model.fold(test_sequences["short"])
 
     assert isinstance(result, ESMFoldOutput), "Result should be an ESMFoldOutput"
@@ -52,9 +52,7 @@ def test_esmfold_full_output(test_sequences: dict[str, str], gpu_device: Optiona
 def test_esmfold_multimer(test_sequences, gpu_device: Optional[str]):
     """Test ESMFold multimer functionality."""
     with enable_output():  # TODO: make this better with a fixture, re-using the logic
-        model = ESMFold(
-            backend="modal", device=gpu_device, config={"output_attributes": ["*"]}
-        )  # Request all attributes
+        model = ESMFold(backend="modal", device=gpu_device, config={"include_fields": ["*"]})  # Request all fields
         result = model.fold(test_sequences["multimer"])
 
     assert result.pdb is not None, "PDB output should be generated"
@@ -134,7 +132,7 @@ def test_esmfold_no_glycine_linker(test_sequences, gpu_device: Optional[str]):
         device=gpu_device,
         config={
             "glycine_linker": "",
-            "output_attributes": ["*"],  # Request all attributes
+            "include_fields": ["*"],  # Request all fields
         },
     )
 
@@ -178,9 +176,7 @@ def test_esmfold_chain_indices():
 def test_esmfold_batch(test_sequences: dict[str, str], gpu_device: Optional[str]):
     """Test ESMFold batch prediction."""
     with enable_output():
-        model = ESMFold(
-            backend="modal", device=gpu_device, config={"output_attributes": ["*"]}
-        )  # Request all attributes
+        model = ESMFold(backend="modal", device=gpu_device, config={"include_fields": ["*"]})  # Request all fields
         # Define input sequences
         sequences = [test_sequences["short"], test_sequences["medium"]]
         # Make prediction
@@ -282,7 +278,7 @@ def test_esmfold_output_pdb_cif(data_dir: pathlib.Path, test_sequences: dict[str
 
     with enable_output():
         model = ESMFold(
-            backend="modal", device=gpu_device, config={"output_attributes": ["pdb", "atom_array"]}
+            backend="modal", device=gpu_device, config={"include_fields": ["pdb", "atom_array"]}
         )  # Request PDB and atom_array
         # Define input sequences
         sequences = [test_sequences["short"], test_sequences["medium"]]

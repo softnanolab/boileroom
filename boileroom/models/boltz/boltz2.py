@@ -80,9 +80,9 @@ class Boltz2Core(FoldingAlgorithm):
         "diffusion_samples": 1,
         "max_parallel_samples": 5,
         "step_scale": 1.5,
-        "write_full_pae": False,
-        "write_full_pde": False,
-        "output_attributes": None,  # Optional[List[str]] - controls which attributes to include in output
+        "write_full_pae": True,  # TODO: might remove this as an option to avoid confusion for the user
+        "write_full_pde": True,  # TODO: might remove this as an option to avoid confusion for the user
+        "include_fields": None,  # Optional[List[str]] - controls which fields to include in output
         "num_workers": 2,
         "override": False,
         "seed": None,
@@ -500,18 +500,18 @@ class Boltz2Core(FoldingAlgorithm):
                 coords_np, processed, plddt=plddts if plddts else None
             )
 
-            output_attributes = effective_config.get("output_attributes")
+            include_fields = effective_config.get("include_fields")
             pdb_list = None
-            if output_attributes and ("*" in output_attributes or "pdb" in output_attributes):
+            if include_fields and ("*" in include_fields or "pdb" in include_fields):
                 pdb_list = [self._convert_outputs_to_pdb(arr) for arr in atom_array_list]
 
             cif_list = None
-            if output_attributes and ("*" in output_attributes or "cif" in output_attributes):
+            if include_fields and ("*" in include_fields or "cif" in include_fields):
                 cif_list = cif_strings
 
             self.metadata.prediction_time = t.duration
 
-            # Build full output with all attributes
+            # Build full output with all fields
             full_output = Boltz2Output(
                 metadata=self.metadata,
                 confidence=(confidences if confidences else None),
@@ -523,8 +523,8 @@ class Boltz2Core(FoldingAlgorithm):
                 atom_array=atom_array_list,
             )
 
-            # Apply filtering based on output_attributes
-            filtered = self._filter_output_attributes(full_output, output_attributes)
+            # Apply filtering based on include_fields
+            filtered = self._filter_include_fields(full_output, include_fields)
             return cast(Boltz2Output, filtered)
 
 

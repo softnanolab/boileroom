@@ -50,8 +50,7 @@ class ESM2Core(EmbeddingAlgorithm):
     DEFAULT_CONFIG = {
         "device": "cuda:0",
         "model_name": "esm2_t33_650M_UR50D",
-        "output_hidden_states": True,  # Controls generation of hidden_states
-        "output_attributes": None,  # Optional[List[str]] - controls which attributes to include in output
+        "include_fields": None,  # Optional[List[str]] - controls which fields to include in output
         # Chain linking and positioning config
         "glycine_linker": "",
         "position_ids_skip": 512,
@@ -151,7 +150,7 @@ class ESM2Core(EmbeddingAlgorithm):
             )
             multimer_properties = None
         tokenized = tokenized.to(self._device)
-        tokenized["output_hidden_states"] = effective_config["output_hidden_states"]
+        tokenized["output_hidden_states"] = self._should_compute_hidden_states(effective_config.get("include_fields"))
 
         with Timer("Model Inference") as timer:
             with torch.inference_mode():
@@ -160,6 +159,9 @@ class ESM2Core(EmbeddingAlgorithm):
         outputs = self._convert_outputs(outputs, multimer_properties, timer.duration, effective_config)
 
         return outputs
+
+    def _should_compute_hidden_states(self, include_fields: Optional[list[str]]) -> bool:
+        return include_fields is not None and ("hidden_states" in include_fields or "*" in include_fields)
 
     @staticmethod
     def _store_multimer_properties(sequences: List[str], glycine_linker: str) -> dict[str, torch.Tensor]:
@@ -182,7 +184,7 @@ class ESM2Core(EmbeddingAlgorithm):
 
         embeddings = outputs.last_hidden_state.cpu().numpy()
 
-        if config["output_hidden_states"]:
+        if self._should_compute_hidden_states(config.get("include_fields")) and outputs.hidden_states is not None:
             assert torch.all(
                 outputs.hidden_states[-1] == outputs.last_hidden_state
             ), "Last hidden state should be the same as the output of the model"
@@ -205,7 +207,7 @@ class ESM2Core(EmbeddingAlgorithm):
 
         self.metadata.prediction_time = prediction_time
 
-        # Build full output with all attributes
+        # Build full output with all fields
         full_output = ESM2Output(
             metadata=self.metadata,
             embeddings=embeddings,
@@ -214,9 +216,9 @@ class ESM2Core(EmbeddingAlgorithm):
             residue_index=residue_index_output,
         )
 
-        # Apply filtering based on output_attributes
-        output_attributes = config.get("output_attributes")
-        filtered = self._filter_output_attributes(full_output, output_attributes)
+        # Apply filtering based on include_fields
+        include_fields = config.get("include_fields")
+        filtered = self._filter_include_fields(full_output, include_fields)
         return cast(ESM2Output, filtered)
 
     def _mask_linker_region(
