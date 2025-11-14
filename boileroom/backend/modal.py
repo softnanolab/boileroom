@@ -60,6 +60,14 @@ class ModalAppManager:
                 self._context = None
 
     def _ensure_running(self) -> None:
+        """
+        Ensure the Modal app is running and acquire a local context if needed.
+        
+        If the app is already attached externally or a local context exists, this is a no-op. Otherwise, attempt to start the app with interactive mode controlled by the MODAL_INTERACTIVE environment variable ("true" enables interactive). On successful entry, store the entered context on self._context. If entering the context raises InvalidError whose message indicates the app is "already running", mark the manager as attached externally by setting self._attached_external and return; other InvalidError exceptions are re-raised.
+        
+        Raises:
+        	InvalidError: Re-raised when entering the Modal context fails for reasons other than the app already running.
+        """
         if self._attached_external or self._context is not None:
             return
 
@@ -120,6 +128,14 @@ class ModalBackend(Backend):
         return remote_cls(config=json.dumps(self._config).encode("utf-8"))
 
     def _resolve_remote_cls(self):
+        """
+        Resolve and cache the remote model class, applying GPU options when a device is configured.
+        
+        If a device string was provided to the backend, the returned class will have GPU options applied via with_options(gpu=...). The resolved class is cached on the instance for subsequent calls.
+        
+        Returns:
+            The resolved remote class used to instantiate the remote model.
+        """
         if self._remote_cls is None:
             remote_cls = self._model_cls
             if self._device is not None:

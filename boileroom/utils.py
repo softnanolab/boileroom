@@ -46,10 +46,11 @@ def validate_sequence(sequence: str) -> bool:
 
 
 def ensure_cache_dir() -> Path:
-    """Ensure the cache directory exists.
-
+    """
+    Create the cache directory (including parent directories) if it does not exist and return its path.
+    
     Returns:
-        Path: Path to cache directory
+        Path: Path to the cache directory.
     """
     cache_path = Path(CACHE_DIR)
     cache_path.mkdir(parents=True, exist_ok=True)
@@ -57,22 +58,28 @@ def ensure_cache_dir() -> Path:
 
 
 def get_model_dir() -> Path:
-    """Return the model directory, honoring the MODAL_MODEL_DIR environment variable.
-
-    The path is not created here; callers should create it if needed.
+    """
+    Resolve the model directory path using the MODEL_DIR environment variable or the default.
+    
+    Reads the `MODEL_DIR` environment variable and falls back to `MODAL_MODEL_DIR` if unset. The returned Path has user home expansion applied (e.g., `~` resolved) but the directory is not created.
+    Returns:
+        Path: Path to the model directory with user expansion applied.
     """
     value = os.environ.get("MODEL_DIR", MODAL_MODEL_DIR)
     return Path(value).expanduser()
 
 
 def format_time(seconds: float) -> str:
-    """Format time in seconds to human readable string.
-
-    Args:
-        seconds: Time in seconds
-
+    """
+    Convert a duration in seconds to a compact human-readable string.
+    
+    The output includes hours and minutes only when their values are greater than zero. Seconds are included when no larger unit is present or when seconds are greater than zero; fractional seconds are discarded (floored).
+    
+    Parameters:
+        seconds: Duration in seconds.
+    
     Returns:
-        str: Formatted time string (e.g. "2h 30m 15s")
+        A string like "2h 30m 15s", omitting any zero-valued hour/minute components.
     """
     hours = int(seconds // HOURS)
     minutes = int((seconds % HOURS) // MINUTES)

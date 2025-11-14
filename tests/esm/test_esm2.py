@@ -8,6 +8,18 @@ from boileroom import ESM2
 # Each test instantiates its own model; keeping function scope avoids long-lived Modal handles.
 @pytest.fixture
 def esm2_model_factory(gpu_device: Optional[str]):
+    """
+    Create a factory that builds configured ESM2 model instances.
+    
+    Parameters:
+        gpu_device (Optional[str]): If provided, forces the model device to this value; otherwise the device is inferred from the provided model_name in the factory call:
+            - model_name containing "15B" → "A100-80GB"
+            - model_name containing "3B" → "A100-40GB"
+            - otherwise → "T4"
+    
+    Returns:
+        factory (Callable[..., ESM2]): A function that accepts model configuration kwargs (must include `model_name`) and returns an ESM2 instance with backend "modal" and device chosen as described above.
+    """
     def _make_model(**kwargs):
         config = {**kwargs}
 
@@ -97,14 +109,14 @@ def test_esm2_embed_hidden_states(esm2_model_factory):
 
 
 def test_esm2_embed_multimer(esm2_model_factory, test_sequences):
-    """Test ESM2 embedding multimer functionality.
-
-    Tests various aspects of multimer handling:
-    - Basic multimer embedding
-    - Chain indices and residue indices
-    - Padding mask
-    - Hidden states (when enabled)
-    - Different glycine linker lengths
+    """
+    Validate ESM2 multimer embedding produces correct embeddings, chain and residue indices, padding behavior, and optional hidden states.
+    
+    Tests multimer handling across scenarios: varying glycine linker lengths, a simple multimer, a complex multimer, and a batched set of sequences with different chain counts and lengths. Verifies:
+    - embeddings and hidden_states shapes match expected sequence and model dimensions,
+    - chain_index and residue_index shape and per-chain numbering,
+    - padding regions are zeroed and index padding uses -1,
+    - hidden_states are present when requested via include_fields and contain few zeros in non-padding regions.
     """
     # Test with different glycine linker lengths
     for linker_length in [0, 10, 50]:
