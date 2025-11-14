@@ -1,22 +1,42 @@
 import pytest
 import numpy as np
+from typing import Optional
 
 from boileroom import ESM2
 
 
 # Each test instantiates its own model; keeping function scope avoids long-lived Modal handles.
 @pytest.fixture
-def esm2_model_factory():
+def esm2_model_factory(gpu_device: Optional[str]):
+    """Create a factory that builds configured ESM2 model instances.
+
+    Parameters
+    ----------
+    gpu_device : Optional[str]
+        If provided, forces the model device to this value; otherwise the device is inferred from the provided model_name in the factory call:
+        - model_name containing "15B" → "A100-80GB"
+        - model_name containing "3B" → "A100-40GB"
+        - otherwise → "T4"
+
+    Returns
+    -------
+    Callable[..., ESM2]
+        A function that accepts model configuration kwargs (must include `model_name`) and returns an ESM2 instance with backend "modal" and device chosen as described above.
+    """
+
     def _make_model(**kwargs):
         config = {**kwargs}
 
-        gpu_type: str
-        if "15B" in config["model_name"]:
-            gpu_type = "A100-80GB"
-        elif "3B" in config["model_name"]:
-            gpu_type = "A100-40GB"
+        # Use gpu_device from command line if provided, otherwise fall back to model-name-based selection
+        if gpu_device is not None:
+            gpu_type = gpu_device
         else:
-            gpu_type = "T4"
+            if "15B" in config["model_name"]:
+                gpu_type = "A100-80GB"
+            elif "3B" in config["model_name"]:
+                gpu_type = "A100-40GB"
+            else:
+                gpu_type = "T4"
 
         return ESM2(backend="modal", device=gpu_type, config=config)
 
@@ -35,10 +55,36 @@ def esm2_model_factory():
     ],
 )
 def test_esm2_embed_basic(esm2_model_factory, model_config):
-    """Test ESM2 embedding."""
+    """Test ESM2 embedding with default output (minimal)."""
     sequence = "MALWMRLLPLLALLALWGPDPAAA"
 
     model = esm2_model_factory(model_name=model_config["model_name"])
+    result = model.embed([sequence])
+    # Minimal output should include embeddings, chain_index, residue_index, metadata
+    assert result.embeddings.shape == (1, len(sequence), model_config["latent_dim"])
+    assert result.chain_index is not None, "chain_index should be in minimal output"
+    assert result.residue_index is not None, "residue_index should be in minimal output"
+    assert result.metadata is not None, "metadata should always be present"
+    # hidden_states should be None when not requested via include_fields
+    assert result.hidden_states is None, "hidden_states should be None when not requested"
+    del model
+
+
+@pytest.mark.parametrize(
+    "model_config",
+    [
+        {"model_name": "esm2_t6_8M_UR50D", "latent_dim": 320, "num_layers": 6},
+        {"model_name": "esm2_t12_35M_UR50D", "latent_dim": 480, "num_layers": 12},
+        {"model_name": "esm2_t30_150M_UR50D", "latent_dim": 640, "num_layers": 30},
+        {"model_name": "esm2_t33_650M_UR50D", "latent_dim": 1280, "num_layers": 33},
+        {"model_name": "esm2_t36_3B_UR50D", "latent_dim": 2560, "num_layers": 36},
+    ],
+)
+def test_esm2_embed_with_hidden_states(esm2_model_factory, model_config):
+    """Test ESM2 embedding with hidden_states enabled."""
+    sequence = "MALWMRLLPLLALLALWGPDPAAA"
+
+    model = esm2_model_factory(model_name=model_config["model_name"], include_fields=["hidden_states"])
     result = model.embed([sequence])
     # +2 for the two extra tokens (start of sequence and end of sequence)
     assert result.embeddings.shape == (1, len(sequence), model_config["latent_dim"])
@@ -54,29 +100,33 @@ def test_esm2_embed_basic(esm2_model_factory, model_config):
 
 
 def test_esm2_embed_hidden_states(esm2_model_factory):
-    """Test ESM2 embedding hidden states."""
+    """Test ESM2 embedding hidden states control via include_fields."""
     sequence = "MALWMRLLPLLALLALWGPDPAAA"
-    model = esm2_model_factory(model_name="esm2_t33_650M_UR50D", output_hidden_states=False)
+    model = esm2_model_factory(model_name="esm2_t33_650M_UR50D")
     result = model.embed([sequence])
-    assert result.hidden_states is None
+    assert result.hidden_states is None, "hidden_states should be None when not requested via include_fields"
+    # Even without hidden_states, minimal output should still include embeddings, chain_index, residue_index
+    assert result.embeddings is not None
+    assert result.chain_index is not None
+    assert result.residue_index is not None
     del model
 
 
 def test_esm2_embed_multimer(esm2_model_factory, test_sequences):
-    """Test ESM2 embedding multimer functionality.
+    """
+    Validate ESM2 multimer embedding produces correct embeddings, chain and residue indices, padding behavior, and optional hidden states.
 
-    Tests various aspects of multimer handling:
-    - Basic multimer embedding
-    - Chain indices and residue indices
-    - Padding mask
-    - Hidden states (when enabled)
-    - Different glycine linker lengths
+    Tests multimer handling across scenarios: varying glycine linker lengths, a simple multimer, a complex multimer, and a batched set of sequences with different chain counts and lengths. Verifies:
+    - embeddings and hidden_states shapes match expected sequence and model dimensions,
+    - chain_index and residue_index shape and per-chain numbering,
+    - padding regions are zeroed and index padding uses -1,
+    - hidden_states are present when requested via include_fields and contain few zeros in non-padding regions.
     """
     # Test with different glycine linker lengths
     for linker_length in [0, 10, 50]:
         model = esm2_model_factory(
             model_name="esm2_t33_650M_UR50D",
-            output_hidden_states=True,
+            include_fields=["hidden_states"],
             glycine_linker="G" * linker_length,
             position_ids_skip=512,
         )
@@ -102,8 +152,8 @@ def test_esm2_embed_multimer(esm2_model_factory, test_sequences):
         assert result.residue_index is not None, "Residue index should be present"
         assert result.residue_index.shape == (1, expected_length), "Residue index shape mismatch"
 
-        # Check hidden states
-        assert result.hidden_states is not None, "Hidden states should be present"
+        # Check hidden states (should be present when requested via include_fields)
+        assert result.hidden_states is not None, "Hidden states should be present when requested via include_fields"
         assert result.hidden_states.shape == (1, 34, expected_length, 1280), "Hidden states shape mismatch"
 
         # Test with a more complex multimer sequence
@@ -174,3 +224,15 @@ def test_esm2_embed_multimer(esm2_model_factory, test_sequences):
             assert num_zeros < 16, f"Too many zeros ({num_zeros}) in non-padding hidden states"
             assert np.all(result.hidden_states[i, :, expected_length:] == 0), "Padding should be 0"
         del model
+
+
+def test_esm2_static_config_enforcement():
+    """Test that static config keys cannot be overridden in options."""
+    from boileroom.models.esm.esm2 import ESM2Core
+
+    core = ESM2Core(config={"device": "cpu", "model_name": "esm2_t33_650M_UR50D"})
+    # device and model_name are static config keys
+    with pytest.raises(ValueError, match="device"):
+        core.embed("MALWMRLLPLLALLALWGPDPAAA", options={"device": "cuda:0"})
+    with pytest.raises(ValueError, match="model_name"):
+        core.embed("MALWMRLLPLLALLALWGPDPAAA", options={"model_name": "esm2_t6_8M_UR50D"})

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "boileroom"
-version = "0.2.1"
+version = "0.3.0"
 authors = [
     { name="Jakub Lála", email="jakublala@gmail.com" },
 ]
@@ -17,10 +17,10 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
-    "modal>=0.73.12",
+    "modal>=1.1.0",
     "numpy>=2.2.2",
     "biotite>=1.0.1",
-    "torch>=2.5.1,<2.7.0",
+    "torch>=2.6.0,<2.7.0",
     "deprecated>=1.2.14",
 ]
 [project.optional-dependencies]
@@ -30,12 +30,12 @@ dev = [
     "pytest-xdist>=3.6.1",
     "pytest-mock>=3.14.0",
 ]
-local = [
+esm = [
     "transformers>=4.49.0",
 ]
 
 [project.urls]
-Homepage = "https://github.com/jakublala/boileroom"
+Homepage = "https://github.com/softnanolab/boileroom"
 
 [tool.hatch.metadata]
 allow-direct-references = true
