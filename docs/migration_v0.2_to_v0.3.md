@@ -97,4 +97,3 @@ The new API simplifies usage by:
 ## Other Changes
 
 _Add other breaking changes, deprecations, or important updates here as needed._
-

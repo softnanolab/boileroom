@@ -8,6 +8,10 @@
 
 `boileroom` is a Python package that provides a unified interface to various protein prediction models, running them efficiently on Modal's serverless infrastructure.
 
+> 🚨🚨🚨 **v0.3.0** introduced major changes, including new models and inference backends. If you're upgrading from v0.2, please see the [Migration Guide](docs/migration_v0.2_to_v0.3.md) for details on breaking changes and how to update your code. 🚨🚨🚨
+
+> ⚠️ **Note:** This package is currently in active development. The API and features may change between versions. We recommend pinning your version in production environments.
+
 ## Features
 
 - 🚀 Serverless execution of protein models
