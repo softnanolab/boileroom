@@ -245,13 +245,13 @@ class ESMFoldCore(FoldingAlgorithm):
         ESMFoldOutput
             Predicted structure(s) and optional auxiliary outputs. The set of returned fields honors the merged configuration (e.g., `include_fields` controls presence of pdb/cif and other model-specific outputs).
         """
+        # Merge static config with per-call options (validate before loading model)
+        effective_config = self._merge_options(options)
+
         if self.tokenizer is None or self.model is None:
             logger.warning("Model not loaded. Forcing the model to load... Next time call _load() first.")
             self._load()
         assert self.tokenizer is not None and self.model is not None, "Model not loaded"
-
-        # Merge static config with per-call options
-        effective_config = self._merge_options(options)
 
         validated_sequences = self._validate_sequences(sequences)
         self.metadata.sequence_lengths = self._compute_sequence_lengths(validated_sequences)

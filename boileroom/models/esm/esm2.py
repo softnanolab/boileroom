@@ -138,13 +138,13 @@ class ESM2Core(EmbeddingAlgorithm):
         ESM2Output
             Prediction container with embeddings, metadata, chain_index and residue_index arrays, and optional hidden_states depending on `include_fields`.
         """
+        # Merge static config with per-call options (validate before loading model)
+        effective_config = self._merge_options(options)
+
         if self.tokenizer is None or self.model is None:
             logger.warning("Model not loaded. Forcing the model to load... Next time call _load() first.")
             self._load()
         assert self.tokenizer is not None and self.model is not None, "Model not loaded"
-
-        # Merge static config with per-call options
-        effective_config = self._merge_options(options)
 
         normalized_sequences: list[str]
         if isinstance(sequences, str):
