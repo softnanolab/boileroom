@@ -1,11 +1,8 @@
 import numpy as np
 from typing import List
 
-from .image import esm_image
-
-with esm_image.imports():
-    import torch
-    import torch.nn.functional as F
+import torch
+import torch.nn.functional as F
 
 
 # --- Glycine linker and positional skip utilities ---

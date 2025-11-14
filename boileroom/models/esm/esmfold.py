@@ -733,7 +733,12 @@ class ESMFold(ModelWrapper):
         Parameters
         ----------
         backend : str
-            Backend identifier; supported values are "modal" to use ModalBackend and "local" to use LocalBackend.
+            Backend type to use. Supported values:
+            - "modal": Use Modal backend (default)
+            - "local": Use local backend (requires dependencies in current environment)
+            - "conda": Use conda backend with auto-detection (micromamba > mamba > conda)
+            - "mamba": Use mamba explicitly
+            - "micromamba": Use micromamba explicitly
         device : Optional[str]
             Optional device specifier to pass to the backend (e.g., "cuda:0" or "cpu").
         config : Optional[dict]
@@ -742,7 +747,8 @@ class ESMFold(ModelWrapper):
         Raises
         ------
         ValueError
-            If `backend` is not one of the supported backends.
+            If an unsupported backend string is provided, or if conda backend is
+            requested but no compatible tool (conda/mamba/micromamba) is available.
         """
         if config is None:
             config = {}
@@ -753,6 +759,18 @@ class ESMFold(ModelWrapper):
             backend_instance = ModalBackend(ModalESMFold, config, device=device)
         elif backend == "local":
             backend_instance = LocalBackend(ESMFoldCore, config, device=device)
+        elif backend in ("conda", "mamba", "micromamba"):
+            from pathlib import Path
+            from ...backend.conda import CondaBackend
+
+            environment_yml = Path(__file__).parent / "environment.yml"
+            # Pass Core class as string path to avoid importing it in main process
+            # This keeps dependencies completely independent between Boiler Room and conda servers
+            core_class_path = "boileroom.models.esm.esmfold.ESMFoldCore"
+            # Pass backend string directly as runner_command
+            backend_instance = CondaBackend(
+                core_class_path, config or {}, device=device, environment_yml_path=environment_yml, runner_command=backend
+            )
         else:
             raise ValueError(f"Backend {backend} not supported")
         self._backend = backend_instance

@@ -17,11 +17,13 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
+    "httpx>=0.27.0",
     "modal>=1.1.0",
     "numpy>=2.2.2",
     "biotite>=1.0.1",
     "torch>=2.6.0,<2.7.0",
     "deprecated>=1.2.14",
+    "pyyaml>=6.0.0",
 ]
 [project.optional-dependencies]
 dev = [

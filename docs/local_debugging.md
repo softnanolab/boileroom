@@ -1,17 +1,44 @@
-🚧 **Local Debugging Not Yet Fully Supported**
-> ⚠️ This feature is still under active development and may not work reliably across all models. Expect rough edges—feedback welcome!
+Conda Backend (Recommended for Dependency Isolation)
+====================================================
+The `CondaBackend` runs models in separate conda environments via HTTP microservice, ensuring complete dependency independence between Boiler Room and model-specific environments. This is the recommended approach for local debugging as it avoids dependency conflicts.
 
-Local Debugging Steps 🏗️
-========================
-To debug, or simply run in the local environment, you can execute the `LocalBackend`.
-However, your Python environment (of the main process) must satisfy all required dependencies.
+**Supported Tools:**
+- **micromamba** (recommended): Fastest and most lightweight
+- **mamba**: Fast, drop-in replacement for conda
+- **conda**: Standard conda package manager
 
-1. Install project dependencies manually: `uv pip install .`
-2. Some models specific version of some packages (e.g. NumPy, thus install it with: `uv pip install "numpy<2.0"`).
-See the table for full description for each model.
-3. Activate the virtual environment: `source .venv/bin/activate`
-4. Confirm the interpreter comes from the environment: `which python`
-5. Execute the script: `python script.py`
+**Auto-Detection:**
+By default, the conda backend automatically detects available tools in priority order: micromamba > mamba > conda. You can also explicitly specify a tool.
+
+**Installation:**
+Install one of the supported tools. We recommend micromamba for lean and fast performance:
+- Micromamba: https://mamba.readthedocs.io/en/latest/installation.html
+- Mamba: https://mamba.readthedocs.io/en/latest/installation.html
+- Conda: https://docs.conda.io/en/latest/miniconda.html
+
+**Example Usage:**
+```python
+from boileroom import ESM2
+
+# Auto-detect available tool (micromamba > mamba > conda)
+# Will suggest faster alternatives if available
+model = ESM2(backend="conda", device="cuda:0")
+
+# Explicitly use mamba
+model = ESM2(backend="mamba", device="cuda:0")
+
+# Explicitly use micromamba (fastest)
+model = ESM2(backend="micromamba", device="cuda:0")
+
+# The backend will automatically:
+# 1. Create conda environment from environment.yml if missing
+# 2. Start HTTP server in the conda environment
+# 3. Handle all model operations via HTTP
+result = model.embed(sequences)
+```
+
+Sometimes, the local (conda/apptainer) environments might require some specific commands that need to be run. Either to install, or to run before setting up the server. For that, we will create a `.install` and `.run` files in each model's folder, that will be executed as effective bash scripts through the backend.
+
 
 Backend Requirements
 --------------------

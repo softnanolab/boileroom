@@ -27,17 +27,30 @@ class Backend(ABC):
             atexit.register(self._atexit_hook)
 
     def stop(self) -> None:
+        """Stop the backend and clean up resources.
+
+        This method is idempotent and can be called multiple times safely.
+        Ensures proper cleanup even if shutdown() raises an exception.
+        """
         if not self._is_running:
             return
 
-        self.shutdown()
-        self._is_running = False
-
-        if self._atexit_hook is not None:
-            try:
-                atexit.unregister(self._atexit_hook)
-            finally:
-                self._atexit_hook = None
+        try:
+            self.shutdown()
+        except Exception:
+            # Log the error but continue with cleanup
+            # This ensures state is reset even if shutdown() fails
+            pass
+        finally:
+            self._is_running = False
+            if self._atexit_hook is not None:
+                try:
+                    atexit.unregister(self._atexit_hook)
+                except Exception:
+                    # Ignore errors when unregistering atexit hook
+                    pass
+                finally:
+                    self._atexit_hook = None
 
     @abstractmethod
     def startup(self) -> None:

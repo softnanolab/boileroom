@@ -477,7 +477,12 @@ class Chai1(ModelWrapper):
         Parameters
         ----------
         backend : str
-            Backend type to use. Supported values are "modal" (deploy via Modal) and "local" (run using the local backend).
+            Backend type to use. Supported values:
+            - "modal": Use Modal backend (default)
+            - "local": Use local backend (requires dependencies in current environment)
+            - "conda": Use conda backend with auto-detection (micromamba > mamba > conda)
+            - "mamba": Use mamba explicitly
+            - "micromamba": Use micromamba explicitly
         device : Optional[str]
             Optional device identifier to pass to the backend (e.g., "cuda:0" or None to let the backend choose).
         config : Optional[dict]
@@ -486,7 +491,8 @@ class Chai1(ModelWrapper):
         Raises
         ------
         ValueError
-            If an unsupported backend name is provided.
+            If an unsupported backend string is provided, or if conda backend is
+            requested but no compatible tool (conda/mamba/micromamba) is available.
         """
         if config is None:
             config = {}
@@ -497,6 +503,18 @@ class Chai1(ModelWrapper):
             backend_instance = ModalBackend(ModalChai1, config, device=device)
         elif backend == "local":
             backend_instance = LocalBackend(Chai1Core, config, device=device)
+        elif backend in ("conda", "mamba", "micromamba"):
+            from pathlib import Path
+            from ...backend.conda import CondaBackend
+
+            environment_yml = Path(__file__).parent / "environment.yml"
+            # Pass Core class as string path to avoid importing it in main process
+            # This keeps dependencies completely independent between Boiler Room and conda servers
+            core_class_path = "boileroom.models.chai.chai1.Chai1Core"
+            # Pass backend string directly as runner_command
+            backend_instance = CondaBackend(
+                core_class_path, config or {}, device=device, environment_yml_path=environment_yml, runner_command=backend
+            )
         else:
             raise ValueError(f"Backend {backend} not supported")
         self._backend = backend_instance

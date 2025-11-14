@@ -1,10 +1,13 @@
 """Utility functions and constants for the BoilerRoom package."""
 
-import os
-import time
 import logging
+import os
+import tempfile
+import time
 from pathlib import Path
 from typing import Dict, Optional
+
+logger = logging.getLogger(__name__)
 
 
 # Time constants
@@ -65,17 +68,45 @@ def ensure_cache_dir() -> Path:
 
 
 def get_model_dir() -> Path:
-    """Resolve the model directory path using the MODEL_DIR environment variable or the default.
+    """Resolve and set the MODEL_DIR environment variable to a user-writable cache location following XDG conventions.
 
-    Reads the `MODEL_DIR` environment variable and falls back to `MODAL_MODEL_DIR` (the default constant) if unset. The returned Path has user home expansion applied (e.g., `~` resolved) but the directory is not created.
+    Precedence:
+    1) Respect existing MODEL_DIR if set.
+    2) Use XDG_CACHE_HOME if defined; otherwise default to ~/.cache.
+    3) Append "boileroom/models" and create the directory if it does not exist.
+
+    If the resolved directory cannot be created, falls back to a temporary directory.
 
     Returns
     -------
     Path
-        Path to the model directory with user expansion applied.
+        Absolute path to the resolved model directory.
     """
-    value = os.environ.get("MODEL_DIR", MODAL_MODEL_DIR)
-    return Path(value).expanduser()
+    try:
+        if os.environ.get("MODEL_DIR"):
+            resolved = Path(os.environ["MODEL_DIR"]).expanduser().resolve()
+        else:
+            xdg_cache_home = os.getenv("XDG_CACHE_HOME")
+            if xdg_cache_home:
+                base_cache_dir = Path(xdg_cache_home).expanduser().resolve()
+            else:
+                base_cache_dir = Path.home() / ".cache"
+
+            resolved = (base_cache_dir / "boileroom" / "models").resolve()
+
+        resolved.mkdir(parents=True, exist_ok=True)
+        os.environ["MODEL_DIR"] = str(resolved)
+        return resolved
+    except (OSError, PermissionError) as exc:
+        logger.warning(f"Falling back to a temporary model cache due to filesystem error: {str(exc)}")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"Falling back to a temporary model cache due to unexpected error: {str(exc)}")
+
+    # Fallback to a user-writable temporary directory; ensure directory exists
+    fallback_base = Path(tempfile.gettempdir()) / "boileroom" / "models"
+    fallback_base.mkdir(parents=True, exist_ok=True)
+    os.environ["MODEL_DIR"] = str(fallback_base)
+    return fallback_base
 
 
 def format_time(seconds: float) -> str:

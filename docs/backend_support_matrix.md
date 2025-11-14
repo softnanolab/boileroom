@@ -6,14 +6,14 @@ available support, while a red cross indicates that the combination is not yet i
 
 ### Structure Algorithms
 
-| Model      | 🟢 Modal | 🐧 Apptainer (FastAPI) | 🐳 Docker (FastAPI) | 💻 Local (uv) | 💻 Local (Docker/Apptainer) |
-|------------|:--------:|:---------------------:|:------------------:|:-------------:|:--------------------------:|
-| Boltz-2    | 🍊       | ❌                    | ❌                 | ❌            | ❌                         |
-| Chai-1     | 🍊       | ❌                    | ❌                 | ❌            | ✅                         |
-| ESMFold    | ✅       | ❌                    | ❌                 | ✅            | ❌                         |
+| Model      | 🟢 Modal | 🐧 Apptainer (FastAPI) | 🐳 Docker (FastAPI) | 💻 Local (uv) | 💻 Local (Docker/Apptainer) | 🐍 Conda (micromamba/mamba/conda) |
+|------------|:--------:|:---------------------:|:------------------:|:-------------:|:--------------------------:|:--------------------------------:|
+| Boltz-2    | 🍊       | ❌                    | ❌                 | ❌            | ❌                         | 🍊                                |
+| Chai-1     | 🍊       | ❌                    | ❌                 | ❌            | ❌                         | 🍊                                |
+| ESMFold    | ✅       | ❌                    | ❌                 | ✅            | ❌                         | ✅                                |
 
 ### Embedding Algorithms
 
-| Model      | 🟢 Modal | 🐧 Apptainer (FastAPI) | 🐳 Docker (FastAPI) | 💻 Local (uv) | 💻 Local (Docker/Apptainer) |
-|------------|:--------:|:---------------------:|:------------------:|:-------------:|:--------------------------:|
-| ESM-2      | ✅       | ❌                    | ❌                 | ✅            | ❌                         |
+| Model      | 🟢 Modal | 🐧 Apptainer (FastAPI) | 🐳 Docker (FastAPI) | 💻 Local (uv) | 💻 Local (Docker/Apptainer) | 🐍 Conda (micromamba/mamba/conda) |
+|------------|:--------:|:---------------------:|:------------------:|:-------------:|:--------------------------:|:--------------------------------:|
+| ESM-2      | ✅       | ❌                    | ❌                 | ✅            | ❌                         | ✅                                |

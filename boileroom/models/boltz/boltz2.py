@@ -773,16 +773,22 @@ class Boltz2(ModelWrapper):
         Parameters
         ----------
         backend : str
-            Which backend to use; "modal" to run in a Modal instance or "local" to run directly in-process.
+            Backend type to use. Supported values:
+            - "modal": Use Modal backend (default)
+            - "local": Use local backend (requires dependencies in current environment)
+            - "conda": Use conda backend with auto-detection (micromamba > mamba > conda)
+            - "mamba": Use mamba explicitly
+            - "micromamba": Use micromamba explicitly
         device : Optional[str]
-            Device hint passed to the chosen backend (e.g., "cuda" or "cpu"); may be ignored by some backends.
+            Device hint passed to the chosen backend (e.g., "cuda:0" or "cpu"); may be ignored by some backends.
         config : Optional[dict]
             Runtime configuration forwarded to the backend and underlying Boltz-2 core.
 
         Raises
         ------
         ValueError
-            If an unsupported backend name is provided.
+            If an unsupported backend string is provided, or if conda backend is
+            requested but no compatible tool (conda/mamba/micromamba) is available.
         """
         if config is None:
             config = {}
@@ -793,6 +799,18 @@ class Boltz2(ModelWrapper):
             backend_instance = ModalBackend(ModalBoltz2, config, device=device)
         elif backend == "local":
             backend_instance = LocalBackend(Boltz2Core, config, device=device)
+        elif backend in ("conda", "mamba", "micromamba"):
+            from pathlib import Path
+            from ...backend.conda import CondaBackend
+
+            environment_yml = Path(__file__).parent / "environment.yml"
+            # Pass Core class as string path to avoid importing it in main process
+            # This keeps dependencies completely independent between Boiler Room and conda servers
+            core_class_path = "boileroom.models.boltz.boltz2.Boltz2Core"
+            # Pass backend string directly as runner_command
+            backend_instance = CondaBackend(
+                core_class_path, config or {}, device=device, environment_yml_path=environment_yml, runner_command=backend
+            )
         else:
             raise ValueError(f"Backend {backend} not supported")
         self._backend = backend_instance

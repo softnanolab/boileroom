@@ -404,6 +404,53 @@ class ModelWrapper:
         self.device = device
         self.config = config or {}
 
+    def __del__(self) -> None:
+        """Clean up backend when ModelWrapper is destroyed.
+
+        This ensures that backend resources (such as conda backend subprocesses)
+        are properly shut down when the ModelWrapper instance is garbage collected.
+        """
+        backend = getattr(self, "_backend", None)
+        if backend is not None:
+            try:
+                backend.stop()
+            except Exception:
+                # Ignore errors in __del__ to avoid issues during garbage collection
+                # Exceptions in __del__ can cause problems and are typically ignored
+                pass
+
+    def __enter__(self) -> "ModelWrapper":
+        """Context manager entry.
+
+        Returns
+        -------
+        ModelWrapper
+            Returns self to allow using the model in a with statement.
+        """
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        """Context manager exit - ensures backend is stopped.
+
+        Parameters
+        ----------
+        exc_type : type | None
+            Exception type if an exception was raised.
+        exc_val : Exception | None
+            Exception value if an exception was raised.
+        exc_tb : TracebackType | None
+            Exception traceback if an exception was raised.
+
+        Returns
+        -------
+        None
+            Always returns False to not suppress exceptions.
+        """
+        backend = getattr(self, "_backend", None)
+        if backend is not None:
+            backend.stop()
+        return False  # Don't suppress exceptions
+
     def _call_backend_method(self, method_name: str, *args: Any, **kwargs: Any) -> Any:
         """Call a named method on the configured backend model, preferring a `remote` callable if present.
 

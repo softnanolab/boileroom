@@ -31,6 +31,16 @@
 - Modal wrappers (`ModalBoltz2`, `ModalChai1`, `ModalESMFold`, `ModalESM2`) live beside the core, use `@app.cls`, mount `model_weights`, and rehydrate the core inside `@modal.enter`. Keep method signatures thin—call the core directly and let Modal manage GPU scheduling.
 - High-level classes (`Boltz2`, `Chai1`, `ESMFold`, `ESM2`) inherit `ModelWrapper`, choose `ModalBackend` by default, and fall back to `LocalBackend` for debugging. `LocalBackend` mirrors Modal calls but expects the environment to satisfy dependencies (`uv pip install .[boltz]` etc.).
 - Backends share mechanisms through `boileroom/backend/base.py`; add new providers (e.g. Conda, Batch) by implementing `startup`, `shutdown`, and `get_model`.
+- The goal of the package is to isolate the dependencies of individual models — hence, the boileroom dependencies should be independent of what is used within individual environemnts (conda, apptainer, Modal, etc.), and vice versa.
+- Do not change crucial APIs, especially the high-level API that would be breaking the entire logic.
+
+### Conda Backend Structure
+- Each model that supports conda backend must have an `environment.yml` file in `boileroom/models/<family>/environment.yml`. The environment name follows the pattern `boileroom-<directory_name>` or uses the `name` field from environment.yml if present.
+- Core classes are passed as string paths (e.g., `"boileroom.models.esm.core.ESM2Core"`) to `CondaBackend` to maintain dependency isolation between Boiler Room and model-specific environments.
+- The conda backend uses HTTP microservice pattern: `boileroom/backend/server.py` runs in the conda environment and exposes `/health`, `/embed`, and `/fold` endpoints. The server dynamically loads the Core class specified via the `MODEL_CLASS` environment variable.
+- Output types (e.g., `ESM2Output`, `Boltz2Output`) are serialized via pickle+base64 for JSON transport between the main process and the conda server.
+- The `_CondaModelProxy` in `conda.py` provides the client-side interface that forwards method calls (`embed()` or `fold()`) to the HTTP server via POST requests.
+- Models in the same family (e.g., ESM2 and ESMFold) can share the same `environment.yml` file.
 
 ## Adding a New Model
 - Implement a core:
@@ -58,6 +68,8 @@
               self._backend = ModalBackend(ModalMyFold, config or {}, device=device)
           elif backend == "local":
               self._backend = LocalBackend(MyFoldCore, config or {}, device=device)
+          elif backend == "conda":
+              self._backend = CondaBackend(MyFoldCore, config or {}, device=device)
           else:
               raise ValueError("Backend not supported")
           self._backend.start()
