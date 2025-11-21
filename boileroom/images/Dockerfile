@@ -13,15 +13,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 USER ${MAMBA_USER}
 
 RUN micromamba install -y -c conda-forge python=3.12 pip \
-    && python -m pip install --upgrade pip \
-    && python -m pip install --no-cache-dir "biotite>=1.0.1"
-
-ENV MODEL_DIR=/mnt/models
-
-# TODO: unclear whether this is the way to gos
-USER root
-RUN mkdir -p "/mnt/models" \
-    && chown -R ${MAMBA_USER}:${MAMBA_USER} /mnt/models
-USER ${MAMBA_USER}
+    && python -m pip install --upgrade pip
 
 ENTRYPOINT ["/usr/bin/tini", "--"]

@@ -42,6 +42,14 @@
 - The `_CondaModelProxy` in `conda.py` provides the client-side interface that forwards method calls (`embed()` or `fold()`) to the HTTP server via POST requests.
 - Models in the same family (e.g., ESM2 and ESMFold) can share the same `environment.yml` file.
 
+### Apptainer Backend Structure
+- Each model that supports apptainer backend uses pre-built Docker images from DockerHub (e.g., `docker://docker.io/jakublala/boileroom-<model>:latest`). Images are pulled and cached as `.sif` files in `~/.cache/boileroom/images/`.
+- Core classes are passed as string paths (e.g., `"boileroom.models.esm.core.ESM2Core"`) to `ApptainerBackend` to maintain dependency isolation between Boiler Room and model-specific containers.
+- The apptainer backend uses HTTP microservice pattern: `boileroom/backend/server.py` runs inside the Apptainer container and exposes `/health`, `/embed`, and `/fold` endpoints. The server dynamically loads the Core class specified via the `MODEL_CLASS` environment variable.
+- Output types (e.g., `ESM2Output`, `Boltz2Output`) are serialized via pickle+base64 for JSON transport between the main process and the container server.
+- The `_ApptainerModelProxy` in `apptainer.py` provides the client-side interface that forwards method calls (`embed()` or `fold()`) to the HTTP server via POST requests.
+- Models in the same family (e.g., ESM2 and ESMFold) can share the same Docker image.
+
 ## Adding a New Model
 - Implement a core:
   ```python

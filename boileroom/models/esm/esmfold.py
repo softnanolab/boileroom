@@ -739,6 +739,7 @@ class ESMFold(ModelWrapper):
             - "conda": Use conda backend with auto-detection (micromamba > mamba > conda)
             - "mamba": Use mamba explicitly
             - "micromamba": Use micromamba explicitly
+            - "apptainer": Use Apptainer backend (requires Apptainer installed)
         device : Optional[str]
             Optional device specifier to pass to the backend (e.g., "cuda:0" or "cpu").
         config : Optional[dict]
@@ -770,6 +771,15 @@ class ESMFold(ModelWrapper):
             # Pass backend string directly as runner_command
             backend_instance = CondaBackend(
                 core_class_path, config or {}, device=device, environment_yml_path=environment_yml, runner_command=backend
+            )
+        elif backend == "apptainer":
+            from ...backend.apptainer import ApptainerBackend
+
+            # Pass Core class as string path to avoid importing it in main process
+            core_class_path = "boileroom.models.esm.esmfold.ESMFoldCore"
+            image_uri = "docker://docker.io/jakublala/boileroom-esm:latest"
+            backend_instance = ApptainerBackend(
+                core_class_path, image_uri, config or {}, device=device
             )
         else:
             raise ValueError(f"Backend {backend} not supported")

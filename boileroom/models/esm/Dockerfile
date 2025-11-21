@@ -14,5 +14,3 @@ RUN micromamba env update -n base -f /tmp/environment.yml \
     && micromamba clean --all --yes \
     && rm /tmp/environment.yml
 
-ENV HF_HUB_ENABLE_HF_TRANSFER=1 \
-    DISABLE_PANDERA_IMPORT_WARNING=True

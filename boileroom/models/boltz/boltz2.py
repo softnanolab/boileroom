@@ -779,6 +779,7 @@ class Boltz2(ModelWrapper):
             - "conda": Use conda backend with auto-detection (micromamba > mamba > conda)
             - "mamba": Use mamba explicitly
             - "micromamba": Use micromamba explicitly
+            - "apptainer": Use Apptainer backend (requires Apptainer installed)
         device : Optional[str]
             Device hint passed to the chosen backend (e.g., "cuda:0" or "cpu"); may be ignored by some backends.
         config : Optional[dict]
@@ -810,6 +811,15 @@ class Boltz2(ModelWrapper):
             # Pass backend string directly as runner_command
             backend_instance = CondaBackend(
                 core_class_path, config or {}, device=device, environment_yml_path=environment_yml, runner_command=backend
+            )
+        elif backend == "apptainer":
+            from ...backend.apptainer import ApptainerBackend
+
+            # Pass Core class as string path to avoid importing it in main process
+            core_class_path = "boileroom.models.boltz.boltz2.Boltz2Core"
+            image_uri = "docker://docker.io/jakublala/boileroom-boltz:latest"
+            backend_instance = ApptainerBackend(
+                core_class_path, image_uri, config or {}, device=device
             )
         else:
             raise ValueError(f"Backend {backend} not supported")
