@@ -29,6 +29,17 @@ chmod +x scripts/images/build_model_images.sh
 
 This script replaces the older `build_all_*` helpers while preserving the same build order.
 
+### ✅ Import smoke tests
+Run the lightweight smoke script to ensure each image can import its expected modules:
+
+```bash
+chmod +x scripts/images/check_model_imports.sh
+scripts/images/check_model_imports.sh --tag=dev        # verify local dev builds
+scripts/images/check_model_imports.sh --tag=latest --pull  # verify tags published to Docker Hub
+```
+
+The GitHub Actions workflow (`.github/workflows/build-docker-images.yml`) executes the same script after building and pushing `:latest` and versioned tags, so a missing dependency will fail CI before images are published.
+
 ### 🛠️ Manual local builds
 - Build base:
 ```bash

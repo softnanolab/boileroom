@@ -30,21 +30,23 @@ jobs:
       - name: Determine Boileroom version
         id: project_version
         run: |
-          VERSION=$(python3 - <<'PY'
-import pathlib
-import tomllib
-
-pyproject = pathlib.Path("pyproject.toml").read_text()
-data = tomllib.loads(pyproject)
-print(data["project"]["version"], end="")
-PY
-)
+          VERSION=$(
+            python3 -c "import pathlib, tomllib; pyproject = pathlib.Path('pyproject.toml').read_text(); data = tomllib.loads(pyproject); print(data['project']['version'], end='')"
+          )
           echo "value=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Build and push :latest images
         run: |
           bash ./scripts/images/build_model_images.sh --tag=latest --push
 
+      - name: Verify :latest image imports
+        run: |
+          bash ./scripts/images/check_model_imports.sh --tag=latest
+
       - name: Build and push :${{ steps.project_version.outputs.value }} images
         run: |
           bash ./scripts/images/build_model_images.sh --tag=${{ steps.project_version.outputs.value }} --push
+
+      - name: Verify :${{ steps.project_version.outputs.value }} image imports
+        run: |
+          bash ./scripts/images/check_model_imports.sh --tag=${{ steps.project_version.outputs.value }}
