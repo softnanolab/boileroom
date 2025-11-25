@@ -1,673 +1,27 @@
 """ESMFold implementation for protein structure prediction using Meta AI's ESM-2 model."""
 
-import os
-import logging
 import json
-from dataclasses import dataclass
-from typing import Optional, Sequence, Union, List, cast
+import logging
+from typing import TYPE_CHECKING, Optional, Sequence, Union
 
 import modal
-import numpy as np
-from biotite.structure import AtomArray
 
 from ...backend import LocalBackend, ModalBackend
 from ...backend.base import Backend
 from ...backend.modal import app
-from ...base import FoldingAlgorithm, StructurePrediction, PredictionMetadata, ModelWrapper
+from ...base import ModelWrapper
 from .image import esm_image
 from ...images.volumes import model_weights
-from ...utils import MINUTES, MODAL_MODEL_DIR, Timer
-from .linker import compute_position_ids, store_multimer_properties
+from ...utils import MINUTES, MODAL_MODEL_DIR
 
-# ESMFold-Specific: A list of atoms (excluding hydrogen) for each AA type. PDB naming convention.
-# This might be re-used elsewhere, if OpenFold/AlphaFold or newer models use the same ordering convention.
-RESIDUE_ATOMS: dict[str, list[str]] = {
-    "ALA": ["C", "CA", "CB", "N", "O"],
-    "ARG": ["C", "CA", "CB", "CG", "CD", "CZ", "N", "NE", "O", "NH1", "NH2"],
-    "ASP": ["C", "CA", "CB", "CG", "N", "O", "OD1", "OD2"],
-    "ASN": ["C", "CA", "CB", "CG", "N", "ND2", "O", "OD1"],
-    "CYS": ["C", "CA", "CB", "N", "O", "SG"],
-    "GLU": ["C", "CA", "CB", "CG", "CD", "N", "O", "OE1", "OE2"],
-    "GLN": ["C", "CA", "CB", "CG", "CD", "N", "NE2", "O", "OE1"],
-    "GLY": ["C", "CA", "N", "O"],
-    "HIS": ["C", "CA", "CB", "CG", "CD2", "CE1", "N", "ND1", "NE2", "O"],
-    "ILE": ["C", "CA", "CB", "CG1", "CG2", "CD1", "N", "O"],
-    "LEU": ["C", "CA", "CB", "CG", "CD1", "CD2", "N", "O"],
-    "LYS": ["C", "CA", "CB", "CG", "CD", "CE", "N", "NZ", "O"],
-    "MET": ["C", "CA", "CB", "CG", "CE", "N", "O", "SD"],
-    "PHE": ["C", "CA", "CB", "CG", "CD1", "CD2", "CE1", "CE2", "CZ", "N", "O"],
-    "PRO": ["C", "CA", "CB", "CG", "CD", "N", "O"],
-    "SER": ["C", "CA", "CB", "N", "O", "OG"],
-    "THR": ["C", "CA", "CB", "CG2", "N", "O", "OG1"],
-    "TRP": ["C", "CA", "CB", "CG", "CD1", "CD2", "CE2", "CE3", "CZ2", "CZ3", "CH2", "N", "NE1", "O"],
-    "TYR": ["C", "CA", "CB", "CG", "CD1", "CD2", "CE1", "CE2", "CZ", "N", "O", "OH"],
-    "VAL": ["C", "CA", "CB", "CG1", "CG2", "N", "O"],
-}
+if TYPE_CHECKING:
+    from .core import ESMFoldCore, ESMFoldOutput
 
-with esm_image.imports():
-    import torch
-    from transformers import EsmForProteinFolding, AutoTokenizer
-    from transformers.models.esm.modeling_esmfold import EsmFoldingTrunk
-
-    def always_no_grad_forward(self, seq_feats, pair_feats, true_aa, residx, mask, no_recycles):
-        """
-        Inputs:
-            seq_feats: B x L x C tensor of sequence features pair_feats: B x L x L x C tensor of pair features residx: B
-            x L long tensor giving the position in the sequence mask: B x L boolean tensor indicating valid residues
-
-        Output:
-            predicted_structure: B x L x (num_atoms_per_residue * 3) tensor wrapped in a Coordinates object
-        """
-
-        device = seq_feats.device
-        s_s_0 = seq_feats
-        s_z_0 = pair_feats
-
-        if no_recycles is None:
-            no_recycles = self.config.max_recycles
-        else:
-            if no_recycles < 0:
-                raise ValueError("Number of recycles must not be negative.")
-            no_recycles += 1  # First 'recycle' is just the standard forward pass through the model.
-
-        def trunk_iter(s, z, residx, mask):
-            z = z + self.pairwise_positional_embedding(residx, mask=mask)
-
-            for block in self.blocks:
-                s, z = block(s, z, mask=mask, residue_index=residx, chunk_size=self.chunk_size)
-            return s, z
-
-        s_s = s_s_0
-        s_z = s_z_0
-        recycle_s = torch.zeros_like(s_s)
-        recycle_z = torch.zeros_like(s_z)
-        recycle_bins = torch.zeros(*s_z.shape[:-1], device=device, dtype=torch.int64)
-
-        for recycle_idx in range(no_recycles):
-            with torch.no_grad():
-                # === Recycling ===
-                recycle_s = self.recycle_s_norm(recycle_s.detach()).to(device)
-                recycle_z = self.recycle_z_norm(recycle_z.detach()).to(device)
-                recycle_z += self.recycle_disto(recycle_bins.detach()).to(device)
-
-                s_s, s_z = trunk_iter(s_s_0 + recycle_s, s_z_0 + recycle_z, residx, mask)
-
-                # === Structure module ===
-                structure = self.structure_module(
-                    {"single": self.trunk2sm_s(s_s), "pair": self.trunk2sm_z(s_z)},
-                    true_aa,
-                    mask.float(),
-                )
-
-                recycle_s = s_s
-                recycle_z = s_z
-                # Distogram needs the N, CA, C coordinates, and bin constants same as alphafold.
-                recycle_bins = EsmFoldingTrunk.distogram(
-                    structure["positions"][-1][:, :, :3],
-                    3.375,
-                    21.375,
-                    self.recycle_bins,
-                )
-
-        structure["s_s"] = s_s
-        structure["s_z"] = s_z
-
-        return structure
-
-    EsmFoldingTrunk.forward = always_no_grad_forward
-
-# Set up basic logging configuration
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 ############################################################
 # CORE ALGORITHM
 ############################################################
-
-
-@dataclass
-class ESMFoldOutput(StructurePrediction):
-    """Output from ESMFold prediction including all model outputs."""
-
-    # Required by StructurePrediction protocol
-    metadata: PredictionMetadata
-    atom_array: Optional[List[AtomArray]] = None  # Always generated, one AtomArray per sample
-
-    # Additional ESMFold-specific outputs (all optional, filtered by include_fields)
-    frames: Optional[np.ndarray] = None  # (model_layer, batch_size, residue, qxyz=7)
-    sidechain_frames: Optional[np.ndarray] = (
-        None  # (model_layer, batch_size, residue, 8, 4, 4) [rot matrix per sidechain]
-    )
-    unnormalized_angles: Optional[np.ndarray] = None  # (model_layer, batch_size, residue, 7, 2) [torsion angles]
-    angles: Optional[np.ndarray] = None  # (model_layer, batch_size, residue, 7, 2) [torsion angles]
-    states: Optional[np.ndarray] = None  # (model_layer, batch_size, residue, ???)
-    s_s: Optional[np.ndarray] = None  # (batch_size, residue, 1024)
-    s_z: Optional[np.ndarray] = None  # (batch_size, residue, residue, 128)
-    distogram_logits: Optional[np.ndarray] = None  # (batch_size, residue, residue, 64) ???
-    lm_logits: Optional[np.ndarray] = None  # (batch_size, residue, 23) ???
-    aatype: Optional[np.ndarray] = None  # (batch_size, residue) amino acid identity
-    atom14_atom_exists: Optional[np.ndarray] = None  # (batch_size, residue, atom=14)
-    residx_atom14_to_atom37: Optional[np.ndarray] = None  # (batch_size, residue, atom=14)
-    residx_atom37_to_atom14: Optional[np.ndarray] = None  # (batch_size, residue, atom=37)
-    atom37_atom_exists: Optional[np.ndarray] = None  # (batch_size, residue, atom=37)
-    residue_index: Optional[np.ndarray] = None  # (batch_size, residue)
-    lddt_head: Optional[np.ndarray] = None  # (model_layer, batch_size, residue, atom=37, 50) ??
-    plddt: Optional[np.ndarray] = None  # (batch_size, residue, atom=37)
-    ptm_logits: Optional[np.ndarray] = None  # (batch_size, residue, residue, 64) ???
-    ptm: Optional[np.ndarray] = None  # float # TODO: make it into a float when sending to the client
-    aligned_confidence_probs: Optional[np.ndarray] = None  # (batch_size, residue, residue, 64)
-    predicted_aligned_error: Optional[np.ndarray] = None  # (batch_size, residue, residue)
-    max_predicted_aligned_error: Optional[np.ndarray] = (
-        None  # float # TODO: make it into a float when sending to the client
-    )
-    chain_index: Optional[np.ndarray] = None  # (batch_size, residue)
-    pdb: Optional[list[str]] = None  # 0-indexed
-    cif: Optional[list[str]] = None  # 0-indexed
-
-    # TODO: can add a save method here (to a pickle and a pdb file) that can be run locally
-    # TODO: add verification of the outputs, and primarily the shape of all the arrays
-    # (see test_esmfold_batch_multimer_linkers for the exact batched shapes)
-
-
-class ESMFoldCore(FoldingAlgorithm):
-    """ESMFold protein structure prediction model."""
-
-    DEFAULT_CONFIG = {
-        "device": "cuda:0",
-        # Chain linking and positioning config
-        "glycine_linker": "",
-        "position_ids_skip": 512,
-        "include_fields": None,  # Optional[List[str]] - controls which fields to include in output
-    }
-    # Static config keys that can only be set at initialization
-    STATIC_CONFIG_KEYS = {"device"}
-
-    # We need to properly asses whether using this or the original ESMFold is better
-    # based on speed, accuracy, bugs, etc.; as well as customizability
-    # For instance, if we want to also allow differently sized structure modules, than this would be good
-    # TODO: we should add a settings dictionary or something, that would make it easier to add new options
-    # TODO: maybe use OmegaConf instead to make it easier instead of config
-    def __init__(self, config: dict = {}) -> None:
-        """Create an ESMFold core instance and initialize runtime fields and placeholders.
-
-        Initializes model metadata (name and version). Resolves model_dir from the environment variable `MODEL_DIR` falling back to the packaged `MODAL_MODEL_DIR`. Prepares placeholders for device (`_device`), tokenizer (`tokenizer`), and model (`model`) that will be populated during lazy loading.
-
-        Parameters
-        ----------
-        config : dict
-            Configuration overrides for the predictor (merged with DEFAULT_CONFIG at runtime).
-        """
-        super().__init__(config)
-        self.metadata = self._initialize_metadata(
-            model_name="ESMFold",
-            model_version="v4.49.0",  # HuggingFace transformers version
-        )
-        self.model_dir: Optional[str] = os.environ.get("MODEL_DIR", MODAL_MODEL_DIR)
-        self._device: torch.device | None = None
-        self.tokenizer: Optional[AutoTokenizer] = None
-        self.model: Optional[EsmForProteinFolding] = None
-
-    def _initialize(self) -> None:
-        """Initialize the model during container startup. This helps us determine whether we run locally or remotely."""
-        self._load()
-
-    def _load(self) -> None:
-        """Ensure the tokenizer and folding model are loaded and prepare the model for inference.
-
-        Loads the tokenizer and model into the instance if absent, resolves and sets the device,
-        moves the model to that device, switches the model to evaluation mode, configures the
-        trunk chunk size, and marks the predictor as ready for use.
-        """
-        if self.tokenizer is None:
-            self.tokenizer = AutoTokenizer.from_pretrained("facebook/esmfold_v1", cache_dir=self.model_dir)
-        if self.model is None:
-            self.model = EsmForProteinFolding.from_pretrained("facebook/esmfold_v1", cache_dir=self.model_dir)
-        self._device = self._resolve_device()
-        self.model = self.model.to(self._device)
-        self.model.eval()
-        self.model.trunk.set_chunk_size(64)
-        self.ready = True
-
-    def fold(self, sequences: Union[str, Sequence[str]], options: Optional[dict] = None) -> ESMFoldOutput:
-        """Predict protein structure(s) from one or more amino acid sequence(s) using the ESMFold model.
-
-        If the model is not loaded, this method will load it lazily before running inference. Updates self.metadata.sequence_lengths with the processed sequence lengths.
-
-        Parameters
-        ----------
-        sequences : str | Sequence[str]
-            A single amino acid sequence or an iterable of sequences to predict.
-        options : dict, optional
-            Per-call configuration merged with the instance's static config (for example, `include_fields` to select which output fields to return).
-
-        Returns
-        -------
-        ESMFoldOutput
-            Predicted structure(s) and optional auxiliary outputs. The set of returned fields honors the merged configuration (e.g., `include_fields` controls presence of pdb/cif and other model-specific outputs).
-        """
-        # Merge static config with per-call options (validate before loading model)
-        effective_config = self._merge_options(options)
-
-        if self.tokenizer is None or self.model is None:
-            logger.warning("Model not loaded. Forcing the model to load... Next time call _load() first.")
-            self._load()
-        assert self.tokenizer is not None and self.model is not None, "Model not loaded"
-
-        validated_sequences = self._validate_sequences(sequences)
-        self.metadata.sequence_lengths = self._compute_sequence_lengths(validated_sequences)
-
-        tokenized_input, multimer_properties = self._tokenize_sequences(validated_sequences, effective_config)
-
-        with Timer("Model Inference") as timer:
-            with torch.inference_mode():
-                outputs = self.model(**tokenized_input)
-
-        outputs = self._convert_outputs(outputs, multimer_properties, timer.duration, effective_config)
-        return outputs
-
-    def _tokenize_sequences(self, sequences: List[str], config: dict) -> tuple[dict, dict[str, torch.Tensor] | None]:
-        """Tokenize one or more protein sequences for model input, handling multimer and monomer cases.
-
-        Parameters
-        ----------
-        sequences : List[str]
-            Protein sequences; presence of ':' in any sequence triggers multimer tokenization.
-        config : dict
-            Per-call configuration used for multimer tokenization (position ids, linker handling, etc.).
-
-        Returns
-        -------
-        tuple
-            A pair (tokenized, multimer_properties_or_none) where:
-            - tokenized (dict): Tokenizer output tensors placed on the model device (keys like 'input_ids', 'attention_mask', etc.).
-            - multimer_properties_or_none (dict[str, torch.Tensor] | None): Multimer-specific tensors (e.g., linker map, residue indices, chain indices) when multimer tokenization was used, otherwise `None`.
-        """
-        assert self.tokenizer is not None, "Tokenizer not loaded"
-        if ":" in "".join(sequences):  # MULTIMER setting
-            tokenized, multimer_properties = self._tokenize_multimer(sequences, config)
-        else:  # MONOMER setting
-            tokenized = self.tokenizer(
-                sequences, return_tensors="pt", add_special_tokens=False, padding=True, truncation=True, max_length=1024
-            )
-            multimer_properties = None
-        tokenized = {k: v.to(self._device) for k, v in tokenized.items()}
-
-        return tokenized, multimer_properties
-
-    def _tokenize_multimer(self, sequences: List[str], config: dict) -> torch.Tensor:
-        """Prepare tokenized inputs and multimer metadata for sequences containing chain separators.
-
-        Parameters
-        ----------
-        sequences : List[str]
-            Input sequences where different chains are separated by ":".
-        config : dict
-            Configuration containing:
-            - "glycine_linker": string used to replace ":" when constructing multimer inputs.
-            - "position_ids_skip": integer flag/offset passed to position id computation.
-
-        Returns
-        -------
-        tuple
-            A tuple containing:
-            - tokenized (Mapping[str, torch.Tensor]): Tokenizer output tensors including input ids, attention mask, and computed position_ids.
-            - multimer_properties (dict): Dictionary with keys:
-                - "linker_map" (torch.Tensor): Per-position mask indicating kept residues (1) vs linker/padding (-1 or 0).
-                - "residue_index" (torch.Tensor): Residue indices mapping token positions to residue numbers.
-                - "chain_index" (torch.Tensor): Chain indices mapping token positions to original chain ids.
-        """
-        assert self.tokenizer is not None, "Tokenizer not loaded"
-        # Store multimer properties first
-        glycine_linker = config["glycine_linker"]
-        linker_map, residue_index, chain_index = store_multimer_properties(sequences, glycine_linker)
-
-        # Create tokenized input using list comprehension directly
-        tokenized = self.tokenizer(
-            [seq.replace(":", glycine_linker) for seq in sequences],
-            padding=True,
-            truncation=True,
-            return_tensors="pt",
-            add_special_tokens=False,
-        )
-
-        # Add position IDs
-        tokenized["position_ids"] = compute_position_ids(sequences, glycine_linker, config["position_ids_skip"])
-
-        # Create attention mask (1 means keep, 0 means mask)
-        # This also masks padding tokens, which are -1
-        tokenized["attention_mask"] = (linker_map == 1).to(torch.int32)
-
-        return tokenized, {"linker_map": linker_map, "residue_index": residue_index, "chain_index": chain_index}
-
-    def _mask_linker_region(
-        self,
-        outputs: dict,
-        linker_map: torch.Tensor,
-        residue_index: torch.Tensor,
-        chain_index: torch.Tensor,
-    ) -> dict:
-        """Mask the linker region in the outputs and track padding information.
-
-        This includes all the metrics.
-
-        Parameters
-        ----------
-        outputs : dict
-            Dictionary containing model outputs.
-
-        Returns
-        -------
-        dict
-            Updated outputs with linker regions masked and padding information.
-        """
-        assert isinstance(linker_map, torch.Tensor), "linker_map must be a tensor"
-
-        positions = []
-        frames = []
-        sidechain_frames = []
-        unnormalized_angles = []
-        angles = []
-        states = []
-        lddt_head = []
-
-        s_s = []
-        lm_logits = []
-        aatype = []
-        atom14_atom_exists = []
-        residx_atom14_to_atom37 = []
-        residx_atom37_to_atom14 = []
-        atom37_atom_exists = []
-        plddt = []
-
-        s_z = []
-        distogram_logits = []
-        ptm_logits = []
-        aligned_confidence_probs = []
-        predicted_aligned_error = []
-
-        _residue_index = []
-        _chain_index = []
-
-        for batch_idx, multimer in enumerate(linker_map):
-            # Drop the -1 values, meaning 1s refer to residues we want to keep
-            multimer = multimer.masked_fill(multimer == -1, 0).cpu().numpy()
-            # Chain indices are the ones that were not masked, hence they were kept and are thus 1
-            chain_indices = np.where(multimer == 1)[0]
-
-            # 3rd dim is residue index
-            positions.append(outputs["positions"][:, batch_idx, chain_indices])
-            frames.append(outputs["frames"][:, batch_idx, chain_indices])
-            sidechain_frames.append(outputs["sidechain_frames"][:, batch_idx, chain_indices])
-            unnormalized_angles.append(outputs["unnormalized_angles"][:, batch_idx, chain_indices])
-            angles.append(outputs["angles"][:, batch_idx, chain_indices])
-            states.append(outputs["states"][:, batch_idx, chain_indices])
-            lddt_head.append(outputs["lddt_head"][:, batch_idx, chain_indices])
-
-            # 2nd dim is residue index
-            s_s.append(outputs["s_s"][batch_idx, chain_indices])
-            lm_logits.append(outputs["lm_logits"][batch_idx, chain_indices])
-            aatype.append(outputs["aatype"][batch_idx, chain_indices])
-            atom14_atom_exists.append(outputs["atom14_atom_exists"][batch_idx, chain_indices])
-            residx_atom14_to_atom37.append(outputs["residx_atom14_to_atom37"][batch_idx, chain_indices])
-            residx_atom37_to_atom14.append(outputs["residx_atom37_to_atom14"][batch_idx, chain_indices])
-            atom37_atom_exists.append(outputs["atom37_atom_exists"][batch_idx, chain_indices])
-            plddt.append(outputs["plddt"][batch_idx, chain_indices])
-
-            # 2D properties that are per residue pair; thus residues is both the 2nd and 3rd dim
-            s_z.append(outputs["s_z"][batch_idx, chain_indices][:, chain_indices])
-            distogram_logits.append(outputs["distogram_logits"][batch_idx, chain_indices][:, chain_indices])
-            ptm_logits.append(outputs["ptm_logits"][batch_idx, chain_indices][:, chain_indices])
-            aligned_confidence_probs.append(
-                outputs["aligned_confidence_probs"][batch_idx, chain_indices][:, chain_indices]
-            )
-            predicted_aligned_error.append(
-                outputs["predicted_aligned_error"][batch_idx, chain_indices][:, chain_indices]
-            )
-
-            # Custom outputs, that also have 2nd dimension as residue index
-            _residue_index.append(residue_index[batch_idx, chain_indices].cpu().numpy())
-            _chain_index.append(chain_index[batch_idx, chain_indices].cpu().numpy())
-
-        def pad_and_stack(
-            arrays: list[np.ndarray], residue_dim: Union[int, List[int]], batch_dim: int, intermediate_dim: bool = False
-        ) -> np.ndarray:
-            """Pad arrays to match the largest size in the residue dimension and stack them in the batch dimension.
-
-            Parameters
-            ----------
-            arrays : list[np.ndarray]
-                List of NumPy arrays to pad and stack.
-            residue_dim : Union[int, List[int]]
-                Dimension(s) to pad to match sizes.
-            batch_dim : int
-                Dimension to stack the arrays along.
-            intermediate_dim : bool, optional
-                Whether the array has an intermediate dimension to preserve.
-
-            Returns
-            -------
-            np.ndarray
-                Stacked and padded NumPy array.
-            """
-            if isinstance(residue_dim, int):
-                max_size = max(arr.shape[residue_dim] for arr in arrays)
-                padded_arrays = []
-                for arr in arrays:
-                    padding = [(0, 0)] * arr.ndim
-                    padding[residue_dim] = (0, max_size - arr.shape[residue_dim])
-                    padded_arrays.append(np.pad(arr, padding, mode="constant", constant_values=-1))
-            elif isinstance(residue_dim, list):
-                # Multi-dimension padding (e.g., for 2D matrices)
-                max_sizes = []
-                for dim in residue_dim:
-                    max_sizes.append(max(arr.shape[dim] for arr in arrays))
-
-                padded_arrays = []
-                for arr in arrays:
-                    padding = [(0, 0)] * arr.ndim
-                    for dim, max_size in zip(residue_dim, max_sizes):
-                        padding[dim] = (0, max_size - arr.shape[dim])
-                    padded_arrays.append(np.pad(arr, padding, mode="constant", constant_values=-1))
-
-            # Handle intermediate dimensions differently
-            if intermediate_dim:
-                # Stack along axis=1 to preserve intermediate dim as first dimension
-                return np.stack(padded_arrays, axis=1)
-            else:
-                return np.stack(padded_arrays, axis=batch_dim)
-
-        # 2nd dimension is the batch size, 3rd dimension was the residue index (without batch it's the 2nd dim)
-        # These are not done same as below is because of getting the 8 intermediate outputs from StructureModule
-        outputs["positions"] = pad_and_stack(positions, residue_dim=1, batch_dim=0, intermediate_dim=True)
-        outputs["frames"] = pad_and_stack(frames, residue_dim=1, batch_dim=0, intermediate_dim=True)
-        outputs["sidechain_frames"] = pad_and_stack(sidechain_frames, residue_dim=1, batch_dim=0, intermediate_dim=True)
-        outputs["unnormalized_angles"] = pad_and_stack(
-            unnormalized_angles, residue_dim=1, batch_dim=0, intermediate_dim=True
-        )
-        outputs["angles"] = pad_and_stack(angles, residue_dim=1, batch_dim=0, intermediate_dim=True)
-        outputs["states"] = pad_and_stack(states, residue_dim=1, batch_dim=0, intermediate_dim=True)
-        outputs["lddt_head"] = pad_and_stack(lddt_head, residue_dim=1, batch_dim=0, intermediate_dim=True)
-
-        # 1st dimension is the batch size, 2nd dimension was the residue index (without batch it's the 1st dim)
-        outputs["s_s"] = pad_and_stack(s_s, residue_dim=0, batch_dim=0)
-        outputs["lm_logits"] = pad_and_stack(lm_logits, residue_dim=0, batch_dim=0)
-        outputs["aatype"] = pad_and_stack(aatype, residue_dim=0, batch_dim=0)
-        outputs["atom14_atom_exists"] = pad_and_stack(atom14_atom_exists, residue_dim=0, batch_dim=0)
-        outputs["residx_atom14_to_atom37"] = pad_and_stack(residx_atom14_to_atom37, residue_dim=0, batch_dim=0)
-        outputs["residx_atom37_to_atom14"] = pad_and_stack(residx_atom37_to_atom14, residue_dim=0, batch_dim=0)
-        outputs["atom37_atom_exists"] = pad_and_stack(atom37_atom_exists, residue_dim=0, batch_dim=0)
-        outputs["plddt"] = pad_and_stack(plddt, residue_dim=0, batch_dim=0)
-
-        # 2D properties, otherwise same as above
-        outputs["s_z"] = pad_and_stack(s_z, residue_dim=[0, 1], batch_dim=0)
-        outputs["distogram_logits"] = pad_and_stack(distogram_logits, residue_dim=[0, 1], batch_dim=0)
-        outputs["ptm_logits"] = pad_and_stack(ptm_logits, residue_dim=[0, 1], batch_dim=0)
-        outputs["aligned_confidence_probs"] = pad_and_stack(aligned_confidence_probs, residue_dim=[0, 1], batch_dim=0)
-        outputs["predicted_aligned_error"] = pad_and_stack(predicted_aligned_error, residue_dim=[0, 1], batch_dim=0)
-
-        # Custom
-        outputs["chain_index"] = pad_and_stack(_chain_index, residue_dim=0, batch_dim=0)
-        outputs["residue_index"] = pad_and_stack(_residue_index, residue_dim=0, batch_dim=0)
-
-        return outputs
-
-    def _convert_outputs(
-        self,
-        outputs: dict,
-        multimer_properties: dict[str, torch.Tensor] | None,
-        prediction_time: float,
-        config: dict,
-    ) -> ESMFoldOutput:
-        """Convert raw model outputs and optional multimer metadata into a populated ESMFoldOutput.
-
-        Parameters
-        ----------
-        outputs : dict
-            Raw model outputs (tensor values) produced by the folding model.
-        multimer_properties : dict[str, torch.Tensor] | None
-            Multimer-related tensors (e.g., linker map, residue and chain indices). When provided, linker regions are masked and per-chain residue mappings are applied.
-        prediction_time : float
-            Elapsed time (seconds) for the prediction; recorded in the output metadata.
-        config : dict
-            Per-call configuration; the "include_fields" entry controls which optional fields (for example, "pdb" or "cif") are produced and which fields are retained in the returned output.
-
-        Returns
-        -------
-        ESMFoldOutput
-            Structured prediction containing metadata and outputs. An atom_array is always generated; PDB/CIF strings and other optional fields are included only if requested via config["include_fields"]. The returned output has internal-only fields (such as raw positions) removed and is filtered according to include_fields.
-        """
-
-        outputs = {k: v.cpu().numpy() for k, v in outputs.items()}
-        if multimer_properties is not None:
-            # TODO: maybe add a proper MULTIMER flag?
-            outputs = self._mask_linker_region(outputs, **multimer_properties)
-        else:  # only MONOMERs
-            outputs["chain_index"] = np.zeros(outputs["residue_index"].shape, dtype=np.int32)
-
-        self.metadata.prediction_time = prediction_time
-
-        # Always generate atom_array
-        atom_array = self._convert_outputs_to_atomarray(outputs)
-        outputs["atom_array"] = atom_array
-
-        # Generate PDB/CIF only if requested via include_fields
-        include_fields = config.get("include_fields")
-        if include_fields and ("*" in include_fields or "pdb" in include_fields):
-            outputs["pdb"] = self._convert_outputs_to_pdb(atom_array)
-        if include_fields and ("*" in include_fields or "cif" in include_fields):
-            outputs["cif"] = self._convert_outputs_to_cif(atom_array)
-
-        # Build full output with all fields (exclude positions as it's only used internally)
-        outputs_without_positions = {k: v for k, v in outputs.items() if k != "positions"}
-        full_output = ESMFoldOutput(metadata=self.metadata, **outputs_without_positions)
-
-        # Apply filtering based on include_fields
-        filtered = self._filter_include_fields(full_output, include_fields)
-        return cast(ESMFoldOutput, filtered)
-
-    def _convert_outputs_to_atomarray(self, outputs: dict) -> List[AtomArray]:
-        """Create a list of Biotite AtomArray objects from model prediction tensors.
-
-        Parameters
-        ----------
-        outputs : dict
-            Model outputs containing at least the keys:
-            - "positions": atom positions (used to derive atom37 coordinates),
-            - "atom37_atom_exists": boolean mask of existing atom37 atoms,
-            - "chain_index": per-residue chain indices,
-            - "aatype": per-residue amino acid type ids,
-            - "residue_index": per-residue residue indices,
-            - "plddt": per-residue confidence scores.
-            The function expects these tensors/arrays to be indexed by batch and residue.
-
-        Returns
-        -------
-        List[AtomArray]
-            One Biotite AtomArray per batch element. Each AtomArray contains only atoms marked as existing, with coordinates, chain_id, atom_name, three-letter residue name, residue index, chemical element, and b_factor populated from `plddt`.
-        """
-        from biotite.structure import Atom, array
-        from transformers.models.esm.openfold_utils.feats import atom14_to_atom37
-        from transformers.models.esm.openfold_utils.residue_constants import atom_types, restypes, restype_1to3
-
-        # Convert atom14 to atom37 format
-        atom_positions = atom14_to_atom37(
-            outputs["positions"][-1], outputs
-        )  # (model_layer, batch, residue, atom37, xyz)
-        atom_mask = outputs["atom37_atom_exists"]  # (batch, residue, atom37)
-
-        assert len(atom_types) == atom_positions.shape[2] == 37, "Atom types must be 37"
-
-        # Get batch and residue dimensions
-        batch_size, n_residues, n_atoms = atom_mask.shape
-
-        # Create list to store atoms
-        arrays = []
-
-        # Process each protein in the batch
-        for b in range(batch_size):
-            atoms = []  # clear out the atoms list
-            # Process each residue
-            for res_idx in range(n_residues):
-                # Get chain ID (convert numeric index to letter A-Z)
-                chain_id = chr(65 + outputs["chain_index"][b, res_idx])  # A=65 in ASCII
-
-                # Get residue name (3-letter code)
-                aa_type = outputs["aatype"][b, res_idx]  # id representing residue identity
-                res_name = restypes[aa_type]  # 1-letter residue identity
-                res_name = restype_1to3[res_name]  # 3-letter residue identity
-
-                # Process each atom in the residue
-                for atom_idx in range(n_atoms):  # loops through all 37 atom types
-                    # Skip if atom doesn't exist
-                    if not atom_mask[b, res_idx, atom_idx]:
-                        continue
-
-                    # Get atom coordinates
-                    coord = atom_positions[b, res_idx, atom_idx]
-
-                    # Create Atom object
-                    atom = Atom(
-                        coord=coord,
-                        chain_id=chain_id,
-                        atom_name=atom_types[atom_idx],
-                        res_name=res_name,
-                        res_id=outputs["residue_index"][b, res_idx],  # 0-indexed
-                        element=atom_types[atom_idx][0],
-                        # we only support C, N, O, S, [according to OpenFold Protein class]
-                        # element is thus the first character of any atom name (according to PDB nomenclature)
-                        b_factor=outputs["plddt"][b, res_idx, atom_idx],
-                    )
-                    atoms.append(atom)
-            arrays.append(array(atoms))
-        return arrays
-
-    def _convert_outputs_to_pdb(self, atom_array: AtomArray) -> list[str]:
-        # TODO: this might make more sense to do locally, instead of doing it on the Modal instance
-        from biotite.structure.io.pdb import PDBFile, set_structure
-        from io import StringIO
-
-        pdbs = []
-        for a in atom_array:
-            structure_file = PDBFile()
-            set_structure(structure_file, a)
-            string = StringIO()
-            structure_file.write(string)
-            pdbs.append(string.getvalue())
-        return pdbs
-
-    def _convert_outputs_to_cif(self, atom_array: AtomArray) -> list[str]:
-        # TODO: this might make more sense to do locally, instead of doing it on the Modal instance
-        from biotite.structure.io.pdbx import CIFFile, set_structure
-        from io import StringIO
-
-        cifs = []
-        for a in atom_array:
-            structure_file = CIFFile()
-            set_structure(structure_file, a)
-            string = StringIO()
-            structure_file.write(string)
-            cifs.append(string.getvalue())
-        return cifs
 
 
 ############################################################
@@ -693,11 +47,13 @@ class ModalESMFold:
 
         This sets the instance attribute `self._core` to the constructed ESMFoldCore and calls its initialization routine.
         """
+        from .core import ESMFoldCore
+
         self._core = ESMFoldCore(json.loads(self.config.decode("utf-8")))
         self._core._initialize()
 
     @modal.method()
-    def fold(self, sequences: Union[str, Sequence[str]], options: Optional[dict] = None) -> ESMFoldOutput:
+    def fold(self, sequences: Union[str, Sequence[str]], options: Optional[dict] = None) -> "ESMFoldOutput":
         """Run structure prediction for one or more protein sequences using the configured backend.
 
         Parameters
@@ -759,6 +115,8 @@ class ESMFold(ModelWrapper):
         if backend == "modal":
             backend_instance = ModalBackend(ModalESMFold, config, device=device)
         elif backend == "local":
+            from .core import ESMFoldCore
+
             backend_instance = LocalBackend(ESMFoldCore, config, device=device)
         elif backend in ("conda", "mamba", "micromamba"):
             from pathlib import Path
@@ -767,7 +125,7 @@ class ESMFold(ModelWrapper):
             environment_yml = Path(__file__).parent / "environment.yml"
             # Pass Core class as string path to avoid importing it in main process
             # This keeps dependencies completely independent between Boiler Room and conda servers
-            core_class_path = "boileroom.models.esm.esmfold.ESMFoldCore"
+            core_class_path = "boileroom.models.esm.core.ESMFoldCore"
             # Pass backend string directly as runner_command
             backend_instance = CondaBackend(
                 core_class_path, config or {}, device=device, environment_yml_path=environment_yml, runner_command=backend
@@ -776,7 +134,7 @@ class ESMFold(ModelWrapper):
             from ...backend.apptainer import ApptainerBackend
 
             # Pass Core class as string path to avoid importing it in main process
-            core_class_path = "boileroom.models.esm.esmfold.ESMFoldCore"
+            core_class_path = "boileroom.models.esm.core.ESMFoldCore"
             image_uri = "docker://docker.io/jakublala/boileroom-esm:latest"
             backend_instance = ApptainerBackend(
                 core_class_path, image_uri, config or {}, device=device
@@ -786,7 +144,7 @@ class ESMFold(ModelWrapper):
         self._backend = backend_instance
         self._backend.start()
 
-    def fold(self, sequences: Union[str, Sequence[str]], options: Optional[dict] = None) -> ESMFoldOutput:
+    def fold(self, sequences: Union[str, Sequence[str]], options: Optional[dict] = None) -> "ESMFoldOutput":
         """Predict protein structure(s) for the provided sequence or sequences using the configured backend.
 
         Parameters

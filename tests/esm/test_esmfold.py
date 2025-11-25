@@ -6,7 +6,7 @@ from typing import Generator, Optional
 from modal import enable_output
 
 from boileroom import ESMFold
-from boileroom.models.esm.esmfold import ESMFoldCore, ESMFoldOutput
+from boileroom.models.esm.core import ESMFoldCore, ESMFoldOutput
 from boileroom.models.esm.linker import store_multimer_properties
 from boileroom.convert import pdb_string_to_atomarray
 from boileroom.constants import restype_3to1
@@ -209,7 +209,7 @@ def test_esmfold_batch(test_sequences: dict[str, str], gpu_device: Optional[str]
 
 def test_tokenize_sequences_with_mocker(mocker):
     """Test tokenization of multimer sequences using pytest-mock."""
-    from boileroom.models.esm.esmfold import ESMFoldCore
+    from boileroom.models.esm.core import ESMFoldCore
 
     # Test data
     sequences = ["AAAAAA:CCCCCCCCC", "CCCCC:DDDDDDD:EEEEEEE", "HHHH"]
