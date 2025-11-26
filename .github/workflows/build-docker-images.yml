@@ -41,12 +41,16 @@ jobs:
 
       - name: Verify :latest image imports
         run: |
-          bash ./scripts/images/check_model_imports.sh --tag=latest
+          bash ./scripts/images/check_model_imports.sh --tag=latest --pull
 
-      - name: Build and push :${{ steps.project_version.outputs.value }} images
+      - name: Tag :latest images with version and push
         run: |
-          bash ./scripts/images/build_model_images.sh --tag=${{ steps.project_version.outputs.value }} --push
+          VERSION="${{ steps.project_version.outputs.value }}"
+          for image in boileroom-base boileroom-boltz boileroom-chai1 boileroom-esm; do
+            docker tag docker.io/jakublala/${image}:latest docker.io/jakublala/${image}:${VERSION}
+            docker push docker.io/jakublala/${image}:${VERSION}
+          done
 
       - name: Verify :${{ steps.project_version.outputs.value }} image imports
         run: |
-          bash ./scripts/images/check_model_imports.sh --tag=${{ steps.project_version.outputs.value }}
+          bash ./scripts/images/check_model_imports.sh --tag=${{ steps.project_version.outputs.value }} --pull

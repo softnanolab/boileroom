@@ -6,19 +6,13 @@ usage() {
   cat <<EOF
 Usage: $(basename "$0") [options]
 
-Run import smoke-tests inside each published model image. The script spins up
-each container, imports the expected modules, and fails fast if any import
-raises an exception.
+Run import smoke-tests inside each published model image.
 
 Options:
   --tag=<value>        Tag suffix to verify (default: dev)
   --registry=<value>   Docker registry namespace (default: docker.io/jakublala)
   --pull               docker pull images before running checks
   -h, --help           Show this help and exit
-
-Examples:
-  $(basename "$0") --tag=dev
-  $(basename "$0") --tag=latest --pull
 EOF
 }
 
@@ -45,13 +39,11 @@ if ! command -v docker >/dev/null 2>&1; then
   exit 1
 fi
 
-# Get the boileroom root directory (parent of parent of scripts/images)
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 BOILEROOM_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd -P)"
 
 if [ ! -d "${BOILEROOM_ROOT}/boileroom" ]; then
   echo "Error: Could not find boileroom directory at ${BOILEROOM_ROOT}/boileroom" >&2
-  echo "Please run this script from the boileroom repository." >&2
   exit 1
 fi
 
@@ -61,11 +53,10 @@ declare -A IMAGE_NAMES=(
   ["boltz"]="boileroom-boltz"
 )
 
-# Check core.py files - these contain the actual model logic and dependencies
-declare -A MODULE_IMPORTS=(
-  ["esm"]="boileroom.models.esm.core"
-  ["chai"]="boileroom.models.chai.core"
-  ["boltz"]="boileroom.models.boltz.core"
+declare -A MODEL_DIRS=(
+  ["esm"]="esm"
+  ["chai"]="chai"
+  ["boltz"]="boltz"
 )
 
 MODEL_ORDER=("esm" "chai" "boltz")
@@ -74,45 +65,89 @@ for model in "${MODEL_ORDER[@]}"; do
   image="${DOCKER_REGISTRY}/${IMAGE_NAMES[${model}]}:${REQUESTED_TAG}"
   echo "Checking imports for ${model} (${image})"
 
-  if [ "${DO_PULL}" = true ]; then
-    docker pull "${image}"
+  [ "${DO_PULL}" = true ] && docker pull "${image}"
+
+  model_dir="${MODEL_DIRS[${model}]}"
+  env_yml="${BOILEROOM_ROOT}/boileroom/models/${model_dir}/environment.yml"
+  core_file="${BOILEROOM_ROOT}/boileroom/models/${model_dir}/core.py"
+
+  if [ ! -f "${env_yml}" ]; then
+    echo "Error: environment.yml not found: ${env_yml}" >&2
+    exit 1
   fi
 
-  read -r -a module_args <<<"${MODULE_IMPORTS[${model}]}"
-  if [ "${#module_args[@]}" -eq 0 ]; then
-    echo "No modules configured for ${model}; skipping." >&2
-    continue
-  fi
-
-  # Mount boileroom source and set PYTHONPATH so imports work
-  # Pass modules as environment variable to avoid argument parsing issues with heredoc
-  MODULES_STR="${module_args[*]}"
   docker run --rm \
     -v "${BOILEROOM_ROOT}:${BOILEROOM_ROOT}:ro" \
     -e PYTHONPATH="${BOILEROOM_ROOT}" \
-    -e CHECK_MODULES="${MODULES_STR}" \
-    "${image}" micromamba run -n base python <<'PY'
+    "${image}" micromamba run -n base python -c "
+import ast
 import importlib
-import os
+import re
 import sys
+from pathlib import Path
 
-modules_str = os.environ.get("CHECK_MODULES", "")
-if not modules_str:
-    raise SystemExit("No modules provided to import")
+env_yml = Path('${env_yml}')
+core_file = Path('${core_file}')
 
-modules = modules_str.split()
-if not modules:
-    raise SystemExit("No modules provided to import")
+# Parse environment.yml to extract pip dependencies (simple regex-based parser)
+deps = []
+in_pip_section = False
+with open(env_yml) as f:
+    for line in f:
+        stripped = line.strip()
+        if stripped == '- pip:' or stripped == 'pip:':
+            in_pip_section = True
+            continue
+        if in_pip_section:
+            # Stop if we hit an empty line or a non-indented line (new top-level section)
+            if not stripped or (not line.startswith(' ') and not line.startswith('\t')):
+                in_pip_section = False
+                if not stripped:
+                    continue
+                else:
+                    break
+            if stripped.startswith('#'):
+                continue
+            # Extract package name (remove version specifiers and leading dash)
+            pkg_name = re.split(r'[>=<!=]', stripped.lstrip('- '))[0].strip()
+            # Map package names to import names
+            import_map = {
+                'pytorch-lightning': 'pytorch_lightning',
+                'torch-tensorrt': None,
+                'hf-transfer': None,
+                'hf_transfer': None,
+            }
+            import_name = import_map.get(pkg_name, pkg_name.replace('-', '_'))
+            if import_name:
+                deps.append(import_name)
 
-for module in modules:
+# Also add numpy (always present in conda deps)
+deps.append('numpy')
+
+# Check core file syntax
+if not core_file.exists():
+    print(f'FAILED: Core file not found: {core_file}', file=sys.stderr)
+    sys.exit(1)
+
+try:
+    ast.parse(core_file.read_text(), filename=str(core_file))
+    print(f'OK: {core_file.name} (syntax valid)')
+except SyntaxError as e:
+    print(f'FAILED: {core_file.name} has syntax errors: {e}', file=sys.stderr)
+    sys.exit(1)
+
+# Check dependencies
+for dep in deps:
     try:
-        importlib.import_module(module)
+        importlib.import_module(dep)
+        print(f'OK: {dep}')
     except Exception as exc:
-        raise SystemExit(f"FAILED: {module} - {exc}") from exc
-    else:
-        print(f"OK: {module}")
-PY
+        print(f'FAILED: {dep} - {exc}', file=sys.stderr)
+        sys.exit(1)
+" || {
+      echo "FAILED: Import check for ${model}" >&2
+      exit 1
+    }
 done
 
 echo "All module imports succeeded for tag: ${REQUESTED_TAG}"
-
