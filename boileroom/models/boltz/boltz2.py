@@ -28,7 +28,9 @@ logger = logging.getLogger(__name__)
     gpu="T4",
     timeout=20 * MINUTES,
     scaledown_window=10 * MINUTES,
-    volumes={MODAL_MODEL_DIR: model_weights},  # TODO: somehow link this to what Boltz-2 actually uses
+    volumes={
+        MODAL_MODEL_DIR: model_weights
+    },  # TODO: Volume is shared with MSA cache. Consider renaming volume to something more generic like "boileroom-data" in the future to reflect it's not just for model weights but all boileroom persistent data (models, MSA cache, etc.)
 )
 class ModalBoltz2:
     config: bytes = modal.parameter(default=b"{}")

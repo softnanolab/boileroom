@@ -2,8 +2,12 @@
 
 import os
 import logging
+import json
+import hashlib
+import shutil
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from datetime import datetime
 import dataclasses
 
 import numpy as np
@@ -59,6 +63,7 @@ class Boltz2Core(FoldingAlgorithm):
         "max_msa_seqs": 8192,
         "subsample_msa": True,
         "num_subsampled_msa": 1024,
+        "msa_cache_enabled": True,  # Enable/disable MSA caching
         # Paths
         "cache_dir": None,  # defaults to Path(MODAL_MODEL_DIR)/"boltz"
     }
@@ -182,23 +187,316 @@ class Boltz2Core(FoldingAlgorithm):
 
         self.ready = True
 
-    def _sequences_to_fasta(self, sequences: List[str]) -> str:
+    def _get_sequence_hash(self, sequence: str) -> str:
+        """Compute SHA256 hash of a protein sequence.
+
+        Parameters
+        ----------
+        sequence : str
+            Protein sequence string.
+
+        Returns
+        -------
+        str
+            Hexadecimal digest of the sequence hash.
+        """
+        return hashlib.sha256(sequence.encode()).hexdigest()
+
+    def _get_msa_cache_dir(self) -> Path:
+        """Get the MSA cache directory path.
+
+        Returns the cache directory at {cache_dir}/boltz/msa_cache or {MODEL_DIR}/boltz/msa_cache.
+        Handles both local and Modal paths (checks MODAL_MODEL_DIR if available).
+
+        Returns
+        -------
+        Path
+            Path to the MSA cache directory. Directory is created if it doesn't exist.
+        """
+        cache_dir_str = self.config.get("cache_dir")
+        if cache_dir_str is not None:
+            base_cache_dir = Path(cache_dir_str).resolve()
+        else:
+            if self.model_dir is None:
+                raise ValueError("model_dir must be set when cache_dir is not provided")
+            base_cache_dir = Path(self.model_dir).resolve() / "boltz"
+
+        # Check if we're in Modal environment and adjust path
+        modal_model_dir = os.environ.get("MODAL_MODEL_DIR")
+        if modal_model_dir:
+            base_cache_dir = Path(modal_model_dir).resolve() / "boltz"
+        elif cache_dir_str is None and self.model_dir == MODAL_MODEL_DIR:
+            # If model_dir was set to MODAL_MODEL_DIR but env var not set, use it directly
+            base_cache_dir = Path(MODAL_MODEL_DIR).resolve() / "boltz"
+
+        msa_cache_dir = base_cache_dir / "msa_cache"
+        msa_cache_dir.mkdir(parents=True, exist_ok=True)
+        return msa_cache_dir
+
+    def _get_msa_cache_index_path(self) -> Path:
+        """Get the path to the MSA cache index file.
+
+        Returns
+        -------
+        Path
+            Path to msa_index.json in the cache directory.
+        """
+        return self._get_msa_cache_dir() / "msa_index.json"
+
+    def _load_msa_cache_index(self) -> Dict[str, Dict[str, Any]]:
+        """Load the MSA cache index from disk.
+
+        Returns
+        -------
+        Dict[str, Dict[str, Any]]
+            Dictionary mapping sequence hash to cache metadata. Returns empty dict if file doesn't exist
+            or if there's an error loading it.
+        """
+        index_path = self._get_msa_cache_index_path()
+        if not index_path.exists():
+            return {}
+
+        try:
+            with index_path.open("r") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning(f"Failed to load MSA cache index from {index_path}: {e}. Recreating index.")
+            # Backup corrupted index and create new one
+            if index_path.exists():
+                backup_path = index_path.with_suffix(".json.bak")
+                try:
+                    shutil.move(str(index_path), str(backup_path))
+                    logger.info(f"Moved corrupted index to {backup_path}")
+                except OSError:
+                    pass
+            return {}
+
+    def _save_msa_cache_index(self, index: Dict[str, Dict[str, Any]]) -> None:
+        """Save the MSA cache index to disk atomically.
+
+        Writes to a temporary file first, then renames it to the final location to ensure atomic updates.
+
+        Parameters
+        ----------
+        index : Dict[str, Dict[str, Any]]
+            Dictionary mapping sequence hash to cache metadata to save.
+        """
+        index_path = self._get_msa_cache_index_path()
+        cache_dir = index_path.parent
+        cache_dir.mkdir(parents=True, exist_ok=True)
+
+        # Write to temporary file first for atomic update
+        temp_path = index_path.with_suffix(".json.tmp")
+        try:
+            with temp_path.open("w") as f:
+                json.dump(index, f, indent=2)
+            # Atomic rename
+            temp_path.replace(index_path)
+        except OSError as e:
+            logger.warning(f"Failed to save MSA cache index to {index_path}: {e}")
+            # Clean up temp file if rename failed
+            if temp_path.exists():
+                try:
+                    temp_path.unlink()
+                except OSError:
+                    pass
+
+    def _check_msa_cache(self, sequences: List[str]) -> Dict[str, Path]:
+        """Check the MSA cache for cached MSAs for the given sequences.
+
+        Parameters
+        ----------
+        sequences : List[str]
+            List of individual protein sequences (after splitting by colon for multimers).
+
+        Returns
+        -------
+        Dict[str, Path]
+            Dictionary mapping sequence string to cached MSA Path if found, empty dict otherwise.
+            Only includes entries where the cached file actually exists.
+        """
+        if not self.config.get("msa_cache_enabled", True):
+            return {}
+
+        try:
+            cache_dir = self._get_msa_cache_dir()
+            index = self._load_msa_cache_index()
+            cached_paths: Dict[str, Path] = {}
+            index_updated = False
+            now = datetime.utcnow().isoformat()
+
+            for sequence in sequences:
+                seq_hash = self._get_sequence_hash(sequence)
+                if seq_hash in index:
+                    entry = index[seq_hash]
+                    # Index stores relative path, construct full path
+                    msa_path_str = entry.get("msa_path", "")
+                    if not msa_path_str:
+                        # Fallback: try hash-based path structure
+                        msa_path = cache_dir / seq_hash[:2] / seq_hash[2:4] / f"{seq_hash}.csv"
+                    else:
+                        msa_path = cache_dir / msa_path_str
+
+                    # Check if file actually exists
+                    if msa_path.exists() and msa_path.is_file():
+                        cached_paths[sequence] = msa_path
+                        # Update last_accessed timestamp
+                        if entry.get("last_accessed") != now:
+                            entry["last_accessed"] = now
+                            index_updated = True
+                    else:
+                        # File doesn't exist, remove from index
+                        logger.debug(f"Cached MSA file not found for hash {seq_hash}, removing from index")
+                        del index[seq_hash]
+                        index_updated = True
+
+            # Save updated index if any timestamps were updated or entries removed
+            if index_updated:
+                self._save_msa_cache_index(index)
+
+            return cached_paths
+        except Exception as e:
+            logger.warning(f"Error checking MSA cache: {e}. Continuing without cache.")
+            return {}
+
+    def _save_msa_to_cache(self, sequence: str, msa_source_path: Path) -> None:
+        """Save a single MSA file to the cache.
+
+        Parameters
+        ----------
+        sequence : str
+            Protein sequence string.
+        msa_source_path : Path
+            Path to the source MSA file (typically a .csv file from preprocessing output).
+        """
+        if not self.config.get("msa_cache_enabled", True):
+            return
+
+        try:
+            cache_dir = self._get_msa_cache_dir()
+            seq_hash = self._get_sequence_hash(sequence)
+
+            # Create hash-prefixed directory structure: {hash[:2]}/{hash[2:4]}/
+            hash_prefix_dir = cache_dir / seq_hash[:2] / seq_hash[2:4]
+            hash_prefix_dir.mkdir(parents=True, exist_ok=True)
+
+            # Destination path
+            msa_cache_path = hash_prefix_dir / f"{seq_hash}.csv"
+
+            # Only copy if source file exists and destination doesn't already exist
+            if not msa_source_path.exists():
+                logger.warning(f"Source MSA file not found: {msa_source_path}")
+                return
+
+            if msa_cache_path.exists():
+                # Already cached, skip
+                logger.debug(f"MSA already cached for sequence hash {seq_hash}")
+                return
+
+            # Copy MSA file to cache
+            shutil.copy2(msa_source_path, msa_cache_path)
+            file_size = msa_cache_path.stat().st_size
+
+            # Update index
+            index = self._load_msa_cache_index()
+            now = datetime.utcnow().isoformat()
+            relative_path = f"{seq_hash[:2]}/{seq_hash[2:4]}/{seq_hash}.csv"
+            index[seq_hash] = {
+                "msa_path": relative_path,
+                "created_at": now,
+                "last_accessed": now,
+                "file_size": file_size,
+            }
+            self._save_msa_cache_index(index)
+
+            logger.debug(f"Cached MSA for sequence hash {seq_hash}")
+        except Exception as e:
+            logger.warning(f"Error saving MSA to cache: {e}. Continuing without caching.")
+
+    def _save_msas_to_cache(
+        self,
+        processed: Dict[str, Any],
+        individual_chains: List[str],
+        out_dir: Path,
+        cached_sequences: Optional[Dict[str, Path]] = None,
+    ) -> None:
+        """Extract and save MSAs from preprocessing output to cache.
+
+        Parameters
+        ----------
+        processed : Dict[str, Any]
+            Dictionary returned by _prepare_inputs containing manifest and directory paths.
+        individual_chains : List[str]
+            List of individual protein sequences (after splitting by colon for multimers).
+            Order matches entity_id assignment (entity 0 = chains[0], entity 1 = chains[1], etc.).
+        out_dir : Path
+            Output directory where preprocessing wrote MSA files. Should contain msa/ subdirectory.
+        cached_sequences : Optional[Dict[str, Path]]
+            Optional dictionary of sequences that were already cached. These will be skipped.
+        """
+        if not self.config.get("msa_cache_enabled", True):
+            return
+
+        cached_sequences = cached_sequences or {}
+
+        try:
+            manifest = processed.get("manifest")
+            if not manifest or not manifest.records:
+                return
+
+            # Get the target record
+            record = manifest.records[0]
+            target_id = record.id
+
+            # Find MSA files in out_dir/msa/ directory
+            msa_raw_dir = out_dir / "msa"
+            if not msa_raw_dir.exists():
+                return
+
+            # Find all protein chains and their entity IDs
+            # Entity IDs are assigned sequentially: first chain gets entity 0, second gets entity 1, etc.
+            protein_chains = [chain for chain in record.chains if hasattr(chain, "entity_id")]
+            protein_chains.sort(key=lambda c: c.entity_id)
+
+            # Match sequences to entity IDs by order
+            # Only cache MSAs for sequences that were actually generated (not from cache)
+            for idx, chain in enumerate(protein_chains):
+                entity_id = chain.entity_id
+                if idx < len(individual_chains):
+                    sequence = individual_chains[idx]
+                    # Skip if this sequence was already cached
+                    if sequence in cached_sequences:
+                        continue
+
+                    msa_filename = f"{target_id}_{entity_id}.csv"
+                    msa_source_path = msa_raw_dir / msa_filename
+
+                    if msa_source_path.exists() and msa_source_path.is_file():
+                        self._save_msa_to_cache(sequence, msa_source_path)
+        except Exception as e:
+            logger.warning(f"Error saving MSAs to cache: {e}. Continuing without caching.")
+
+    def _sequences_to_fasta(self, sequences: List[str], msa_paths: Optional[Dict[str, Path]] = None) -> str:
         """Convert input protein sequences into a Boltz-2 FASTA formatted string.
 
         Accepts a list of sequence entries where each entry is either a single sequence (e.g., "SEQ")
         or a colon-separated multimer entry (e.g., "A:B"). Whitespace is trimmed and empty parts are ignored.
         Chain identifiers are assigned sequentially as A, B, C, ... and used as FASTA headers.
+        If msa_paths is provided, MSA paths are injected into FASTA headers as the third field.
 
         Parameters
         ----------
         sequences : List[str]
             Sequence entries or colon-separated multimer entries.
+        msa_paths : Optional[Dict[str, Path]]
+            Optional dictionary mapping sequence string to cached MSA Path. If provided, paths are injected
+            into FASTA headers as the third field: `>X|protein|{msa_path}`.
 
         Returns
         -------
         str
-            FASTA-formatted text where each chain has a header of the form `>X|protein|` followed
-            by the corresponding sequence on the next line.
+            FASTA-formatted text where each chain has a header of the form `>X|protein|` (or `>X|protein|{msa_path}`
+            if msa_paths is provided) followed by the corresponding sequence on the next line.
         """
         chains: List[str] = []
         for entry in sequences:
@@ -206,10 +504,17 @@ class Boltz2Core(FoldingAlgorithm):
             chains.extend([p.strip() for p in parts if p.strip()])
 
         headers = []
+        msa_paths_dict = msa_paths or {}
         for idx, seq in enumerate(chains):
             chain_name = chr(65 + idx)  # A, B, C...
-            # TODO: last part could/should be the MSA path, if it is cached/available
-            headers.append(f">{chain_name}|protein|")
+            # If MSA path is provided for this sequence, inject it into the header
+            if seq in msa_paths_dict:
+                msa_path = msa_paths_dict[seq]
+                # Use absolute path to ensure Boltz2 can resolve it
+                msa_path_abs = msa_path.resolve() if isinstance(msa_path, Path) else Path(msa_path).resolve()
+                headers.append(f">{chain_name}|protein|{msa_path_abs}")
+            else:
+                headers.append(f">{chain_name}|protein|")
             headers.append(seq)
         return "\n".join(headers)
 
@@ -292,7 +597,15 @@ class Boltz2Core(FoldingAlgorithm):
         }
         return processed
 
-    # TODO: Potentially cache preprocessing for identical inputs to avoid repeated MSA/feature builds.
+    # TODO: MSA Cache Cleanup
+    # The MSA cache can grow over time. To clean it manually:
+    # 1. Load msa_index.json from the cache directory ({cache_dir}/boltz/msa_cache/msa_index.json)
+    # 2. Filter entries based on last_accessed timestamp (e.g., remove entries not accessed in 90+ days)
+    # 3. Delete corresponding .csv files from hash-prefixed directories ({hash[:2]}/{hash[2:4]}/{hash}.csv)
+    # 4. Update and save the cleaned index
+    # Example: Remove entries where last_accessed < (datetime.now() - timedelta(days=90))
+    # Example: Implement size-based limits (e.g., keep cache under 100GB total size using file_size field)
+    # Future implementation could add a cleanup utility function or automated cleanup with LRU eviction
 
     def _build_datamodule(
         self, processed: Dict[str, Any], num_workers: int, cache_dir: Path, override_method: Optional[str] = None
@@ -604,6 +917,24 @@ class Boltz2Core(FoldingAlgorithm):
         validated_sequences = self._validate_sequences(sequences)
         self.metadata.sequence_lengths = self._compute_sequence_lengths(validated_sequences)
 
+        # Split sequences into individual chains for cache checking
+        individual_chains: List[str] = []
+        for entry in validated_sequences:
+            parts = entry.split(":") if ":" in entry else [entry]
+            individual_chains.extend([p.strip() for p in parts if p.strip()])
+
+        # Check MSA cache before preprocessing
+        cached_msa_paths: Dict[str, Path] = {}
+        if self.config.get("msa_cache_enabled", True):
+            try:
+                cached_msa_paths = self._check_msa_cache(individual_chains)
+                if cached_msa_paths:
+                    logger.info(
+                        f"Found {len(cached_msa_paths)} cached MSA(s) out of {len(individual_chains)} sequence(s)"
+                    )
+            except Exception as e:
+                logger.warning(f"Error checking MSA cache: {e}. Continuing without cache.")
+
         # Always use a temporary working directory on the machine
         cache_dir_str = effective_config.get("cache_dir")
         if cache_dir_str is not None:
@@ -617,8 +948,25 @@ class Boltz2Core(FoldingAlgorithm):
             work_path = Path(tmp).resolve()
 
             with Timer("Boltz-2 preprocessing"):
-                fasta_text = self._sequences_to_fasta(validated_sequences)
+                # Pass cached MSA paths to FASTA generation
+                fasta_text = self._sequences_to_fasta(
+                    validated_sequences, msa_paths=cached_msa_paths if cached_msa_paths else None
+                )
                 processed = self._prepare_inputs(fasta_text, work_path, cache_dir, effective_config)
+
+                # Save newly generated MSAs to cache (before temp cleanup)
+                if self.config.get("msa_cache_enabled", True):
+                    try:
+                        # Extract out_dir from processed dict (targets_dir is out_dir/processed/structures)
+                        targets_dir = processed.get("targets_dir")
+                        if targets_dir:
+                            # out_dir is the parent of "processed" directory
+                            out_dir = targets_dir.parent.parent
+                            self._save_msas_to_cache(
+                                processed, individual_chains, out_dir, cached_sequences=cached_msa_paths
+                            )
+                    except Exception as e:
+                        logger.warning(f"Error saving MSAs to cache: {e}. Continuing without caching.")
 
             datamodule = self._build_datamodule(processed, int(effective_config.get("num_workers", 2)), cache_dir)
 
