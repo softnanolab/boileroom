@@ -10,6 +10,7 @@ if TYPE_CHECKING:
 
 __all__ = ["CondaBackend", "LocalBackend", "ModalBackend", "ApptainerBackend"]
 
+
 def __getattr__(name: str):
     """Lazily import backend modules and their main classes.
 

@@ -101,7 +101,7 @@ def _get_cached_sif_path(image_uri: str, cache_dir: Path) -> Path:
     image_name = parsed.path.lstrip("/").replace("/", "-").replace(":", "_")
     if not image_name.endswith(".sif"):
         image_name = f"{image_name}.sif"
-    
+
     return cache_dir / "images" / image_name
 
 
@@ -137,13 +137,13 @@ def _pull_image(image_uri: str, sif_path: Path) -> None:
         If image pull fails.
     """
     logger.info(f"Pulling image: {image_uri}")
-    
+
     # Ensure cache directory exists
     sif_path.parent.mkdir(parents=True, exist_ok=True)
-    
+
     # Build apptainer pull command
     cmd = ["apptainer", "pull", "--force", str(sif_path), image_uri]
-    
+
     logger.debug(f"Running: {' '.join(cmd)}")
     result = subprocess.run(
         cmd,
@@ -151,7 +151,7 @@ def _pull_image(image_uri: str, sif_path: Path) -> None:
         text=True,
         check=False,
     )
-    
+
     if result.returncode != 0:
         error_msg = f"Failed to pull Apptainer image '{image_uri}':\n"
         error_msg += f"Command: {' '.join(cmd)}\n"
@@ -162,10 +162,10 @@ def _pull_image(image_uri: str, sif_path: Path) -> None:
             error_msg += f"stderr:\n{result.stderr}\n"
         logger.error(error_msg)
         raise RuntimeError(error_msg) from subprocess.CalledProcessError(result.returncode, cmd)
-    
+
     if not _is_image_cached(sif_path):
         raise RuntimeError(f"Image pull completed but .sif file not found at {sif_path}")
-    
+
     logger.info(f"Successfully pulled and cached image: {sif_path}")
 
 
@@ -211,14 +211,14 @@ class ApptainerBackend(Backend):
         self._config = dict(config) if config is not None else {}
         self._device = device or "cuda:0"
         self._image_uri = image_uri
-        
+
         # Check if apptainer is available
         if not _is_tool_available("apptainer"):
             raise ValueError(
                 "To use the ApptainerBackend, you need to install Apptainer.\n"
                 "See https://apptainer.org/docs/user/main/quick_start.html for installation instructions."
             )
-        
+
         # Set up cache directory
         if cache_dir is None:
             cache_dir = ensure_cache_dir()
@@ -226,7 +226,7 @@ class ApptainerBackend(Backend):
             cache_dir = Path(cache_dir)
         self._cache_dir = cache_dir
         self._sif_path = _get_cached_sif_path(image_uri, cache_dir)
-        
+
         self._port: int | None = None
         self._base_url: str | None = None
         self._process: subprocess.Popen[bytes] | None = None
@@ -243,34 +243,34 @@ class ApptainerBackend(Backend):
         """
         if self._process is not None:
             return
-        
+
         # Pull image if not cached
         if not _is_image_cached(self._sif_path):
             _pull_image(self._image_uri, self._sif_path)
-        
+
         # Find available port
         self._port = _find_available_port()
         self._base_url = f"http://127.0.0.1:{self._port}"
-        
+
         # Get project root (parent of parent of parent of this file: boileroom/backend/apptainer.py)
         project_root = Path(__file__).parent.parent.parent
         server_path = Path(__file__).parent / "server.py"
-        
+
         # Determine path in container (should match host path for bind mount)
         container_boileroom = str(project_root)
         container_server_path = str(server_path)
-        
+
         # Build apptainer exec command
         cmd = ["apptainer", "exec"]
-        
+
         # Enable NVIDIA GPU support if device is CUDA
         device_number = _extract_device_number(self._device)
         if device_number is not None:
             cmd.append("--nv")
-        
+
         # Bind mount boileroom source code (read-only)
         cmd.extend(["-B", f"{container_boileroom}:{container_boileroom}:ro"])
-        
+
         # Bind mount MODEL_DIR if present
         model_dir = os.environ.get("MODEL_DIR")
         if model_dir:
@@ -280,7 +280,7 @@ class ApptainerBackend(Backend):
             # Mount to same path in container, or use /mnt/models as fallback
             container_model_dir = str(model_dir_path)
             cmd.extend(["-B", f"{container_model_dir}:{container_model_dir}"])
-        
+
         # Bind mount CHAI_DOWNLOADS_DIR if present
         chai_dir = os.environ.get("CHAI_DOWNLOADS_DIR")
         if chai_dir:
@@ -288,7 +288,7 @@ class ApptainerBackend(Backend):
             chai_dir_path.mkdir(parents=True, exist_ok=True)
             container_chai_dir = str(chai_dir_path)
             cmd.extend(["-B", f"{container_chai_dir}:{container_chai_dir}"])
-        
+
         # Set environment variables
         env_vars = {
             "MODEL_CLASS": self._core_class_path,
@@ -296,32 +296,34 @@ class ApptainerBackend(Backend):
             "DEVICE": self._device,
             "PYTHONPATH": container_boileroom,
         }
-        
+
         if device_number is not None:
             env_vars["CUDA_VISIBLE_DEVICES"] = device_number
-        
+
         # Pass through MODEL_DIR and CHAI_DOWNLOADS_DIR if present
         for key in ["MODEL_DIR", "CHAI_DOWNLOADS_DIR"]:
             if key in os.environ:
                 env_vars[key] = os.environ[key]
-        
+
         # Add environment variables to command
         for key, value in env_vars.items():
             cmd.extend(["--env", f"{key}={value}"])
-        
+
         # Add image and command
         cmd.append(str(self._sif_path))
-        cmd.extend([
-            "python",
-            container_server_path,
-            "--host",
-            "0.0.0.0",
-            "--port",
-            str(self._port),
-        ])
-        
+        cmd.extend(
+            [
+                "python",
+                container_server_path,
+                "--host",
+                "0.0.0.0",
+                "--port",
+                str(self._port),
+            ]
+        )
+
         logger.debug(f"Running: {' '.join(cmd)}")
-        
+
         # Launch subprocess
         self._process = subprocess.Popen(
             cmd,
@@ -329,10 +331,10 @@ class ApptainerBackend(Backend):
             stderr=subprocess.PIPE,
             cwd=str(project_root),
         )
-        
+
         # Wait for health check
         self._wait_for_health_check()
-        
+
         # Create HTTP client
         self._client = httpx.Client(base_url=self._base_url, timeout=300.0)
 
@@ -345,7 +347,7 @@ class ApptainerBackend(Backend):
         if self._client is not None:
             self._client.close()
             self._client = None
-        
+
         if self._process is not None:
             try:
                 self._process.terminate()
@@ -355,7 +357,7 @@ class ApptainerBackend(Backend):
                 self._process.wait()
             finally:
                 self._process = None
-        
+
         self._base_url = None
         self._port = None
 
@@ -394,7 +396,7 @@ class ApptainerBackend(Backend):
         """
         if self._base_url is None:
             raise RuntimeError("Base URL not set")
-        
+
         start_time = time.time()
         while time.time() - start_time < timeout:
             try:
@@ -403,15 +405,15 @@ class ApptainerBackend(Backend):
                     return
             except (httpx.RequestError, httpx.TimeoutException):
                 pass
-            
+
             # Check if process has died
             if self._process is not None and self._process.poll() is not None:
                 stdout, stderr = self._process.communicate()
                 error_msg = f"Server process died. stdout: {stdout.decode()}, stderr: {stderr.decode()}"
                 raise RuntimeError(error_msg)
-            
+
             time.sleep(poll_interval)
-        
+
         raise RuntimeError(f"Server did not become ready within {timeout} seconds")
 
 
@@ -493,4 +495,3 @@ def _deserialize_output(data: dict[str, Any]) -> Any:
     base64_encoded = data["pickled"]
     pickled_data = base64.b64decode(base64_encoded.encode("utf-8"))
     return pickle.loads(pickled_data)
-

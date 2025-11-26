@@ -26,4 +26,3 @@ class Chai1Output(StructurePrediction):
     iptm: Optional[list[np.ndarray]] = None
     per_chain_iptm: Optional[list[np.ndarray]] = None
     cif: Optional[list[str]] = None
-

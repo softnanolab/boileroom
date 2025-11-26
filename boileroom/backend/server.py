@@ -13,7 +13,7 @@ import pickle
 import site
 import sys
 from pathlib import Path
-from typing import Any, Optional, Sequence, Union
+from typing import Any, Optional, Union
 
 # Ensure installed packages take precedence over source tree
 # This prevents local files (like boileroom/backend/modal.py) from shadowing installed packages
@@ -35,11 +35,13 @@ if str(_boileroom_source_root) not in sys.path:
 # With lazy imports, this should rarely be needed, but serves as a safety net
 _original_import = __import__
 
+
 def _import_with_modal_fix(name, globals=None, locals=None, fromlist=(), level=0):
     """Import hook that prevents local modal.py from shadowing installed modal package."""
     if name == "modal" and level == 0:
         try:
             import importlib.util
+
             spec = importlib.util.find_spec("modal")
             if spec and spec.origin:
                 origin_path = Path(spec.origin)
@@ -55,13 +57,15 @@ def _import_with_modal_fix(name, globals=None, locals=None, fromlist=(), level=0
             pass
     return _original_import(name, globals, locals, fromlist, level)
 
+
 # Replace __import__ before any imports
-import builtins
+import builtins  # noqa: E402
+
 builtins.__import__ = _import_with_modal_fix
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from fastapi import FastAPI, HTTPException  # noqa: E402
+from fastapi.responses import JSONResponse  # noqa: E402
+from pydantic import BaseModel  # noqa: E402
 
 app = FastAPI()
 
@@ -240,4 +244,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

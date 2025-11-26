@@ -73,10 +73,10 @@ The `types.py` file contains output dataclasses (e.g., `MyFoldOutput`) that can 
   from typing import Optional, TYPE_CHECKING
   import numpy as np
   from ...base import StructurePrediction, PredictionMetadata
-  
+
   if TYPE_CHECKING:
       from biotite.structure import AtomArray  # Use TYPE_CHECKING for heavy deps
-  
+
   @dataclass
   class MyFoldOutput(StructurePrediction):
       metadata: PredictionMetadata
@@ -88,7 +88,7 @@ The `types.py` file contains output dataclasses (e.g., `MyFoldOutput`) that can 
   ```python
   # boileroom/models/<family>/core.py
   from .types import MyFoldOutput
-  
+
   class MyFoldCore(FoldingAlgorithm):
       DEFAULT_CONFIG = {"device": "cuda:0"}
       def _load(self): ...
@@ -102,7 +102,7 @@ The `types.py` file contains output dataclasses (e.g., `MyFoldOutput`) that can 
   # boileroom/models/<family>/<model>.py
   from .types import MyFoldOutput
   from .core import MyFoldCore
-  
+
   @app.cls(image=my_image, gpu="A10G", volumes={MODAL_MODEL_DIR: model_weights})
   class ModalMyFold:
       config: bytes = modal.parameter(default=b"{}")
@@ -119,7 +119,7 @@ The `types.py` file contains output dataclasses (e.g., `MyFoldOutput`) that can 
   ```python
   # boileroom/models/<family>/<model>.py (continued)
   from .types import MyFoldOutput  # Re-export for convenience
-  
+
   class MyFold(ModelWrapper):
       def __init__(self, backend="modal", device=None, config=None):
           if backend == "modal":

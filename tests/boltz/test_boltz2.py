@@ -148,7 +148,7 @@ def test_boltz2_invalid_amino_acids_validation(test_sequences: dict[str, str]):
         Mapping of named test sequences; must include an "invalid" entry containing a sequence with invalid/unsupported amino-acid codes.
     """
     # Use the core's validator directly to ensure it raises for invalid inputs
-    from boileroom.models.boltz.boltz2 import Boltz2Core
+    from boileroom.models.boltz.core import Boltz2Core
 
     core = Boltz2Core(config={"device": "cpu"})
     with pytest.raises(ValueError):
@@ -157,7 +157,7 @@ def test_boltz2_invalid_amino_acids_validation(test_sequences: dict[str, str]):
 
 def test_boltz2_static_config_enforcement(test_sequences: dict[str, str]):
     """Test that static config keys cannot be overridden in options."""
-    from boileroom.models.boltz.boltz2 import Boltz2Core
+    from boileroom.models.boltz.core import Boltz2Core
 
     core = Boltz2Core(config={"device": "cpu"})
     # device, cache_dir, and no_kernels are static config keys

@@ -13,11 +13,12 @@ from ...images.volumes import model_weights
 from ...utils import MINUTES, MODAL_MODEL_DIR
 
 if TYPE_CHECKING:
-    from .core import Boltz2Core
+    pass
 
 from .types import Boltz2Output
 
 logger = logging.getLogger(__name__)
+
 
 ############################################################
 # MODAL BACKEND
@@ -35,6 +36,7 @@ class ModalBoltz2:
     @modal.enter()
     def _initialize(self) -> None:
         from .core import Boltz2Core
+
         self._core = Boltz2Core(json.loads(self.config.decode("utf-8")))
         self._core._initialize()
 
@@ -105,7 +107,11 @@ class Boltz2(ModelWrapper):
             core_class_path = "boileroom.models.boltz.core.Boltz2Core"
             # Pass backend string directly as runner_command
             backend_instance = CondaBackend(
-                core_class_path, config or {}, device=device, environment_yml_path=environment_yml, runner_command=backend
+                core_class_path,
+                config or {},
+                device=device,
+                environment_yml_path=environment_yml,
+                runner_command=backend,
             )
         elif backend == "apptainer":
             from ...backend.apptainer import ApptainerBackend
@@ -113,9 +119,7 @@ class Boltz2(ModelWrapper):
             # Pass Core class as string path to avoid importing it in main process
             core_class_path = "boileroom.models.boltz.core.Boltz2Core"
             image_uri = "docker://docker.io/jakublala/boileroom-boltz:latest"
-            backend_instance = ApptainerBackend(
-                core_class_path, image_uri, config or {}, device=device
-            )
+            backend_instance = ApptainerBackend(core_class_path, image_uri, config or {}, device=device)
         else:
             raise ValueError(f"Backend {backend} not supported")
         self._backend = backend_instance

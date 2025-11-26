@@ -165,15 +165,14 @@ def test_chai1_full_output(
     _assert_score_close(float(result.iptm[0]), float(reference_scores["iptm"]), "iptm")
 
     predicted_chain_scores = np.atleast_1d(np.array(result.per_chain_iptm[0], dtype=float))
-    reference_chain_scores = np.atleast_1d(
-        np.array(reference_scores.get("per_chain_pair_iptm"), dtype=float)
-    )
+    reference_chain_scores = np.atleast_1d(np.array(reference_scores.get("per_chain_pair_iptm"), dtype=float))
     np.testing.assert_allclose(
         predicted_chain_scores,
         reference_chain_scores,
         atol=SCORE_TOLERANCE,
         err_msg="per_chain_iptm mismatch relative to reference data",
     )
+
 
 def test_chai1_static_config_enforcement(test_sequences: dict[str, str], chai1_model: Chai1):
     """Test that static config keys cannot be overridden in options."""

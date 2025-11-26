@@ -24,4 +24,3 @@ class Boltz2Output(StructurePrediction):
     # Optional serialized structures (one string per sample)
     pdb: Optional[List[str]] = None
     cif: Optional[List[str]] = None
-

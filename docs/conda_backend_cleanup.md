@@ -186,4 +186,3 @@ netstat -an | grep -E ':(800[0-9]|80[1-9][0-9])' | grep ESTABLISHED
 - A hard crash (SIGKILL) that prevented Python cleanup code from running
 - A Python bug or interpreter issue
 - Manual process killing that bypassed the shutdown mechanism
-

@@ -13,4 +13,3 @@ ENV PIP_EXTRA_INDEX_URL=${TORCH_WHEEL_INDEX}
 RUN micromamba env update -n base -f /tmp/environment.yml \
     && micromamba clean --all --yes \
     && rm /tmp/environment.yml
-

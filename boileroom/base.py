@@ -6,7 +6,7 @@ import torch
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Union, Sequence, Optional, Protocol, List, cast
+from typing import Any, Union, Sequence, Optional, Protocol, List, cast, Literal
 
 import numpy as np
 
@@ -429,7 +429,7 @@ class ModelWrapper:
         """
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+    def __exit__(self, exc_type, exc_val, exc_tb) -> Literal[False]:
         """Context manager exit - ensures backend is stopped.
 
         Parameters
@@ -443,7 +443,7 @@ class ModelWrapper:
 
         Returns
         -------
-        None
+        bool
             Always returns False to not suppress exceptions.
         """
         backend = getattr(self, "_backend", None)

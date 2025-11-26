@@ -64,4 +64,3 @@ class ESMFoldOutput(StructurePrediction):
     # TODO: can add a save method here (to a pickle and a pdb file) that can be run locally
     # TODO: add verification of the outputs, and primarily the shape of all the arrays
     # (see test_esmfold_batch_multimer_linkers for the exact batched shapes)
-

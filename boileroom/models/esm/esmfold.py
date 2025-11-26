@@ -15,7 +15,7 @@ from ...images.volumes import model_weights
 from ...utils import MINUTES, MODAL_MODEL_DIR
 
 if TYPE_CHECKING:
-    from .core import ESMFoldCore
+    pass
 
 from .types import ESMFoldOutput
 
@@ -130,7 +130,11 @@ class ESMFold(ModelWrapper):
             core_class_path = "boileroom.models.esm.core.ESMFoldCore"
             # Pass backend string directly as runner_command
             backend_instance = CondaBackend(
-                core_class_path, config or {}, device=device, environment_yml_path=environment_yml, runner_command=backend
+                core_class_path,
+                config or {},
+                device=device,
+                environment_yml_path=environment_yml,
+                runner_command=backend,
             )
         elif backend == "apptainer":
             from ...backend.apptainer import ApptainerBackend
@@ -138,9 +142,7 @@ class ESMFold(ModelWrapper):
             # Pass Core class as string path to avoid importing it in main process
             core_class_path = "boileroom.models.esm.core.ESMFoldCore"
             image_uri = "docker://docker.io/jakublala/boileroom-esm:latest"
-            backend_instance = ApptainerBackend(
-                core_class_path, image_uri, config or {}, device=device
-            )
+            backend_instance = ApptainerBackend(core_class_path, image_uri, config or {}, device=device)
         else:
             raise ValueError(f"Backend {backend} not supported")
         self._backend = backend_instance

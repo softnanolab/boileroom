@@ -13,11 +13,12 @@ from ...images.volumes import model_weights
 from ...utils import MINUTES, MODAL_MODEL_DIR
 
 if TYPE_CHECKING:
-    from .core import Chai1Core
+    pass
 
 from .types import Chai1Output
 
 logger = logging.getLogger(__name__)
+
 
 ############################################################
 # MODAL BACKEND
@@ -123,7 +124,11 @@ class Chai1(ModelWrapper):
             core_class_path = "boileroom.models.chai.core.Chai1Core"
             # Pass backend string directly as runner_command
             backend_instance = CondaBackend(
-                core_class_path, config or {}, device=device, environment_yml_path=environment_yml, runner_command=backend
+                core_class_path,
+                config or {},
+                device=device,
+                environment_yml_path=environment_yml,
+                runner_command=backend,
             )
         elif backend == "apptainer":
             from ...backend.apptainer import ApptainerBackend
@@ -131,9 +136,7 @@ class Chai1(ModelWrapper):
             # Pass Core class as string path to avoid importing it in main process
             core_class_path = "boileroom.models.chai.core.Chai1Core"
             image_uri = "docker://docker.io/jakublala/boileroom-chai1:latest"
-            backend_instance = ApptainerBackend(
-                core_class_path, image_uri, config or {}, device=device
-            )
+            backend_instance = ApptainerBackend(core_class_path, image_uri, config or {}, device=device)
         else:
             raise ValueError(f"Backend {backend} not supported")
         self._backend = backend_instance

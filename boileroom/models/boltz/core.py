@@ -22,7 +22,6 @@ from boltz.data.write.mmcif import to_mmcif
 from boltz.data.module.inferencev2 import Boltz2InferenceDataModule
 from boltz.model.models.boltz2 import Boltz2 as Boltz2Model
 
-from dataclasses import dataclass
 from typing import Optional, Any, Union, Sequence, List, Dict, cast
 
 from ...base import FoldingAlgorithm
@@ -530,7 +529,7 @@ class Boltz2Core(FoldingAlgorithm):
 
         if not processed["manifest"].records or len(processed["manifest"].records) == 0:
             raise ValueError("Manifest has no records. Preprocessing may have failed.")
-        
+
         record = processed["manifest"].records[0]
         structure = StructureV2.load(processed["targets_dir"] / f"{record.id}.npz").remove_invalid_chains()
 
@@ -675,4 +674,3 @@ class Boltz2Core(FoldingAlgorithm):
             # Apply filtering based on include_fields
             filtered = self._filter_include_fields(full_output, include_fields)
             return cast(Boltz2Output, filtered)
-

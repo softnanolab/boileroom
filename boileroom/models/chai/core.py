@@ -3,7 +3,6 @@
 import os
 import csv
 import logging
-from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, Mapping, Optional, Sequence, Union, cast
@@ -378,4 +377,3 @@ class Chai1Core(FoldingAlgorithm):
         for matrix in matrix_collection:
             matrices.append(np.asarray(matrix))
         return matrices
-

@@ -14,7 +14,6 @@ from .image import esm_image
 from ...images.volumes import model_weights
 
 if TYPE_CHECKING:
-    from .core import ESM2Core
     from .types import ESM2Output
 
 logger = logging.getLogger(__name__)
@@ -22,6 +21,7 @@ logger = logging.getLogger(__name__)
 ############################################################
 # MODAL-SPECIFIC WRAPPER
 ############################################################
+
 
 @app.cls(
     image=esm_image,
@@ -63,7 +63,7 @@ class ModalESM2:
             Prediction container with fields including `embeddings`, `metadata`, `chain_index`, `residue_index`, and `hidden_states` when requested.
         """
         assert self._core is not None, "ModalESM2 has not been initialized"
-        return self._core.embed(sequences, options=options)  
+        return self._core.embed(sequences, options=options)
 
 
 ############################################################
@@ -77,7 +77,7 @@ class ESM2(ModelWrapper):
         backend: str = "modal",
         device: Optional[str] = None,
         config: Optional[dict] = None,
-    ) -> None: 
+    ) -> None:
         """Initialize the ESM2 high-level interface and start the selected backend.
 
         Parameters
@@ -110,6 +110,7 @@ class ESM2(ModelWrapper):
             backend_instance = ModalBackend(ModalESM2, config, device=device)
         elif backend == "local":
             from .core import ESM2Core
+
             backend_instance = LocalBackend(ESM2Core, config, device=device)
         elif backend in ("conda", "mamba", "micromamba"):
             from pathlib import Path
@@ -121,7 +122,11 @@ class ESM2(ModelWrapper):
             core_class_path = "boileroom.models.esm.core.ESM2Core"
             # Pass backend string directly as runner_command
             backend_instance = CondaBackend(
-                core_class_path, config or {}, device=device, environment_yml_path=environment_yml, runner_command=backend
+                core_class_path,
+                config or {},
+                device=device,
+                environment_yml_path=environment_yml,
+                runner_command=backend,
             )
         elif backend == "apptainer":
             from ...backend.apptainer import ApptainerBackend
@@ -129,9 +134,7 @@ class ESM2(ModelWrapper):
             # Pass Core class as string path to avoid importing it in main process
             core_class_path = "boileroom.models.esm.core.ESM2Core"
             image_uri = "docker://docker.io/jakublala/boileroom-esm:latest"
-            backend_instance = ApptainerBackend(
-                core_class_path, image_uri, config or {}, device=device
-            )
+            backend_instance = ApptainerBackend(core_class_path, image_uri, config or {}, device=device)
         else:
             raise ValueError(f"Backend {backend} not supported")
         self._backend = backend_instance

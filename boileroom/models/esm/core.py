@@ -2,7 +2,6 @@
 
 import os
 import logging
-from dataclasses import dataclass
 from typing import List, Optional, Sequence, Union, TYPE_CHECKING, cast
 
 import numpy as np
@@ -11,7 +10,7 @@ from transformers import EsmModel, AutoTokenizer, EsmForProteinFolding
 from transformers.models.esm.modeling_esmfold import EsmFoldingTrunk
 from biotite.structure import AtomArray
 
-from ...base import EmbeddingAlgorithm, EmbeddingPrediction, PredictionMetadata, FoldingAlgorithm, StructurePrediction
+from ...base import EmbeddingAlgorithm, FoldingAlgorithm
 from ...utils import Timer, get_model_dir, MODAL_MODEL_DIR
 
 if TYPE_CHECKING:
@@ -174,7 +173,6 @@ class ESM2Core(EmbeddingAlgorithm):
         self.model = self.model.to(self._device)
         self.model.eval()
         self.ready = True
-
 
     def embed(self, sequences: Union[str, Sequence[str]], options: Optional[dict] = None) -> ESM2Output:
         """Compute embeddings for one or more protein sequences using the configured ESM-2 model.
@@ -949,4 +947,3 @@ class ESMFoldCore(FoldingAlgorithm):
             structure_file.write(string)
             cifs.append(string.getvalue())
         return cifs
-

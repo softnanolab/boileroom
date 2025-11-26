@@ -7,7 +7,7 @@ import shutil
 import socket
 import subprocess
 import time
-import yaml
+import yaml  # type: ignore[import]
 from pathlib import Path
 from typing import Any, Optional
 
@@ -85,7 +85,7 @@ def _get_environment_name(environment_yml_path: Path, runner_command: str = "con
     directory_name = environment_yml_path.parent.name
     fallback_name = f"boileroom-{directory_name}"
     yml_name: str | None = None
-    
+
     # Try to read name from environment.yml file
     try:
         with open(environment_yml_path, "r") as f:
@@ -95,11 +95,11 @@ def _get_environment_name(environment_yml_path: Path, runner_command: str = "con
     except Exception:
         # If we can't read the file, fall back to boileroom-{directory_name}
         pass
-    
+
     # If no name in yml, use fallback pattern
     if yml_name is None:
         return fallback_name
-    
+
     # Use yml name
     return yml_name
 
@@ -139,9 +139,7 @@ def _detect_available_tool() -> Optional[str]:
     return None
 
 
-def _verify_conda_environment(
-    runner_command: str, env_name: str, environment_yml_path: Path
-) -> tuple[bool, bool]:
+def _verify_conda_environment(runner_command: str, env_name: str, environment_yml_path: Path) -> tuple[bool, bool]:
     """Verify if a conda environment exists and has all required packages.
 
     Parameters
@@ -162,7 +160,7 @@ def _verify_conda_environment(
         If exists is False, is_valid will also be False.
     """
     logger.debug(f"Verifying conda environment '{env_name}' using '{runner_command}'")
-    
+
     # Check if environment exists
     result = subprocess.run(
         [runner_command, "env", "list"],
@@ -170,12 +168,12 @@ def _verify_conda_environment(
         text=True,
         check=False,
     )
-    
+
     logger.debug(f"Environment list command return code: {result.returncode}")
     logger.debug(f"Environment list stdout: {result.stdout}")
     if result.stderr:
         logger.debug(f"Environment list stderr: {result.stderr}")
-    
+
     # Parse environment list output more robustly
     # Output format from conda env list:
     #   "env_name                    /path/to/envs/env_name"
@@ -186,23 +184,23 @@ def _verify_conda_environment(
         line = line.strip()
         if not line or line.startswith("#"):
             continue
-        
+
         # Split by whitespace - first part is name, second part (if present) is path
         parts = line.split()
         if not parts:
             continue
-        
+
         # Check first part (environment name)
         first_part = parts[0].strip()
         # Remove asterisk if present (indicates active environment)
         if first_part.endswith("*"):
             first_part = first_part[:-1].strip()
-        
+
         if first_part == env_name:
             environment_exists = True
             logger.debug(f"Found environment '{env_name}' in list: {line}")
             break
-        
+
         # Also check if path contains the environment name (for robustness)
         if len(parts) > 1:
             path_part = parts[1].strip()
@@ -217,7 +215,7 @@ def _verify_conda_environment(
     if not environment_exists:
         logger.info(f"Environment '{env_name}' does not exist")
         return (False, False)
-    
+
     logger.info(f"Environment '{env_name}' exists")
 
     # If yaml is not available, we can't verify packages, so assume invalid
@@ -539,9 +537,7 @@ class CondaBackend(Backend):
         logger.debug(f"Runner command: {self._runner_command}")
 
         # Verify environment status
-        exists, is_valid = _verify_conda_environment(
-            self._runner_command, self._env_name, self._environment_yml_path
-        )
+        exists, is_valid = _verify_conda_environment(self._runner_command, self._env_name, self._environment_yml_path)
 
         logger.debug(f"Environment verification result: exists={exists}, is_valid={is_valid}")
 
@@ -553,7 +549,9 @@ class CondaBackend(Backend):
         if exists and not is_valid:
             # Environment exists but is missing packages, update it
             logger.info(f"Updating environment '{self._env_name}' with missing packages")
-            logger.debug(f"Running: {self._runner_command} env update -f {self._environment_yml_path} -n {self._env_name}")
+            logger.debug(
+                f"Running: {self._runner_command} env update -f {self._environment_yml_path} -n {self._env_name}"
+            )
             try:
                 result = subprocess.run(
                     [
@@ -586,7 +584,9 @@ class CondaBackend(Backend):
         else:
             # Environment doesn't exist, create it
             logger.info(f"Creating environment '{self._env_name}'")
-            logger.debug(f"Running: {self._runner_command} env create -f {self._environment_yml_path} -n {self._env_name}")
+            logger.debug(
+                f"Running: {self._runner_command} env create -f {self._environment_yml_path} -n {self._env_name}"
+            )
             try:
                 result = subprocess.run(
                     [
@@ -733,4 +733,3 @@ def _deserialize_output(data: dict[str, Any]) -> Any:
     base64_encoded = data["pickled"]
     pickled_data = base64.b64decode(base64_encoded.encode("utf-8"))
     return pickle.loads(pickled_data)
-
