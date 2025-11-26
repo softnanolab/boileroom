@@ -13,14 +13,11 @@ from ...images.volumes import model_weights
 from ...utils import MINUTES, MODAL_MODEL_DIR
 
 if TYPE_CHECKING:
-    from .core import Chai1Core, Chai1Output
+    from .core import Chai1Core
+
+from .types import Chai1Output
 
 logger = logging.getLogger(__name__)
-
-############################################################
-# CORE ALGORITHM
-############################################################
-
 
 ############################################################
 # MODAL BACKEND

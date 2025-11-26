@@ -15,7 +15,9 @@ from ...images.volumes import model_weights
 from ...utils import MINUTES, MODAL_MODEL_DIR
 
 if TYPE_CHECKING:
-    from .core import ESMFoldCore, ESMFoldOutput
+    from .core import ESMFoldCore
+
+from .types import ESMFoldOutput
 
 logger = logging.getLogger(__name__)
 

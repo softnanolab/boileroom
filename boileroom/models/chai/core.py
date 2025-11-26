@@ -14,27 +14,11 @@ from biotite.structure import AtomArray
 from biotite.structure.io.pdbx import CIFFile, get_structure
 from chai_lab.chai1 import run_inference, StructureCandidates
 
-from ...base import FoldingAlgorithm, PredictionMetadata, StructurePrediction
+from ...base import FoldingAlgorithm
 from ...utils import MODAL_MODEL_DIR, Timer
+from .types import Chai1Output
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class Chai1Output(StructurePrediction):
-    """Output from Chai-1 prediction including all model outputs."""
-
-    metadata: PredictionMetadata
-    atom_array: Optional[list[AtomArray]] = None  # Always generated, one AtomArray per sample
-
-    # Additional Chai-1-specific outputs (all optional, filtered by include_fields)
-    pae: Optional[list[np.ndarray]] = None
-    pde: Optional[list[np.ndarray]] = None
-    plddt: Optional[list[np.ndarray]] = None
-    ptm: Optional[list[np.ndarray]] = None
-    iptm: Optional[list[np.ndarray]] = None
-    per_chain_iptm: Optional[list[np.ndarray]] = None
-    cif: Optional[list[str]] = None
 
 
 class Chai1Core(FoldingAlgorithm):

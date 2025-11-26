@@ -2,6 +2,7 @@
 
 ## Project Structure & Modules
 - `boileroom/models/<family>/` splits each model into `*Core`, `Modal*`, and user-facing classes (see `boltz/boltz2.py`, `chai/chai1.py`, `esm/esmfold.py`, `esm/esm2.py`).
+- `boileroom/models/<family>/types.py` contains lightweight output type definitions (e.g., `Boltz2Output`, `Chai1Output`, `ESM2Output`, `ESMFoldOutput`) that only depend on `numpy`, `dataclasses`, and base classes. This enables dependency isolation—consumers can import output types without pulling in heavy ML dependencies (transformers, torch, etc.). Note, `biotite` is always across both sides (server, client).
 - `boileroom/backend/` hosts backend adapters (`ModalBackend`, `LocalBackend`) plus the global Modal app; update these if you add new execution targets.
 - `boileroom/images/` defines Modal images and shared volumes; duplicate per-model dependencies using the existing image factories.
 - `tests/` mirrors runtime features (`boltz/`, `chai/`, `esm/`) with shared fixtures in `conftest.py`; keep docstrings and assertions aligned with real world behaviour.
@@ -38,7 +39,7 @@
 - Each model that supports conda backend must have an `environment.yml` file in `boileroom/models/<family>/environment.yml`. The environment name follows the pattern `boileroom-<directory_name>` or uses the `name` field from environment.yml if present.
 - Core classes are passed as string paths (e.g., `"boileroom.models.esm.core.ESM2Core"`) to `CondaBackend` to maintain dependency isolation between Boiler Room and model-specific environments.
 - The conda backend uses HTTP microservice pattern: `boileroom/backend/server.py` runs in the conda environment and exposes `/health`, `/embed`, and `/fold` endpoints. The server dynamically loads the Core class specified via the `MODEL_CLASS` environment variable.
-- Output types (e.g., `ESM2Output`, `Boltz2Output`) are serialized via pickle+base64 for JSON transport between the main process and the conda server.
+- Output types (e.g., `ESM2Output`, `Boltz2Output`) from `types.py` are serialized via pickle+base64 for JSON transport between the main process and the conda server.
 - The `_CondaModelProxy` in `conda.py` provides the client-side interface that forwards method calls (`embed()` or `fold()`) to the HTTP server via POST requests.
 - Models in the same family (e.g., ESM2 and ESMFold) can share the same `environment.yml` file.
 
@@ -46,30 +47,79 @@
 - Each model that supports apptainer backend uses pre-built Docker images from DockerHub (e.g., `docker://docker.io/jakublala/boileroom-<model>:latest`). Images are pulled and cached as `.sif` files in `~/.cache/boileroom/images/`.
 - Core classes are passed as string paths (e.g., `"boileroom.models.esm.core.ESM2Core"`) to `ApptainerBackend` to maintain dependency isolation between Boiler Room and model-specific containers.
 - The apptainer backend uses HTTP microservice pattern: `boileroom/backend/server.py` runs inside the Apptainer container and exposes `/health`, `/embed`, and `/fold` endpoints. The server dynamically loads the Core class specified via the `MODEL_CLASS` environment variable.
-- Output types (e.g., `ESM2Output`, `Boltz2Output`) are serialized via pickle+base64 for JSON transport between the main process and the container server.
+- Output types (e.g., `ESM2Output`, `Boltz2Output`) from `types.py` are serialized via pickle+base64 for JSON transport between the main process and the container server.
 - The `_ApptainerModelProxy` in `apptainer.py` provides the client-side interface that forwards method calls (`embed()` or `fold()`) to the HTTP server via POST requests.
 - Models in the same family (e.g., ESM2 and ESMFold) can share the same Docker image.
 
 ## Adding a New Model
-- Implement a core:
+
+### File Structure Pattern
+Each model family follows this structure for dependency isolation:
+```
+boileroom/models/<family>/
+  ├── core.py          # Heavy dependencies (transformers, torch, biotite, etc.)
+  ├── types.py         # Lightweight output types (numpy, dataclasses, base classes only)
+  ├── <model>.py       # Wrapper (modal, backends) - imports from core and types
+  └── ...
+```
+
+The `types.py` file contains output dataclasses (e.g., `MyFoldOutput`) that can be imported by consumers without pulling in heavy ML dependencies. This enables clean separation between Boiler Room's lightweight interface and model-specific runtime environments.
+
+### Implementation Steps
+- Define output types in `types.py`:
   ```python
+  # boileroom/models/<family>/types.py
+  from dataclasses import dataclass
+  from typing import Optional, TYPE_CHECKING
+  import numpy as np
+  from ...base import StructurePrediction, PredictionMetadata
+  
+  if TYPE_CHECKING:
+      from biotite.structure import AtomArray  # Use TYPE_CHECKING for heavy deps
+  
+  @dataclass
+  class MyFoldOutput(StructurePrediction):
+      metadata: PredictionMetadata
+      atom_array: Optional[List["AtomArray"]] = None
+      # ... other fields
+  ```
+
+- Implement a core in `core.py`:
+  ```python
+  # boileroom/models/<family>/core.py
+  from .types import MyFoldOutput
+  
   class MyFoldCore(FoldingAlgorithm):
       DEFAULT_CONFIG = {"device": "cuda:0"}
       def _load(self): ...
-      def fold(self, sequences): sequences = self._validate_sequences(sequences); ...
+      def fold(self, sequences) -> MyFoldOutput:
+          sequences = self._validate_sequences(sequences)
+          ...
   ```
-- Provide a Modal wrapper next to the core:
+
+- Provide a Modal wrapper in `<model>.py`:
   ```python
+  # boileroom/models/<family>/<model>.py
+  from .types import MyFoldOutput
+  from .core import MyFoldCore
+  
   @app.cls(image=my_image, gpu="A10G", volumes={MODAL_MODEL_DIR: model_weights})
   class ModalMyFold:
       config: bytes = modal.parameter(default=b"{}")
       @modal.enter()
-      def _initialize(self): self._core = MyFoldCore(json.loads(self.config)); self._core._initialize()
+      def _initialize(self):
+          self._core = MyFoldCore(json.loads(self.config))
+          self._core._initialize()
       @modal.method()
-      def fold(self, sequences): return self._core.fold(sequences)
+      def fold(self, sequences) -> MyFoldOutput:
+          return self._core.fold(sequences)
   ```
-- Expose the public API via `ModelWrapper`, wiring Modal and Local backends and adding `embed` when creating an embedding model:
+
+- Expose the public API via `ModelWrapper`:
   ```python
+  # boileroom/models/<family>/<model>.py (continued)
+  from .types import MyFoldOutput  # Re-export for convenience
+  
   class MyFold(ModelWrapper):
       def __init__(self, backend="modal", device=None, config=None):
           if backend == "modal":
@@ -82,6 +132,8 @@
               raise ValueError("Backend not supported")
           self._backend.start()
   ```
+
+- Re-export output types from wrapper files for convenience (consumers can import from either `types.py` or the wrapper module).
 
 ## Backend & Security Notes
 - Modal is production default; ensure GPU type and timeouts are tuned per workload, and document image changes in `boileroom/images`.

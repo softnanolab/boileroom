@@ -6,7 +6,7 @@ import pytest
 from modal import enable_output
 
 from boileroom import Boltz2
-from boileroom.models.boltz.boltz2 import Boltz2Output
+from boileroom.models.boltz.types import Boltz2Output
 from boileroom.constants import restype_3to1
 
 from biotite.structure import AtomArray, rmsd, superimpose

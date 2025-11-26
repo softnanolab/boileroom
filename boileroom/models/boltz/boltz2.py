@@ -13,14 +13,11 @@ from ...images.volumes import model_weights
 from ...utils import MINUTES, MODAL_MODEL_DIR
 
 if TYPE_CHECKING:
-    from .core import Boltz2Core, Boltz2Output
+    from .core import Boltz2Core
+
+from .types import Boltz2Output
 
 logger = logging.getLogger(__name__)
-
-############################################################
-# CORE ALGORITHM
-############################################################
-
 
 ############################################################
 # MODAL BACKEND
@@ -33,39 +30,16 @@ logger = logging.getLogger(__name__)
     volumes={MODAL_MODEL_DIR: model_weights},  # TODO: somehow link this to what Boltz-2 actually uses
 )
 class ModalBoltz2:
-    """
-    Modal-specific wrapper around `Boltz2Core`.
-    """
-
     config: bytes = modal.parameter(default=b"{}")
 
     @modal.enter()
     def _initialize(self) -> None:
-        """Initialize the internal Boltz-2 core from the JSON-encoded `self.config` and prepare it for use.
-
-        Decodes the stored JSON configuration, constructs a Boltz2Core instance assigned to `self._core`, and runs its initialization routine.
-        """
         from .core import Boltz2Core
-
         self._core = Boltz2Core(json.loads(self.config.decode("utf-8")))
         self._core._initialize()
 
     @modal.method()
     def fold(self, sequences: Union[str, Sequence[str]], options: Optional[dict] = None) -> "Boltz2Output":
-        """Predict protein structure(s) for the provided sequence or sequences using the configured Boltz-2 backend.
-
-        Parameters
-        ----------
-        sequences : str | Sequence[str]
-            A single amino-acid sequence or an iterable of sequences. For multi-chain constructs a single string may use colon-separated chains (e.g., "A:B") or pass a sequence of chain sequences.
-        options : dict, optional
-            Per-call configuration overrides (for example: include_fields, seed, device, cache_dir, msa_server, num_samples). Keys mirror Boltz-2 config options and override instance defaults for this run.
-
-        Returns
-        -------
-        Boltz2Output
-            Prediction results including metadata, per-sample atom arrays, confidence metrics (plddt/pae/pde), and optional serialized structures (PDB/CIF).
-        """
         return self._core.fold(sequences, options=options)
 
 

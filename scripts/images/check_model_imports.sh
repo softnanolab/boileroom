@@ -45,17 +45,27 @@ if ! command -v docker >/dev/null 2>&1; then
   exit 1
 fi
 
+# Get the boileroom root directory (parent of parent of scripts/images)
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+BOILEROOM_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd -P)"
+
+if [ ! -d "${BOILEROOM_ROOT}/boileroom" ]; then
+  echo "Error: Could not find boileroom directory at ${BOILEROOM_ROOT}/boileroom" >&2
+  echo "Please run this script from the boileroom repository." >&2
+  exit 1
+fi
+
 declare -A IMAGE_NAMES=(
   ["esm"]="boileroom-esm"
   ["chai"]="boileroom-chai1"
   ["boltz"]="boileroom-boltz"
 )
 
+# Check core.py files - these contain the actual model logic and dependencies
 declare -A MODULE_IMPORTS=(
-  ["esm"]="boileroom.models.esm.core boileroom.models.esm.esmfold boileroom.models.esm.esm2"
-  ["chai"]="boileroom.models.chai.chai1"
-  # ["boltz"]="boileroom.models.boltz.boltz2"
-  ["boltz"]="boileroom.models.esm.core"
+  ["esm"]="boileroom.models.esm.core"
+  ["chai"]="boileroom.models.chai.core"
+  ["boltz"]="boileroom.models.boltz.core"
 )
 
 MODEL_ORDER=("esm" "chai" "boltz")
@@ -74,11 +84,23 @@ for model in "${MODEL_ORDER[@]}"; do
     continue
   fi
 
-  docker run --rm "${image}" micromamba run -n base python - "${module_args[@]}" <<'PY'
+  # Mount boileroom source and set PYTHONPATH so imports work
+  # Pass modules as environment variable to avoid argument parsing issues with heredoc
+  MODULES_STR="${module_args[*]}"
+  docker run --rm \
+    -v "${BOILEROOM_ROOT}:${BOILEROOM_ROOT}:ro" \
+    -e PYTHONPATH="${BOILEROOM_ROOT}" \
+    -e CHECK_MODULES="${MODULES_STR}" \
+    "${image}" micromamba run -n base python <<'PY'
 import importlib
+import os
 import sys
 
-modules = sys.argv[1:]
+modules_str = os.environ.get("CHECK_MODULES", "")
+if not modules_str:
+    raise SystemExit("No modules provided to import")
+
+modules = modules_str.split()
 if not modules:
     raise SystemExit("No modules provided to import")
 

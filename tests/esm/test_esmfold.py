@@ -6,7 +6,8 @@ from typing import Generator, Optional
 from modal import enable_output
 
 from boileroom import ESMFold
-from boileroom.models.esm.core import ESMFoldCore, ESMFoldOutput
+from boileroom.models.esm.core import ESMFoldCore
+from boileroom.models.esm.types import ESMFoldOutput
 from boileroom.models.esm.linker import store_multimer_properties
 from boileroom.convert import pdb_string_to_atomarray
 from boileroom.constants import restype_3to1

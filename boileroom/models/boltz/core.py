@@ -25,28 +25,11 @@ from boltz.model.models.boltz2 import Boltz2 as Boltz2Model
 from dataclasses import dataclass
 from typing import Optional, Any, Union, Sequence, List, Dict, cast
 
-from ...base import StructurePrediction, PredictionMetadata, FoldingAlgorithm
+from ...base import FoldingAlgorithm
 from ...utils import MODAL_MODEL_DIR, Timer
+from .types import Boltz2Output
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class Boltz2Output(StructurePrediction):
-    """Output from Boltz-2 prediction including all model outputs."""
-
-    # Required by StructurePrediction protocol
-    metadata: PredictionMetadata
-    atom_array: Optional[List[Any]] = None  # Always generated, one AtomArray per sample
-
-    # Confidence-related outputs (one entry per sample)
-    confidence: Optional[List[Dict[str, Any]]] = None
-    plddt: Optional[List[np.ndarray]] = None
-    pae: Optional[List[np.ndarray]] = None
-    pde: Optional[List[np.ndarray]] = None
-    # Optional serialized structures (one string per sample)
-    pdb: Optional[List[str]] = None
-    cif: Optional[List[str]] = None
 
 
 class Boltz2Core(FoldingAlgorithm):
@@ -545,6 +528,9 @@ class Boltz2Core(FoldingAlgorithm):
         from io import StringIO
         from dataclasses import replace
 
+        if not processed["manifest"].records or len(processed["manifest"].records) == 0:
+            raise ValueError("Manifest has no records. Preprocessing may have failed.")
+        
         record = processed["manifest"].records[0]
         structure = StructureV2.load(processed["targets_dir"] / f"{record.id}.npz").remove_invalid_chains()
 
