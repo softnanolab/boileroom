@@ -7,13 +7,18 @@ import shutil
 import socket
 import subprocess
 import time
+<<<<<<< HEAD
 import yaml  # type: ignore[import]
+=======
+import yaml  # type: ignore[import-not-found]
+>>>>>>> origin/feat/conda-progress-debug
 from pathlib import Path
 from typing import Any, Optional
 
-import httpx
+import httpx  # type: ignore[import-not-found]
 
 from .base import Backend
+from .progress import CondaProgressTracker
 
 logger = logging.getLogger(__name__)
 
@@ -532,20 +537,26 @@ class CondaBackend(Backend):
             logger.debug("Skipping environment check: environment_yml_path or env_name is None")
             return
 
-        logger.info(f"Ensuring conda environment '{self._env_name}' exists and is valid")
-        logger.debug(f"Environment YAML path: {self._environment_yml_path}")
-        logger.debug(f"Runner command: {self._runner_command}")
+        runner_env = self._build_runner_env()
 
+<<<<<<< HEAD
         # Verify environment status
         exists, is_valid = _verify_conda_environment(self._runner_command, self._env_name, self._environment_yml_path)
+=======
+        with CondaProgressTracker(logger_name="boileroom.backend.conda") as tracker:
+            tracker.record_stage(f"Ensuring conda environment '{self._env_name}' exists and is valid")
+>>>>>>> origin/feat/conda-progress-debug
 
-        logger.debug(f"Environment verification result: exists={exists}, is_valid={is_valid}")
+            logger.info(f"Ensuring conda environment '{self._env_name}' exists and is valid")
+            logger.debug(f"Environment YAML path: {self._environment_yml_path}")
+            logger.debug(f"Runner command: {self._runner_command}")
 
-        if exists and is_valid:
-            # Environment exists and has all required packages
-            logger.info(f"Environment '{self._env_name}' exists and is valid, no action needed")
-            return
+            # Verify environment status
+            exists, is_valid = _verify_conda_environment(
+                self._runner_command, self._env_name, self._environment_yml_path
+            )
 
+<<<<<<< HEAD
         if exists and not is_valid:
             # Environment exists but is missing packages, update it
             logger.info(f"Updating environment '{self._env_name}' with missing packages")
@@ -616,6 +627,93 @@ class CondaBackend(Backend):
                     error_msg += f"stderr:\n{e.stderr}\n"
                 logger.error(error_msg)
                 raise RuntimeError(error_msg) from e
+=======
+            logger.debug(f"Environment verification result: exists={exists}, is_valid={is_valid}")
+
+            if exists and is_valid:
+                # Environment exists and has all required packages
+                logger.info(f"Environment '{self._env_name}' exists and is valid, no action needed")
+                return
+
+            if exists and not is_valid:
+                # Environment exists but is missing packages, update it
+                logger.info(f"Updating environment '{self._env_name}' with missing packages")
+                logger.debug(f"Running: {self._runner_command} env update -f {self._environment_yml_path} -n {self._env_name}")
+                try:
+                    result = tracker.run_subprocess(
+                        [
+                            self._runner_command,
+                            "env",
+                            "update",
+                            "-y",
+                            "-f",
+                            str(self._environment_yml_path),
+                            "-n",
+                            self._env_name,
+                        ],
+                        stage_label=f"Updating environment '{self._env_name}'",
+                        subprocess_title="conda env update",
+                        env=runner_env,
+                    )
+                    logger.debug(f"Update command stdout: {result.stdout}")
+                    if result.stderr:
+                        logger.debug(f"Update command stderr: {result.stderr}")
+                    logger.info(f"Successfully updated environment '{self._env_name}'")
+                except subprocess.CalledProcessError as e:
+                    error_msg = f"Failed to update conda environment '{self._env_name}':\n"
+                    error_msg += f"Command: {' '.join(e.cmd)}\n"
+                    error_msg += f"Return code: {e.returncode}\n"
+                    if e.stdout:
+                        error_msg += f"stdout:\n{e.stdout}\n"
+                    if e.stderr:
+                        error_msg += f"stderr:\n{e.stderr}\n"
+                    logger.error(error_msg)
+                    raise RuntimeError(error_msg) from e
+            else:
+                # Environment doesn't exist, create it
+                logger.info(f"Creating environment '{self._env_name}'")
+                logger.debug(f"Running: {self._runner_command} env create -f {self._environment_yml_path} -n {self._env_name}")
+                try:
+                    result = tracker.run_subprocess(
+                        [
+                            self._runner_command,
+                            "env",
+                            "create",
+                            "-y",
+                            "-f",
+                            str(self._environment_yml_path),
+                            "-n",
+                            self._env_name,
+                        ],
+                        stage_label=f"Creating environment '{self._env_name}'",
+                        subprocess_title="conda env create",
+                        env=runner_env,
+                    )
+                    logger.debug(f"Create command stdout: {result.stdout}")
+                    if result.stderr:
+                        logger.debug(f"Create command stderr: {result.stderr}")
+                    logger.info(f"Successfully created environment '{self._env_name}'")
+                except subprocess.CalledProcessError as e:
+                    error_msg = f"Failed to create conda environment '{self._env_name}':\n"
+                    error_msg += f"Command: {' '.join(e.cmd)}\n"
+                    error_msg += f"Return code: {e.returncode}\n"
+                    if e.stdout:
+                        error_msg += f"stdout:\n{e.stdout}\n"
+                    if e.stderr:
+                        error_msg += f"stderr:\n{e.stderr}\n"
+                    logger.error(error_msg)
+                    raise RuntimeError(error_msg) from e
+
+    def _build_runner_env(self) -> dict[str, str]:
+        """Return a sanitized environment for micromamba commands.
+
+        Removes PYTHONPATH to avoid conflicts where our source tree shadows stdlib
+        modules (e.g., boileroom.models.esm.types vs python's built-in types).
+        """
+        env = os.environ.copy()
+        env.pop("PYTHONPATH", None)
+        return env
+>>>>>>> origin/feat/conda-progress-debug
 
     def _wait_for_health_check(self, timeout: float = 60.0, poll_interval: float = 1.0) -> None:
         """Wait for the server to become ready by polling the /health endpoint.
