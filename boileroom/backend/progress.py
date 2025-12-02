@@ -15,14 +15,34 @@ from rich.spinner import Spinner  # type: ignore[import-not-found]
 from rich.text import Text  # type: ignore[import-not-found]
 
 
-class CondaProgressTracker(AbstractContextManager["CondaProgressTracker"]):
-    """Render a Rich spinner with a rolling subprocess log tail."""
+def _escape_rich_markup(text: str) -> str:
+    """Escape Rich markup characters in text to prevent parsing errors.
+
+    Parameters
+    ----------
+    text : str
+        Text that may contain Rich markup characters.
+
+    Returns
+    -------
+    str
+        Text with square brackets escaped to prevent Rich from interpreting them as markup.
+    """
+    return text.replace("[", "\\[").replace("]", "\\]")
+
+
+class ProgressTracker(AbstractContextManager["ProgressTracker"]):
+    """Render a Rich spinner with a rolling subprocess log tail.
+
+    Generic progress tracker for subprocess-based operations that provides
+    visual feedback with a spinner and streaming output from long-running commands.
+    """
 
     def __init__(
         self,
         logger_name: str,
         *,
-        tail_size: int = 4,
+        tail_size: int = 20,
         console: Console | None = None,
     ) -> None:
         self._logger_name = logger_name
@@ -30,13 +50,16 @@ class CondaProgressTracker(AbstractContextManager["CondaProgressTracker"]):
         self._show_all_tail = self._logger.getEffectiveLevel() <= logging.DEBUG
         self._tail_limit = None if self._show_all_tail else tail_size
         self._tail: list[str] = []
+        # Store full output history separated by stream for error reporting
+        self._stdout_lines: list[str] = []
+        self._stderr_lines: list[str] = []
         self._sections: list[str] = []
         self._current_stage = "Starting..."
         self._subprocess_title = "subprocess output"
         self._console = console or Console()
         self._live: Live | None = None
 
-    def __enter__(self) -> "CondaProgressTracker":
+    def __enter__(self) -> "ProgressTracker":
         if self._console.is_terminal:
             self._live = Live(
                 self._render(),
@@ -69,6 +92,13 @@ class CondaProgressTracker(AbstractContextManager["CondaProgressTracker"]):
         self._tail.append(text)
         if self._tail_limit is not None and len(self._tail) > self._tail_limit:
             self._tail = self._tail[-self._tail_limit :]
+        
+        # Store full output history for error reporting
+        if stream_label == "STDOUT":
+            self._stdout_lines.append(line)
+        elif stream_label == "STDERR":
+            self._stderr_lines.append(line)
+        
         self._refresh()
 
     def run_subprocess(
@@ -146,24 +176,39 @@ class CondaProgressTracker(AbstractContextManager["CondaProgressTracker"]):
 
         return completed
 
+    def get_captured_output(self) -> tuple[str, str]:
+        """Get all captured stdout and stderr output.
+        
+        Returns
+        -------
+        tuple[str, str]
+            A tuple of (stdout, stderr) as strings, with newlines preserved.
+        """
+        stdout = "\n".join(self._stdout_lines)
+        stderr = "\n".join(self._stderr_lines)
+        return stdout, stderr
+
     def _refresh(self) -> None:
         if self._live is not None:
             self._live.update(self._render())
 
     def _render(self) -> Align:
+        # Escape user-provided content to prevent Rich markup parsing errors
         header_lines = [
-            Text(f"{self._logger_name} ---- {line}", style="cyan")
+            Text(_escape_rich_markup(f"{self._logger_name} ---- {line}"), style="cyan")
             for line in self._sections[-3:]
         ]
-        spinner = Spinner("dots", text=self._current_stage, style="bold green")
-        tail_body = "\n".join(self._tail) if self._tail else "waiting for subprocess output..."
+        spinner = Spinner("dots", text=_escape_rich_markup(self._current_stage), style="bold green")
+        tail_content = "\n".join(self._tail) if self._tail else "waiting for subprocess output..."
+        # Escape subprocess output to prevent Rich from interpreting it as markup
+        tail_text = Text(_escape_rich_markup(tail_content))
         tail_panel = Panel(
-            tail_body,
-            title=self._subprocess_title,
+            tail_text,
+            title=_escape_rich_markup(self._subprocess_title),
             border_style="magenta",
         )
         group = Group(*header_lines, spinner, tail_panel)
-        panel = Panel(group, title=self._logger_name.upper(), border_style="blue")
+        panel = Panel(group, title=_escape_rich_markup(self._logger_name.upper()), border_style="blue")
         height = self._console.size.height if self._console.size is not None else None
         return Align(panel, vertical="bottom", height=height)
 

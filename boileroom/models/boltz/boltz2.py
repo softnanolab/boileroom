@@ -120,7 +120,9 @@ class Boltz2(ModelWrapper):
 
             # Pass Core class as string path to avoid importing it in main process
             core_class_path = "boileroom.models.boltz.core.Boltz2Core"
-            image_uri = "docker://docker.io/jakublala/boileroom-boltz:latest"
+            
+            # HACK
+            image_uri = "docker://docker.io/jakublala/boileroom-boltz:dev"
             backend_instance = ApptainerBackend(core_class_path, image_uri, config or {}, device=device)
         else:
             raise ValueError(f"Backend {backend} not supported")

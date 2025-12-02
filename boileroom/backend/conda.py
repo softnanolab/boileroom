@@ -18,7 +18,7 @@ from typing import Any, Optional
 import httpx  # type: ignore[import-not-found]
 
 from .base import Backend
-from .progress import CondaProgressTracker
+from .progress import ProgressTracker
 
 logger = logging.getLogger(__name__)
 
@@ -543,7 +543,7 @@ class CondaBackend(Backend):
         # Verify environment status
         exists, is_valid = _verify_conda_environment(self._runner_command, self._env_name, self._environment_yml_path)
 =======
-        with CondaProgressTracker(logger_name="boileroom.backend.conda") as tracker:
+        with ProgressTracker(logger_name="boileroom.backend.conda") as tracker:
             tracker.record_stage(f"Ensuring conda environment '{self._env_name}' exists and is valid")
 >>>>>>> origin/feat/conda-progress-debug
 
