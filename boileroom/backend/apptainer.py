@@ -7,15 +7,14 @@ import shutil
 import socket
 import subprocess
 import time
+from datetime import datetime
 from pathlib import Path
-from threading import Thread
 from typing import Any, Optional
 from urllib.parse import urlparse
 
 import httpx
 
 from .base import Backend
-from .progress import ProgressTracker
 from ..utils import ensure_cache_dir
 
 logger = logging.getLogger(__name__)
@@ -123,7 +122,7 @@ def _is_image_cached(sif_path: Path) -> bool:
     return sif_path.exists() and sif_path.stat().st_size > 0
 
 
-def _pull_image(image_uri: str, sif_path: Path, tracker: ProgressTracker | None = None) -> None:
+def _pull_image(image_uri: str, sif_path: Path, log_file: Path | None = None) -> None:
     """Pull Docker image and convert to .sif format.
 
     Parameters
@@ -132,8 +131,8 @@ def _pull_image(image_uri: str, sif_path: Path, tracker: ProgressTracker | None 
         Docker URI to pull (e.g., 'docker://docker.io/jakublala/boileroom-chai:latest').
     sif_path : Path
         Path where .sif file should be saved.
-    tracker : ProgressTracker | None
-        Optional progress tracker for displaying pull progress.
+    log_file : Path | None
+        Optional log file to redirect stdout/stderr to.
 
     Raises
     ------
@@ -150,13 +149,15 @@ def _pull_image(image_uri: str, sif_path: Path, tracker: ProgressTracker | None 
 
     logger.debug(f"Running: {' '.join(cmd)}")
     
-    if tracker is not None:
-        result = tracker.run_subprocess(
-            cmd,
-            stage_label=f"Pulling image: {image_uri}",
-            subprocess_title="apptainer pull",
-            check=False,
-        )
+    if log_file is not None:
+        with open(log_file, "a") as log_handle:
+            result = subprocess.run(
+                cmd,
+                stdout=log_handle,
+                stderr=subprocess.STDOUT,
+                text=True,
+                check=False,
+            )
     else:
         result = subprocess.run(
             cmd,
@@ -169,10 +170,13 @@ def _pull_image(image_uri: str, sif_path: Path, tracker: ProgressTracker | None 
         error_msg = f"Failed to pull Apptainer image '{image_uri}':\n"
         error_msg += f"Command: {' '.join(cmd)}\n"
         error_msg += f"Return code: {result.returncode}\n"
-        if result.stdout:
-            error_msg += f"stdout:\n{result.stdout}\n"
-        if result.stderr:
-            error_msg += f"stderr:\n{result.stderr}\n"
+        if log_file is None:
+            if result.stdout:
+                error_msg += f"stdout:\n{result.stdout}\n"
+            if result.stderr:
+                error_msg += f"stderr:\n{result.stderr}\n"
+        else:
+            error_msg += f"See log file: {log_file}\n"
         logger.error(error_msg)
         raise RuntimeError(error_msg) from subprocess.CalledProcessError(result.returncode, cmd)
 
@@ -248,7 +252,7 @@ class ApptainerBackend(Backend):
         self._base_url: str | None = None
         self._process: subprocess.Popen[bytes] | None = None
         self._client: httpx.Client | None = None
-        self._streaming_threads: list[Thread] | None = None
+        self._log_file_path: Path | None = None
 
     def startup(self) -> None:
         """Start the Apptainer container server and wait for it to be ready.
@@ -263,175 +267,156 @@ class ApptainerBackend(Backend):
             logger.debug("ApptainerBackend.startup() called but process already exists, skipping startup")
             return
 
-        # Determine optional debug log file path for the tracker.
-        progress_log_env = os.environ.get("BOILEROOM_PROGRESS_LOG_FILE")
-        progress_log_flag = os.environ.get("BOILEROOM_PROGRESS_LOG")
-        progress_log_path: Path | None
-        if progress_log_env:
-            progress_log_path = Path(progress_log_env).expanduser().resolve()
-        elif progress_log_flag:
-            # Default to the current working directory so logs sit beside the script
-            # that invoked Boiler Room (e.g., script.py).
-            progress_log_path = Path.cwd() / "boileroom_apptainer_progress.log"
+        # Set up log file path: MODEL_DIR/logs/apptainer_YYYY-MM-DD_HH-MM-SS.log
+        model_dir = os.environ.get("MODEL_DIR")
+        if model_dir:
+            model_dir_path = Path(model_dir).expanduser().resolve()
         else:
-            progress_log_path = None
+            model_dir_path = self._cache_dir
+        
+        log_dir = model_dir_path / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_filename = f"apptainer_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.log"
+        self._log_file_path = log_dir / log_filename
 
-        logger.debug(
-            "Starting ApptainerBackend with image_uri=%s, device=%s, progress_log_path=%s",
-            self._image_uri,
-            self._device,
-            progress_log_path,
+        logger.info(f"Starting ApptainerBackend with image_uri={self._image_uri}, device={self._device}")
+        logger.info(f"Log file: {self._log_file_path}")
+
+        # Pull image if not cached
+        if not _is_image_cached(self._sif_path):
+            logger.info("Image not cached, pulling...")
+            _pull_image(self._image_uri, self._sif_path, log_file=self._log_file_path)
+
+        # Find available port
+        self._port = _find_available_port()
+        self._base_url = f"http://127.0.0.1:{self._port}"
+        logger.info(f"Selected port {self._port} for server, base_url={self._base_url}")
+
+        # Get project root (parent of parent of parent of this file: boileroom/backend/apptainer.py)
+        project_root = Path(__file__).parent.parent.parent
+        server_path = Path(__file__).parent / "server.py"
+
+        # Determine path in container (should match host path for bind mount)
+        container_boileroom = str(project_root)
+        container_server_path = str(server_path)
+
+        # Build apptainer exec command
+        cmd = ["apptainer", "exec"]
+
+        # Enable NVIDIA GPU support if device is CUDA
+        device_number = _extract_device_number(self._device)
+        if device_number is not None:
+            cmd.append("--nv")
+
+        # Bind mount boileroom source code (read-only)
+        cmd.extend(["-B", f"{container_boileroom}:{container_boileroom}:ro"])
+
+        # Bind mount MODEL_DIR if present
+        if model_dir:
+            model_dir_path = Path(model_dir).resolve()
+            # Ensure directory exists
+            model_dir_path.mkdir(parents=True, exist_ok=True)
+            # Mount to same path in container
+            container_model_dir = str(model_dir_path)
+            cmd.extend(["-B", f"{container_model_dir}:{container_model_dir}"])
+
+        # Bind mount CHAI_DOWNLOADS_DIR if present
+        chai_dir = os.environ.get("CHAI_DOWNLOADS_DIR")
+        if chai_dir:
+            chai_dir_path = Path(chai_dir).resolve()
+            chai_dir_path.mkdir(parents=True, exist_ok=True)
+            container_chai_dir = str(chai_dir_path)
+            cmd.extend(["-B", f"{container_chai_dir}:{container_chai_dir}"])
+
+        # Set environment variables
+        env_vars = {
+            "MODEL_CLASS": self._core_class_path,
+            "MODEL_CONFIG": json.dumps(self._config),
+            "DEVICE": self._device,
+            "PYTHONPATH": container_boileroom,
+            # Override temp directory variables to use container's /tmp
+            # This prevents issues when host TMPDIR points to a path that doesn't exist in container
+            # CRITICAL: Must override TMPDIR before micromamba runs, otherwise it fails
+            "TMPDIR": "/tmp",
+            "TMP": "/tmp",
+            "TEMP": "/tmp",
+        }
+
+        # TODO: BOLTZ NEEDS CUDA 12 !!$@($_(!@#$!(@$@!)))
+        
+        # Build LD_LIBRARY_PATH to include conda libraries
+        # libcue_ops.so is in /opt/conda/lib/python3.12/site-packages/cuequivariance_ops/lib/
+        # libcublas.so.12 is in /opt/conda/lib/python3.12/site-packages/nvidia/cublas/lib/
+        # Both need to be in LD_LIBRARY_PATH
+        # Note: --nv will add /usr/local/nvidia/lib and /usr/local/nvidia/lib64 automatically
+        # Also include the base conda lib directory as a fallback
+        conda_base_lib_path = "/opt/conda/lib"
+        conda_cue_ops_lib_path = "/opt/conda/lib/python3.12/site-packages/cuequivariance_ops/lib"
+        conda_cuda_lib_path = "/opt/conda/lib/python3.12/site-packages/nvidia/cublas/lib"
+        # Start with conda library paths (highest priority), then NVIDIA paths that --nv sets
+        ld_path_parts = [
+            conda_cue_ops_lib_path,  # Where libcue_ops.so is located
+            conda_cuda_lib_path,  # Where libcublas.so.12 is located
+            conda_base_lib_path,  # Base conda lib directory as fallback
+            "/usr/local/nvidia/lib64",
+            "/usr/local/nvidia/lib",
+            "/.singularity.d/libs",
+        ]
+        # If host has LD_LIBRARY_PATH, append any additional paths (but conda path takes priority)
+        if "LD_LIBRARY_PATH" in os.environ:
+            host_paths = [p for p in os.environ["LD_LIBRARY_PATH"].split(":") if p]
+            for path in host_paths:
+                if path not in ld_path_parts:
+                    ld_path_parts.append(path)
+        env_vars["LD_LIBRARY_PATH"] = ":".join(ld_path_parts)
+
+        if device_number is not None:
+            env_vars["CUDA_VISIBLE_DEVICES"] = device_number
+
+        # Pass through MODEL_DIR and CHAI_DOWNLOADS_DIR if present
+        # TODO: this should be unified, and simplified
+        # TODO: all env variables should be passed through to the container, in a programmatic way
+        for key in ["MODEL_DIR", "CHAI_DOWNLOADS_DIR"]:
+            if key in os.environ:
+                env_vars[key] = os.environ[key]
+
+        # Add environment variables to command
+        for key, value in env_vars.items():
+            cmd.extend(["--env", f"{key}={value}"])
+
+        # Add image and command
+        cmd.append(str(self._sif_path))
+        cmd.extend(
+            [
+                "micromamba",
+                "run",
+                "-n",
+                "base",
+                "python",
+                container_server_path,
+                "--host",
+                "0.0.0.0",
+                "--port",
+                str(self._port),
+            ]
         )
 
-        with ProgressTracker(
-            logger_name="boileroom.backend.apptainer",
-            log_file_path=progress_log_path,
-        ) as tracker:
-            # Pull image if not cached
-            if not _is_image_cached(self._sif_path):
-                _pull_image(self._image_uri, self._sif_path, tracker=tracker)
+        logger.debug("Launching Apptainer server with command: %s", " ".join(cmd))
+        logger.info("Starting server in container...")
 
-            # Find available port
-            self._port = _find_available_port()
-            self._base_url = f"http://127.0.0.1:{self._port}"
-            logger.info(f"Selected port {self._port} for server, base_url={self._base_url}")
-
-            # Get project root (parent of parent of parent of this file: boileroom/backend/apptainer.py)
-            project_root = Path(__file__).parent.parent.parent
-            server_path = Path(__file__).parent / "server.py"
-
-            # Determine path in container (should match host path for bind mount)
-            container_boileroom = str(project_root)
-            container_server_path = str(server_path)
-
-            # Build apptainer exec command
-            cmd = ["apptainer", "exec"]
-
-            # Enable NVIDIA GPU support if device is CUDA
-            device_number = _extract_device_number(self._device)
-            if device_number is not None:
-                cmd.append("--nv")
-
-            # Bind mount boileroom source code (read-only)
-            cmd.extend(["-B", f"{container_boileroom}:{container_boileroom}:ro"])
-
-            # Bind mount MODEL_DIR if present
-            model_dir = os.environ.get("MODEL_DIR")
-            if model_dir:
-                model_dir_path = Path(model_dir).resolve()
-                # Ensure directory exists
-                model_dir_path.mkdir(parents=True, exist_ok=True)
-                # Mount to same path in container, or use /mnt/models as fallback
-                container_model_dir = str(model_dir_path)
-                cmd.extend(["-B", f"{container_model_dir}:{container_model_dir}"])
-
-            # Bind mount CHAI_DOWNLOADS_DIR if present
-            chai_dir = os.environ.get("CHAI_DOWNLOADS_DIR")
-            if chai_dir:
-                chai_dir_path = Path(chai_dir).resolve()
-                chai_dir_path.mkdir(parents=True, exist_ok=True)
-                container_chai_dir = str(chai_dir_path)
-                cmd.extend(["-B", f"{container_chai_dir}:{container_chai_dir}"])
-
-            # Set environment variables
-            env_vars = {
-                "MODEL_CLASS": self._core_class_path,
-                "MODEL_CONFIG": json.dumps(self._config),
-                "DEVICE": self._device,
-                "PYTHONPATH": container_boileroom,
-                # Override temp directory variables to use container's /tmp
-                # This prevents issues when host TMPDIR points to a path that doesn't exist in container
-                "TMPDIR": "/tmp",
-                "TMP": "/tmp",
-                "TEMP": "/tmp",
-            }
-
-            if device_number is not None:
-                env_vars["CUDA_VISIBLE_DEVICES"] = device_number
-
-            # Pass through MODEL_DIR and CHAI_DOWNLOADS_DIR if present
-            for key in ["MODEL_DIR", "CHAI_DOWNLOADS_DIR"]:
-                if key in os.environ:
-                    env_vars[key] = os.environ[key]
-
-            # Add environment variables to command
-            for key, value in env_vars.items():
-                cmd.extend(["--env", f"{key}={value}"])
-
-            # Add image and command
-            cmd.append(str(self._sif_path))
-            cmd.extend(
-                [
-                    "micromamba",
-                    "run",
-                    "-n",
-                    "base",
-                    "python",
-                    container_server_path,
-                    "--host",
-                    "0.0.0.0",
-                    "--port",
-                    str(self._port),
-                ]
-            )
-
-            logger.debug("Launching Apptainer server with command: %s", " ".join(cmd))
-
-            tracker.record_stage("Starting server in container")
-            tracker.set_subprocess_title("apptainer exec")
-
-            # Launch subprocess
-            logger.debug("Spawning apptainer exec subprocess in %s", project_root)
+        # Launch subprocess with stdout/stderr redirected to log file
+        with open(self._log_file_path, "a") as log_file:
             self._process = subprocess.Popen(
                 cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                stdout=log_file,
+                stderr=subprocess.STDOUT,  # Combine stderr into stdout
                 text=True,
                 cwd=str(project_root),
             )
 
-            # Stream initial output while waiting for health check
-            def consume_stream(pipe, label: str) -> None:
-                """Consume a single stream and forward lines to the tracker.
-
-                This function is intentionally resilient to the pipe being closed
-                from another thread (e.g., when `_stop_streaming_threads()` runs),
-                which can otherwise raise `ValueError: I/O operation on closed file`.
-                """
-                if pipe is None:
-                    return
-                try:
-                    for raw_line in iter(pipe.readline, ""):
-                        stripped_line = raw_line.rstrip()
-                        if stripped_line:
-                            tracker.append_tail_line(stripped_line, stream_label=label)
-                except ValueError:
-                    # Pipe was closed while reading; this is expected during shutdown.
-                    logger.debug("Pipe for %s closed while reading; stopping stream consumer", label)
-
-            stdout_thread = Thread(target=consume_stream, args=(self._process.stdout, "STDOUT"), daemon=True)
-            stderr_thread = Thread(target=consume_stream, args=(self._process.stderr, "STDERR"), daemon=True)
-            self._streaming_threads = [stdout_thread, stderr_thread]
-            stdout_thread.start()
-            stderr_thread.start()
-
-            # Wait for health check (this will update the tracker as output comes in)
-            tracker.record_stage("Waiting for server to become ready")
-            logger.info(f"Waiting for health check at {self._base_url} (port {self._port})")
-            self._wait_for_health_check(tracker=tracker)
-            logger.debug("_wait_for_health_check returned, continuing with startup")
-            
-            # Stop streaming after health check passes
-            logger.debug("Stopping streaming threads after successful health check")
-            self._stop_streaming_threads()
-            logger.debug("Streaming threads stopped")
-            
-            # Record final stage and exit tracker context (this stops the Rich Live display)
-            tracker.record_stage("Server ready")
-            # Small delay to ensure the final message is displayed
-            time.sleep(0.1)
-
-        # Now we're outside the ProgressTracker context, so normal logging will appear below
+        logger.info(f"Waiting for health check at {self._base_url} (port {self._port})")
+        self._wait_for_health_check()
+        
         logger.info(f"Creating HTTP client for {self._base_url}")
         self._client = httpx.Client(base_url=self._base_url, timeout=300.0)
         logger.info("Apptainer backend startup complete")
@@ -446,9 +431,6 @@ class ApptainerBackend(Backend):
             self._client.close()
             self._client = None
 
-        # Stop streaming threads before terminating process to avoid race conditions
-        self._stop_streaming_threads()
-
         if self._process is not None:
             try:
                 self._process.terminate()
@@ -461,31 +443,6 @@ class ApptainerBackend(Backend):
 
         self._base_url = None
         self._port = None
-        self._streaming_threads = None
-
-    def _stop_streaming_threads(self) -> None:
-        """Stop streaming threads by closing pipes and joining threads.
-
-        This prevents race conditions when reading from process pipes.
-        """
-        if self._streaming_threads is not None:
-            logger.debug(f"Stopping {len(self._streaming_threads)} streaming threads")
-            # Close pipes to signal threads to stop
-            if self._process is not None:
-                if self._process.stdout is not None:
-                    self._process.stdout.close()
-                    logger.debug("Closed stdout pipe")
-                if self._process.stderr is not None:
-                    self._process.stderr.close()
-                    logger.debug("Closed stderr pipe")
-            # Join threads with timeout
-            for i, thread in enumerate(self._streaming_threads):
-                logger.debug(f"Joining thread {i} (timeout=1.0s)")
-                thread.join(timeout=1.0)
-                if thread.is_alive():
-                    logger.warning(f"Thread {i} did not finish within timeout, but continuing (daemon thread)")
-            self._streaming_threads = None
-            logger.debug("All streaming threads stopped")
 
     def get_model(self) -> Any:
         """Get the HTTP proxy object for making requests to the container server.
@@ -505,69 +462,15 @@ class ApptainerBackend(Backend):
             raise RuntimeError("Apptainer backend is not initialized. Call start() before use.")
         return _ApptainerModelProxy(self._client)
 
-    def _resolve_model_cache_dir(self) -> Path | None:
-        """Resolve the model-specific cache directory path.
-        
-        Returns
-        -------
-        Path | None
-            Path to the model cache directory, or None if it cannot be determined.
-        """
-        # Extract model family from core_class_path (e.g., "boileroom.models.boltz.core.Boltz2Core" -> "boltz")
-        try:
-            parts = self._core_class_path.split(".")
-            if len(parts) >= 3 and parts[0] == "boileroom" and parts[1] == "models":
-                model_family = parts[2]
-            else:
-                return None
-        except Exception:
-            return None
-        
-        # Check if cache_dir is specified in config
-        cache_dir_str = self._config.get("cache_dir")
-        if cache_dir_str is not None:
-            return Path(cache_dir_str).resolve()
-        
-        # Otherwise use MODEL_DIR / model_family
-        model_dir = os.environ.get("MODEL_DIR")
-        if model_dir:
-            return Path(model_dir).expanduser().resolve() / model_family
-        
-        return None
-
-    def _get_cache_dir_size(self, cache_dir: Path) -> int:
-        """Get total size of cache directory in bytes.
-        
-        Parameters
-        ----------
-        cache_dir : Path
-            Path to the cache directory.
-            
-        Returns
-        -------
-        int
-            Total size in bytes, or -1 if unable to determine.
-        """
-        try:
-            if not cache_dir.exists():
-                return 0
-            return sum(f.stat().st_size for f in cache_dir.rglob("*") if f.is_file())
-        except Exception:
-            return -1
-
-    def _wait_for_health_check(
-        self, timeout: float = 60.0, poll_interval: float = 1.0, tracker: ProgressTracker | None = None
-    ) -> None:
+    def _wait_for_health_check(self, timeout: float = 300.0, poll_interval: float = 1.0) -> None:
         """Wait for the server to become ready by polling the /health endpoint.
 
         Parameters
         ----------
         timeout : float
-            Maximum time to wait in seconds.
+            Maximum time to wait in seconds (default 300s = 5 minutes for model downloads).
         poll_interval : float
             Time between health check attempts in seconds.
-        tracker : ProgressTracker | None
-            Optional progress tracker to get captured output from if process dies.
 
         Raises
         ------
@@ -577,34 +480,11 @@ class ApptainerBackend(Backend):
         if self._base_url is None:
             raise RuntimeError("Base URL not set")
 
-        base_timeout = 60.0
-        max_timeout = 600.0
-        effective_timeout = base_timeout
-
-        # Resolve cache directory for fallback size monitoring (only used if approaching timeout)
-        cache_dir = self._resolve_model_cache_dir()
-        last_cache_size = self._get_cache_dir_size(cache_dir) if cache_dir else -1
-
         start_time = time.time()
         health_check_count = 0
-        while time.time() - start_time < effective_timeout:
+        while time.time() - start_time < timeout:
             elapsed = time.time() - start_time
             health_check_count += 1
-            
-            # Primary: Check for download activity in output
-            if tracker is not None:
-                stdout, stderr = tracker.get_captured_output()
-                combined = (stdout + stderr).lower()
-                if any(keyword in combined for keyword in ["downloading", "extracting", "cache"]):
-                    effective_timeout = max_timeout
-            
-            # Fallback: If approaching timeout and haven't extended yet, check cache directory size
-            if elapsed > base_timeout * 0.8 and effective_timeout == base_timeout and cache_dir is not None:
-                current_cache_size = self._get_cache_dir_size(cache_dir)
-                if current_cache_size > last_cache_size and current_cache_size > 0:
-                    # Cache is growing, extend timeout
-                    effective_timeout = max_timeout
-                last_cache_size = current_cache_size
 
             try:
                 if health_check_count == 1 or elapsed % 5 < poll_interval:  # Log first check and roughly every 5 seconds
@@ -613,14 +493,13 @@ class ApptainerBackend(Backend):
                 logger.debug(f"Health check response: status={response.status_code}, url={response.url}")
                 if response.status_code == 200:
                     logger.info(f"Health check passed at {self._base_url}, server is ready (check #{health_check_count}, elapsed: {elapsed:.1f}s)")
-                    logger.debug("Exiting _wait_for_health_check loop")
                     return
                 else:
                     logger.warning(f"Health check returned non-200 status: {response.status_code}")
-            except httpx.TimeoutException as e:
+            except httpx.TimeoutException:
                 # Only log failures at debug level to avoid spam
                 if elapsed % 10 < poll_interval:  # Log roughly every 10 seconds
-                    logger.debug(f"Health check timeout: {e}, base_url={self._base_url}, elapsed={elapsed:.1f}s")
+                    logger.debug(f"Health check timeout, base_url={self._base_url}, elapsed={elapsed:.1f}s")
             except httpx.RequestError as e:
                 # Only log failures at debug level to avoid spam
                 if elapsed % 10 < poll_interval:  # Log roughly every 10 seconds
@@ -631,25 +510,23 @@ class ApptainerBackend(Backend):
 
             # Check if process has died
             if self._process is not None and self._process.poll() is not None:
-                # Stop streaming threads before calling communicate() to avoid race condition
-                # where multiple threads read from the same pipes
-                self._stop_streaming_threads()
+                # Read last 50 lines from log file for error context
+                error_context = ""
+                if self._log_file_path is not None and self._log_file_path.exists():
+                    try:
+                        with open(self._log_file_path) as f:
+                            lines = f.readlines()
+                            error_context = "".join(lines[-50:])
+                    except Exception as e:
+                        logger.debug(f"Failed to read log file for error context: {e}")
+                        error_context = f"(Could not read log file: {e})"
                 
-                # Use captured output from tracker if available, otherwise try communicate()
-                if tracker is not None:
-                    stdout, stderr = tracker.get_captured_output()
-                    # If tracker didn't capture much, try communicate() as fallback
-                    if not stdout and not stderr:
-                        stdout, stderr = self._process.communicate()
-                else:
-                    stdout, stderr = self._process.communicate()
-                
-                error_msg = f"Server process died. stdout: {stdout}, stderr: {stderr}"
+                error_msg = f"Server process died. Last 50 lines of log:\n{error_context}"
                 raise RuntimeError(error_msg)
 
             time.sleep(poll_interval)
 
-        raise RuntimeError(f"Server did not become ready within {effective_timeout} seconds")
+        raise RuntimeError(f"Server did not become ready within {timeout} seconds")
 
 
 class _ApptainerModelProxy:
