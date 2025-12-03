@@ -40,7 +40,7 @@ class Boltz2Core(FoldingAlgorithm):
 
     DEFAULT_CONFIG = {
         "device": "cuda:0",
-        "use_msa_server": True,
+        "use_msa_server": True, # setting to False automatically sets to no MSA mode
         "msa_server_url": "https://api.colabfold.com",
         "msa_pairing_strategy": "greedy",
         "msa_server_username": None,
@@ -476,13 +476,16 @@ class Boltz2Core(FoldingAlgorithm):
         except Exception as e:
             logger.warning(f"Error saving MSAs to cache: {e}. Continuing without caching.")
 
-    def _sequences_to_fasta(self, sequences: List[str], msa_paths: Optional[Dict[str, Path]] = None) -> str:
+    def _sequences_to_fasta(
+        self, sequences: List[str], msa_paths: Optional[Dict[str, Path]] = None, config: Optional[dict] = None
+    ) -> str:
         """Convert input protein sequences into a Boltz-2 FASTA formatted string.
 
         Accepts a list of sequence entries where each entry is either a single sequence (e.g., "SEQ")
         or a colon-separated multimer entry (e.g., "A:B"). Whitespace is trimmed and empty parts are ignored.
         Chain identifiers are assigned sequentially as A, B, C, ... and used as FASTA headers.
         If msa_paths is provided, MSA paths are injected into FASTA headers as the third field.
+        When use_msa_server=False and no MSA paths are provided, uses "empty" to enable single-sequence mode.
 
         Parameters
         ----------
@@ -491,12 +494,16 @@ class Boltz2Core(FoldingAlgorithm):
         msa_paths : Optional[Dict[str, Path]]
             Optional dictionary mapping sequence string to cached MSA Path. If provided, paths are injected
             into FASTA headers as the third field: `>X|protein|{msa_path}`.
+        config : Optional[dict]
+            Optional configuration dictionary. If provided and `use_msa_server=False`, sequences without
+            MSA paths will use "empty" in the FASTA header to enable single-sequence mode.
 
         Returns
         -------
         str
             FASTA-formatted text where each chain has a header of the form `>X|protein|` (or `>X|protein|{msa_path}`
-            if msa_paths is provided) followed by the corresponding sequence on the next line.
+            if msa_paths is provided, or `>X|protein|empty` if use_msa_server=False and no MSA paths) followed
+            by the corresponding sequence on the next line.
         """
         chains: List[str] = []
         for entry in sequences:
@@ -505,6 +512,10 @@ class Boltz2Core(FoldingAlgorithm):
 
         headers = []
         msa_paths_dict = msa_paths or {}
+        use_msa_server = True
+        if config is not None:
+            use_msa_server = bool(config.get("use_msa_server", True))
+
         for idx, seq in enumerate(chains):
             chain_name = chr(65 + idx)  # A, B, C...
             # If MSA path is provided for this sequence, inject it into the header
@@ -514,7 +525,11 @@ class Boltz2Core(FoldingAlgorithm):
                 msa_path_abs = msa_path.resolve() if isinstance(msa_path, Path) else Path(msa_path).resolve()
                 headers.append(f">{chain_name}|protein|{msa_path_abs}")
             else:
-                headers.append(f">{chain_name}|protein|")
+                # If use_msa_server=False and no MSA path, use "empty" for single-sequence mode
+                if not use_msa_server:
+                    headers.append(f">{chain_name}|protein|empty")
+                else:
+                    headers.append(f">{chain_name}|protein|")
             headers.append(seq)
         return "\n".join(headers)
 
@@ -950,7 +965,9 @@ class Boltz2Core(FoldingAlgorithm):
             with Timer("Boltz-2 preprocessing"):
                 # Pass cached MSA paths to FASTA generation
                 fasta_text = self._sequences_to_fasta(
-                    validated_sequences, msa_paths=cached_msa_paths if cached_msa_paths else None
+                    validated_sequences,
+                    msa_paths=cached_msa_paths if cached_msa_paths else None,
+                    config=effective_config,
                 )
                 processed = self._prepare_inputs(fasta_text, work_path, cache_dir, effective_config)
 
