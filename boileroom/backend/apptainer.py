@@ -260,9 +260,33 @@ class ApptainerBackend(Backend):
         4. Waits for health check to confirm server is ready
         """
         if self._process is not None:
+            logger.debug("ApptainerBackend.startup() called but process already exists, skipping startup")
             return
 
-        with ProgressTracker(logger_name="boileroom.backend.apptainer") as tracker:
+        # Determine optional debug log file path for the tracker.
+        progress_log_env = os.environ.get("BOILEROOM_PROGRESS_LOG_FILE")
+        progress_log_flag = os.environ.get("BOILEROOM_PROGRESS_LOG")
+        progress_log_path: Path | None
+        if progress_log_env:
+            progress_log_path = Path(progress_log_env).expanduser().resolve()
+        elif progress_log_flag:
+            # Default to the current working directory so logs sit beside the script
+            # that invoked Boiler Room (e.g., script.py).
+            progress_log_path = Path.cwd() / "boileroom_apptainer_progress.log"
+        else:
+            progress_log_path = None
+
+        logger.debug(
+            "Starting ApptainerBackend with image_uri=%s, device=%s, progress_log_path=%s",
+            self._image_uri,
+            self._device,
+            progress_log_path,
+        )
+
+        with ProgressTracker(
+            logger_name="boileroom.backend.apptainer",
+            log_file_path=progress_log_path,
+        ) as tracker:
             # Pull image if not cached
             if not _is_image_cached(self._sif_path):
                 _pull_image(self._image_uri, self._sif_path, tracker=tracker)
@@ -351,12 +375,13 @@ class ApptainerBackend(Backend):
                 ]
             )
 
-            logger.debug(f"Running: {' '.join(cmd)}")
+            logger.debug("Launching Apptainer server with command: %s", " ".join(cmd))
 
             tracker.record_stage("Starting server in container")
             tracker.set_subprocess_title("apptainer exec")
 
             # Launch subprocess
+            logger.debug("Spawning apptainer exec subprocess in %s", project_root)
             self._process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
@@ -367,12 +392,22 @@ class ApptainerBackend(Backend):
 
             # Stream initial output while waiting for health check
             def consume_stream(pipe, label: str) -> None:
+                """Consume a single stream and forward lines to the tracker.
+
+                This function is intentionally resilient to the pipe being closed
+                from another thread (e.g., when `_stop_streaming_threads()` runs),
+                which can otherwise raise `ValueError: I/O operation on closed file`.
+                """
                 if pipe is None:
                     return
-                for raw_line in iter(pipe.readline, ""):
-                    stripped_line = raw_line.rstrip()
-                    if stripped_line:
-                        tracker.append_tail_line(stripped_line, stream_label=label)
+                try:
+                    for raw_line in iter(pipe.readline, ""):
+                        stripped_line = raw_line.rstrip()
+                        if stripped_line:
+                            tracker.append_tail_line(stripped_line, stream_label=label)
+                except ValueError:
+                    # Pipe was closed while reading; this is expected during shutdown.
+                    logger.debug("Pipe for %s closed while reading; stopping stream consumer", label)
 
             stdout_thread = Thread(target=consume_stream, args=(self._process.stdout, "STDOUT"), daemon=True)
             stderr_thread = Thread(target=consume_stream, args=(self._process.stderr, "STDERR"), daemon=True)
@@ -387,7 +422,7 @@ class ApptainerBackend(Backend):
             logger.debug("_wait_for_health_check returned, continuing with startup")
             
             # Stop streaming after health check passes
-            logger.debug("Stopping streaming threads")
+            logger.debug("Stopping streaming threads after successful health check")
             self._stop_streaming_threads()
             logger.debug("Streaming threads stopped")
             

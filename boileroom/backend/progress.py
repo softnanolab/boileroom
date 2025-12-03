@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import logging
+import os
 from contextlib import AbstractContextManager
 from pathlib import Path
 import subprocess
 from threading import Thread
-from typing import Sequence
+from typing import IO, Sequence
 
 from rich.align import Align  # type: ignore[import-not-found]
 from rich.console import Console, Group  # type: ignore[import-not-found]
@@ -44,6 +45,8 @@ class ProgressTracker(AbstractContextManager["ProgressTracker"]):
         *,
         tail_size: int = 20,
         console: Console | None = None,
+        plain: bool | None = None,
+        log_file_path: Path | None = None,
     ) -> None:
         self._logger_name = logger_name
         self._logger = logging.getLogger(logger_name)
@@ -58,26 +61,51 @@ class ProgressTracker(AbstractContextManager["ProgressTracker"]):
         self._subprocess_title = "subprocess output"
         self._console = console or Console()
         self._live: Live | None = None
+        # Plain mode: skip Rich Live output and log to the standard logger instead.
+        if plain is None:
+            env_mode = os.environ.get("BOILEROOM_PROGRESS", "").lower()
+            # Treat several values as meaning \"no Rich UI\"
+            plain = env_mode in {"plain", "none", "off"}
+        self._plain = plain
+        self._use_rich = not self._plain
+
+        # Optional log file tee for debugging: each tail line is also written to this file.
+        self._log_file_path: Path | None = log_file_path
+        self._log_file_handle: IO[str] | None = None
 
     def __enter__(self) -> "ProgressTracker":
-        if self._console.is_terminal:
+        if self._use_rich and self._console.is_terminal:
             self._live = Live(
                 self._render(),
                 console=self._console,
                 refresh_per_second=12,
             )
             self._live.__enter__()
+        else:
+            self._live = None
+            self._logger.debug(
+                f"ProgressTracker for {self._logger_name} running in plain mode (no Rich Live UI)"
+            )
         return self
 
     def __exit__(self, exc_type, exc, exc_tb) -> None:
         if self._live is not None:
             self._live.__exit__(exc_type, exc, exc_tb)
             self._live = None
+        if self._log_file_handle is not None:
+            try:
+                self._log_file_handle.close()
+            except OSError:
+                # Best-effort close; failure here should not surface to caller.
+                self._logger.debug("Failed to close ProgressTracker log file cleanly", exc_info=True)
+            self._log_file_handle = None
 
     def record_stage(self, description: str) -> None:
         """Append a new stage line to the header."""
         self._sections.append(description)
         self._current_stage = description
+        if self._plain:
+            self._logger.info(f"{self._logger_name} ---- {description}")
         self._refresh()
 
     def set_subprocess_title(self, title: str) -> None:
@@ -98,7 +126,36 @@ class ProgressTracker(AbstractContextManager["ProgressTracker"]):
             self._stdout_lines.append(line)
         elif stream_label == "STDERR":
             self._stderr_lines.append(line)
-        
+
+        # Optionally tee to a log file for easier debugging.
+        if self._log_file_path is not None:
+            if self._log_file_handle is None:
+                try:
+                    self._log_file_handle = self._log_file_path.open("a", encoding="utf-8")
+                    self._logger.debug(f"ProgressTracker logging to file: {self._log_file_path}")
+                except OSError:
+                    # If we cannot open the file, disable further attempts.
+                    self._logger.warning(
+                        f"Failed to open ProgressTracker log file at {self._log_file_path}, disabling file logging",
+                        exc_info=True,
+                    )
+                    self._log_file_path = None
+            if self._log_file_handle is not None:
+                try:
+                    self._log_file_handle.write(f"{text}\n")
+                    self._log_file_handle.flush()
+                except OSError:
+                    self._logger.debug(
+                        "Error writing to ProgressTracker log file; disabling file logging",
+                        exc_info=True,
+                    )
+                    self._log_file_path = None
+                    self._log_file_handle = None
+
+        # In plain mode, also emit tail lines to the logger at debug level.
+        if self._plain:
+            self._logger.debug(f"{self._logger_name} tail: {text}")
+
         self._refresh()
 
     def run_subprocess(
