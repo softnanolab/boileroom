@@ -404,6 +404,42 @@ class ModelWrapper:
         self.device = device
         self.config = config or {}
 
+    @staticmethod
+    def parse_backend(backend: str) -> tuple[str, Optional[str]]:
+        """Parse backend identifier into backend type and optional tag.
+
+        This helper allows backends to be specified with an optional tag suffix
+        using the syntax ``\"backend:tag\"``. Tags are currently only interpreted
+        for the ``\"apptainer\"`` backend, where they map to Docker image tags.
+        All other backends ignore any tag and treat the full string before the
+        first colon as the backend identifier.
+
+        Parameters
+        ----------
+        backend : str
+            Backend identifier string, optionally including a tag suffix.
+
+        Returns
+        -------
+        tuple[str, Optional[str]]
+            A tuple of ``(backend_type, backend_tag)`` where ``backend_type`` is
+            the base backend identifier (for example ``\"modal\"`` or
+            ``\"apptainer\"``) and ``backend_tag`` is either the tag string for
+            ``\"apptainer\"`` backends (defaulting to ``\"latest\"`` when no tag
+            is provided) or ``None`` for all other backends.
+        """
+        if ":" in backend:
+            backend_type, backend_tag = backend.split(":", 1)
+        else:
+            backend_type, backend_tag = backend, None
+
+        backend_type = backend_type.strip()
+        if backend_type == "apptainer":
+            backend_tag = (backend_tag or "latest").strip() or "latest"
+            return backend_type, backend_tag
+
+        return backend_type, None
+
     def __del__(self) -> None:
         """Clean up backend when ModelWrapper is destroyed.
 

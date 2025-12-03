@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from boileroom.backend.progress import ProgressTracker, _escape_rich_markup
+from boileroom.base import ModelWrapper
 
 
 class TestEscapeRichMarkup:
@@ -485,4 +486,26 @@ class TestMockApptainerBackend:
 
         assert len(tracker._tail) == 3
         assert "Server ready" in tracker._tail[2]
+
+
+class TestBackendParsing:
+    """Test parsing of backend identifiers with optional tags."""
+
+    def test_parse_backend_modal(self):
+        """Modal backend should ignore tags and return None for backend_tag."""
+        backend_type, backend_tag = ModelWrapper.parse_backend("modal")
+        assert backend_type == "modal"
+        assert backend_tag is None
+
+    def test_parse_backend_apptainer_latest_default(self):
+        """Apptainer without explicit tag should default to 'latest'."""
+        backend_type, backend_tag = ModelWrapper.parse_backend("apptainer")
+        assert backend_type == "apptainer"
+        assert backend_tag == "latest"
+
+    def test_parse_backend_apptainer_with_tag(self):
+        """Apptainer with explicit tag should return that tag."""
+        backend_type, backend_tag = ModelWrapper.parse_backend("apptainer:dev")
+        assert backend_type == "apptainer"
+        assert backend_tag == "dev"
 

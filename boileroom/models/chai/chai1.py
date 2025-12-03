@@ -107,14 +107,15 @@ class Chai1(ModelWrapper):
             config = {}
         self.config = config
         self.device = device
+        backend_type, backend_tag = ModelWrapper.parse_backend(backend)
         backend_instance: Backend
-        if backend == "modal":
+        if backend_type == "modal":
             backend_instance = ModalBackend(ModalChai1, config, device=device)
-        elif backend == "local":
+        elif backend_type == "local":
             from .core import Chai1Core
 
             backend_instance = LocalBackend(Chai1Core, config, device=device)
-        elif backend in ("conda", "mamba", "micromamba"):
+        elif backend_type in ("conda", "mamba", "micromamba"):
             from pathlib import Path
             from ...backend.conda import CondaBackend
 
@@ -128,17 +129,17 @@ class Chai1(ModelWrapper):
                 config or {},
                 device=device,
                 environment_yml_path=environment_yml,
-                runner_command=backend,
+                runner_command=backend_type,
             )
-        elif backend == "apptainer":
+        elif backend_type == "apptainer":
             from ...backend.apptainer import ApptainerBackend
 
             # Pass Core class as string path to avoid importing it in main process
             core_class_path = "boileroom.models.chai.core.Chai1Core"
-            image_uri = "docker://docker.io/jakublala/boileroom-chai1:latest"
+            image_uri = f"docker://docker.io/jakublala/boileroom-chai1:{backend_tag}"
             backend_instance = ApptainerBackend(core_class_path, image_uri, config or {}, device=device)
         else:
-            raise ValueError(f"Backend {backend} not supported")
+            raise ValueError(f"Backend {backend_type} not supported")
         self._backend = backend_instance
         self._backend.start()
 
