@@ -53,8 +53,8 @@ class ESMFoldOutput(StructurePrediction):
     ptm_logits: Optional[np.ndarray] = None  # (batch_size, residue, residue, 64) ???
     ptm: Optional[np.ndarray] = None  # float # TODO: make it into a float when sending to the client
     aligned_confidence_probs: Optional[np.ndarray] = None  # (batch_size, residue, residue, 64)
-    predicted_aligned_error: Optional[np.ndarray] = None  # (batch_size, residue, residue)
-    max_predicted_aligned_error: Optional[np.ndarray] = (
+    pae: Optional[np.ndarray] = None  # (batch_size, residue, residue)
+    max_pae: Optional[np.ndarray] = (
         None  # float # TODO: make it into a float when sending to the client
     )
     chain_index: Optional[np.ndarray] = None  # (batch_size, residue)
