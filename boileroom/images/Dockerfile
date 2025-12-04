@@ -1,4 +1,5 @@
-FROM mambaorg/micromamba:2.3.2-cuda11.8.0-ubuntu20.04
+ARG MICROMAMBA_BASE=mambaorg/micromamba:2.3.2-cuda11.8.0-ubuntu20.04
+FROM ${MICROMAMBA_BASE}
 
 USER root
 
