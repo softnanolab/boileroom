@@ -836,6 +836,10 @@ class ESMFoldCore(FoldingAlgorithm):
         if include_fields and ("*" in include_fields or "cif" in include_fields):
             outputs["cif"] = self._convert_outputs_to_cif(atom_array)
 
+        # change name of predicted_aligned_error to pae
+        outputs["pae"] = outputs.pop("predicted_aligned_error")
+        outputs["max_pae"] = outputs.pop("max_predicted_aligned_error")
+
         # Build full output with all fields (exclude positions as it's only used internally)
         outputs_without_positions = {k: v for k, v in outputs.items() if k != "positions"}
         full_output = ESMFoldOutput(metadata=self.metadata, **outputs_without_positions)
