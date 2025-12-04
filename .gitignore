@@ -10,3 +10,6 @@ __pycache__/
 dist/
 .cursor/
 script.py
+
+
+docker.io*.log

@@ -10,24 +10,24 @@
 > Modal and Docker/Apptainer currently use different images. This will be unified in a future pass. Until then, avoid mixing tags across runners and verify which image your runtime expects.
 
 ### 🚀 Quick start (dev)
-Use the helper script to build all images in order (`base` → `boltz` → `chai1` → `esm`).
+Use the Python helper to build all images (base + models) with a single global worker limit.
 
+```bash
+uv run python scripts/images/build_model_images.py --platform=linux/amd64 --all-cuda --tag=dev --push --max-workers=5
+
+# Optional flags
+uv run python scripts/images/build_model_images.py --no-cache ...
+uv run python scripts/images/build_model_images.py --tag=myfeature ...
+uv run python scripts/images/build_model_images.py --tag=latest --push ...
+```
+
+You can still use the Bash helper as a simpler, serial alternative:
 ```bash
 chmod +x scripts/images/build_model_images.sh
 scripts/images/build_model_images.sh --platform=linux/amd64
-
-# Optional flags
-scripts/images/build_model_images.sh --no-cache                  # disable cache
-scripts/images/build_model_images.sh --tag=myfeature             # tag images as :myfeature
-scripts/images/build_model_images.sh --tag=latest --push         # build + push :latest (Docker login required)
 ```
 
-If needed, make it executable once:
-```bash
-chmod +x scripts/images/build_model_images.sh
-```
-
-This script replaces the older `build_all_*` helpers while preserving the same build order.
+Both helpers replace the older `build_all_*` helpers while preserving the same build order.
 
 ### ✅ Import smoke tests
 Run the lightweight smoke script to ensure each image can import its expected modules:

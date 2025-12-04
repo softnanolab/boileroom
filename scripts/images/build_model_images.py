@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 import fire
+import yaml
 
 
 DOCKER_REGISTRY = "docker.io/jakublala"
@@ -80,12 +81,49 @@ def log_error(msg: str) -> None:
     print(Colors.wrap(msg, Colors.red), file=sys.stderr)
 
 
-def run(cmd: list[str], env: dict[str, str] | None = None) -> None:
+def run(
+    cmd: list[str],
+    env: dict[str, str] | None = None,
+    log_file: Path | None = None,
+    echo: bool = True,
+) -> None:
+    """
+    Run a command, optionally teeing full stdout/stderr into a log file.
+    """
     pretty = Colors.wrap("$ " + " ".join(shlex.quote(c) for c in cmd), Colors.blue)
-    print(pretty)
-    result = subprocess.run(cmd, env=env)
-    if result.returncode != 0:
-        raise RuntimeError(f"Command failed with exit code {result.returncode}")
+    if echo:
+        print(pretty)
+
+    if log_file is None:
+        result = subprocess.run(cmd, env=env)
+        if result.returncode != 0:
+            raise RuntimeError(f"Command failed with exit code {result.returncode}")
+        return
+
+    log_file = log_file.resolve()
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+
+    with log_file.open("a", encoding="utf-8") as handle:
+        handle.write(pretty + "\n")
+        handle.flush()
+
+        process = subprocess.Popen(
+            cmd,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        assert process.stdout is not None
+        for line in process.stdout:
+            if echo:
+                print(line, end="")
+            handle.write(line)
+        return_code = process.wait()
+
+    if return_code != 0:
+        raise RuntimeError(f"Command failed with exit code {return_code}")
 
 
 def resolve_paths() -> tuple[Path, Path, Path]:
@@ -117,9 +155,9 @@ def load_supported_cuda(model_dir: Path) -> list[str] | None:
     if not text:
         return None
     try:
-        data = json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"{config_path} is not valid JSON/YAML: {exc}") from exc
+        data = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        raise ValueError(f"{config_path} is not valid YAML: {exc}") from exc
     if not isinstance(data, dict):
         raise ValueError(f"{config_path} must contain a mapping/object at top level.")
     value = data.get("supported_cuda")
@@ -188,6 +226,8 @@ def build_base(cuda_version: str, tag: str, platform: str, no_cache: bool, image
     log_info(Colors.wrap(f"=== Building base for CUDA {cuda_version}: {base_tag}", Colors.bold))
     log_info(f"Using micromamba base: {micromamba_base}")
 
+    log_file = Path.cwd() / f"{base_tag.replace('/', '_').replace(':', '_')}.log"
+
     cmd: list[str] = [
         "docker",
         "build",
@@ -203,7 +243,7 @@ def build_base(cuda_version: str, tag: str, platform: str, no_cache: bool, image
     ]
     if no_cache:
         cmd.insert(3, "--no-cache")
-    run(cmd)
+    run(cmd, log_file=log_file, echo=False)
     return base_tag
 
 
@@ -215,6 +255,8 @@ def build_model(task: BuildTask) -> str:
         model_tag = f"{DOCKER_REGISTRY}/{task.model.tag_prefix}:{cuda_suffix}-{task.tag}"
 
     log_info(Colors.wrap(f"--- Building {task.model.name} {task.cuda_version}: {model_tag}", Colors.bold))
+
+    log_file = Path.cwd() / f"{model_tag.replace('/', '_').replace(':', '_')}.log"
 
     cmd: list[str] = [
         "docker",
@@ -234,135 +276,136 @@ def build_model(task: BuildTask) -> str:
     if task.no_cache:
         cmd.insert(3, "--no-cache")
 
-    run(cmd, env=os.environ.copy())
+    run(cmd, env=os.environ.copy(), log_file=log_file, echo=False)
 
     if task.push:
         log_info(f"Pushing {model_tag}")
-        run(["docker", "push", model_tag])
+        run(["docker", "push", model_tag], log_file=log_file, echo=False)
 
     return model_tag
 
 
-class ImageCLI:
-    def build(
-        self,
-        platform: str = "linux/amd64",
-        no_cache: bool = False,
-        tag: str = "dev",
-        cuda_version: str | list[str] | None = None,
-        all_cuda: bool = False,
-        push: bool = False,
-        max_workers: int = 1,
-    ) -> None:
-        """
-        Build base and per-model Docker images.
+def main(
+    platform: str = "linux/amd64",
+    no_cache: bool = False,
+    tag: str = "dev",
+    cuda_version: str | list[str] | None = None,
+    all_cuda: bool = False,
+    push: bool = False,
+    max_workers: int = 1,
+) -> None:
+    """
+    Build base and per-model Docker images.
 
-        Args:
-            platform: Docker build platform.
-            no_cache: Disable Docker build cache.
-            tag: Tag suffix (e.g. dev, latest, myfeature).
-            cuda_version: CUDA version(s) to build (11.8 or 12.6). Can be repeated.
-            all_cuda: Build for all supported CUDA versions.
-            push: Push images to Docker Hub.
-            max_workers: Max parallel model builds per CUDA (1 = serial).
-        """
+    Args:
+        platform: Docker build platform.
+        no_cache: Disable Docker build cache.
+        tag: Tag suffix (e.g. dev, latest, myfeature).
+        cuda_version: CUDA version(s) to build (11.8 or 12.6). Can be repeated.
+        all_cuda: Build for all supported CUDA versions.
+        push: Push images to Docker Hub.
+        max_workers: Max parallel image builds (models) across all CUDA versions.
+    """
+    try:
+        ensure_docker()
+        repo_root, boileroom_dir, images_dir = resolve_paths()
+        models = discover_models(boileroom_dir)
+        cuda_versions = compute_cuda_versions(cuda_version, all_cuda)
+    except Exception as exc:
+        log_error(str(exc))
+        raise SystemExit(1) from exc
+
+    log_info(Colors.wrap(f"Boileroom repo root: {repo_root}", Colors.magenta))
+    log_info(
+        f"Models: {', '.join(m.name for m in models)}; "
+        f"CUDA: {', '.join(cuda_versions)}"
+    )
+
+    all_images: list[str] = []
+    tasks: list[BuildTask] = []
+
+    # 1) Build all base images serially (per CUDA), possibly pushing them.
+    base_tags: dict[str, str] = {}
+    for v in cuda_versions:
+        torch_index = CUDA_TORCH_WHEEL_INDEX[v]
         try:
-            ensure_docker()
-            repo_root, boileroom_dir, images_dir = resolve_paths()
-            models = discover_models(boileroom_dir)
-            cuda_versions = compute_cuda_versions(cuda_version, all_cuda)
+            base_tag = build_base(v, tag, platform, no_cache, images_dir)
         except Exception as exc:
-            log_error(str(exc))
+            log_error(f"Failed to build base for CUDA {v}: {exc}")
             raise SystemExit(1) from exc
 
-        log_info(Colors.wrap(f"Boileroom repo root: {repo_root}", Colors.magenta))
-        log_info(
-            f"Models: {', '.join(m.name for m in models)}; "
-            f"CUDA: {', '.join(cuda_versions)}"
-        )
-
-        all_images: list[str] = []
-
-        for v in cuda_versions:
-            torch_index = CUDA_TORCH_WHEEL_INDEX[v]
+        if push:
             try:
-                base_tag = build_base(v, tag, platform, no_cache, images_dir)
+                log_info(f"Pushing {base_tag}")
+                base_log_file = Path.cwd() / f"{base_tag.replace('/', '_').replace(':', '_')}.log"
+                run(["docker", "push", base_tag], log_file=base_log_file, echo=False)
             except Exception as exc:
-                log_error(f"Failed to build base for CUDA {v}: {exc}")
+                log_error(f"Failed to push base {base_tag}: {exc}")
                 raise SystemExit(1) from exc
 
-            if push:
-                try:
-                    log_info(f"Pushing {base_tag}")
-                    run(["docker", "push", base_tag])
-                except Exception as exc:
-                    log_error(f"Failed to push base {base_tag}: {exc}")
-                    raise SystemExit(1) from exc
+        all_images.append(base_tag)
+        base_tags[v] = base_tag
 
-            all_images.append(base_tag)
-
-            tasks: list[BuildTask] = []
-            for model in models:
-                supported = model.supported_cuda
-                if supported and v not in supported:
-                    log_warn(
-                        f"Skipping {model.name} for CUDA {v} "
-                        f"(unsupported by config.yaml: {supported})"
-                    )
-                    continue
-                tasks.append(
-                    BuildTask(
-                        cuda_version=v,
-                        model=model,
-                        base_image_tag=base_tag,
-                        torch_wheel_index=torch_index,
-                        platform=platform,
-                        no_cache=no_cache,
-                        tag=tag,
-                        push=push,
-                    )
+        # Queue per-model builds for this CUDA version
+        for model in models:
+            supported = model.supported_cuda
+            if supported and v not in supported:
+                log_warn(
+                    f"Skipping {model.name} for CUDA {v} "
+                    f"(unsupported by config.yaml: {supported})"
                 )
-
-            if not tasks:
-                log_warn(f"No models to build for CUDA {v}")
                 continue
+            tasks.append(
+                BuildTask(
+                    cuda_version=v,
+                    model=model,
+                    base_image_tag=base_tag,
+                    torch_wheel_index=torch_index,
+                    platform=platform,
+                    no_cache=no_cache,
+                    tag=tag,
+                    push=push,
+                )
+            )
 
-            workers = max(1, max_workers)
-            if workers == 1 or len(tasks) == 1:
-                for t in tasks:
+    if not tasks:
+        log_warn("No model images to build for the requested CUDA versions.")
+    else:
+        workers = max(1, max_workers)
+        log_info(
+            f"Building {len(tasks)} model images across CUDA "
+            f"{', '.join(cuda_versions)} with up to {workers} workers."
+        )
+        if workers == 1 or len(tasks) == 1:
+            for t in tasks:
+                try:
+                    img = build_model(t)
+                    all_images.append(img)
+                except Exception as exc:
+                    log_error(
+                        f"Failed to build {t.model.name} CUDA {t.cuda_version}: {exc}"
+                    )
+                    raise SystemExit(1) from exc
+        else:
+            with ThreadPoolExecutor(max_workers=workers) as ex:
+                future_map = {ex.submit(build_model, t): t for t in tasks}
+                for fut in as_completed(future_map):
+                    t = future_map[fut]
                     try:
-                        img = build_model(t)
+                        img = fut.result()
                         all_images.append(img)
                     except Exception as exc:
-                        log_error(f"Failed to build {t.model.name} CUDA {t.cuda_version}: {exc}")
+                        log_error(
+                            f"Failed to build {t.model.name} CUDA {t.cuda_version}: {exc}"
+                        )
                         raise SystemExit(1) from exc
-            else:
-                log_info(
-                    f"Building {len(tasks)} model images for CUDA {v} "
-                    f"with up to {workers} workers."
-                )
-                with ThreadPoolExecutor(max_workers=workers) as ex:
-                    future_map = {ex.submit(build_model, t): t for t in tasks}
-                    for fut in as_completed(future_map):
-                        t = future_map[fut]
-                        try:
-                            img = fut.result()
-                            all_images.append(img)
-                        except Exception as exc:
-                            log_error(
-                                f"Failed to build {t.model.name} CUDA {t.cuda_version}: {exc}"
-                            )
-                            raise SystemExit(1) from exc
 
-        log_success("")
-        log_success("=== Build complete ===")
-        for img in all_images:
-            print(f"  {img}")
+    log_success("")
+    log_success("=== Build complete ===")
+    for img in all_images:
+        print(f"  {img}")
 
-
-def main(argv: Iterable[str] | None = None) -> None:
-    fire.Fire(ImageCLI, command=argv)
 
 
 if __name__ == "__main__":
-    main()
+    fire.Fire(main)
