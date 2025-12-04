@@ -340,6 +340,9 @@ class ApptainerBackend(Backend):
             "TMPDIR": "/tmp",
             "TMP": "/tmp",
             "TEMP": "/tmp",
+            # Set C compiler for Triton (needed for runtime CUDA kernel compilation)
+            "CC": "gcc",
+            "CXX": "g++",
         }
 
         # TODO: BOLTZ NEEDS CUDA 12 !!$@($_(!@#$!(@$@!)))

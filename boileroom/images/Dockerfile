@@ -10,6 +10,7 @@ ARG MAMBA_DOCKERFILE_ACTIVATE=1
 USER root
 RUN apt-get update && apt-get install -y --no-install-recommends \
       git wget ca-certificates tini \
+      build-essential \
     && rm -rf /var/lib/apt/lists/*
 USER ${MAMBA_USER}
 
