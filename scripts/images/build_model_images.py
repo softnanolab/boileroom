@@ -42,7 +42,6 @@ class BuildTask:
     model: ModelConfig
     base_image_tag: str
     torch_wheel_index: str
-    platform: str
     no_cache: bool
     tag: str
     push: bool
@@ -147,6 +146,75 @@ def ensure_docker() -> None:
         raise RuntimeError("Docker is required but was not found on PATH.") from exc
 
 
+def ensure_buildx_builder() -> None:
+    """
+    Ensure a buildx builder with docker-container driver exists for multi-platform builds.
+    Creates 'boileroom-builder' if none exists or if existing builder doesn't support multi-platform.
+    """
+    try:
+        # Check if buildx is available
+        subprocess.run(
+            ["docker", "buildx", "version"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise RuntimeError("Docker buildx is required but was not found.") from exc
+
+    # Check if boileroom-builder exists and has docker-container driver
+    builder_exists = False
+    has_docker_container_driver = False
+    
+    inspect_result = subprocess.run(
+        ["docker", "buildx", "inspect", "boileroom-builder"],
+        capture_output=True,
+        text=True,
+    )
+    
+    if inspect_result.returncode == 0:
+        builder_exists = True
+        # Check if it uses docker-container driver
+        has_docker_container_driver = "driver: docker-container" in inspect_result.stdout
+    
+    if not builder_exists or not has_docker_container_driver:
+        # Remove existing builder if it doesn't have the right driver
+        if builder_exists:
+            log_info("Removing existing 'boileroom-builder' to recreate with docker-container driver...")
+            subprocess.run(
+                ["docker", "buildx", "rm", "boileroom-builder"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        
+        log_info("Creating 'boileroom-builder' with docker-container driver for multi-platform builds...")
+        subprocess.run(
+            [
+                "docker",
+                "buildx",
+                "create",
+                "--name",
+                "boileroom-builder",
+                "--driver",
+                "docker-container",
+                "--driver-opt",
+                "network=host",
+                "--use",
+            ],
+            check=True,
+        )
+        log_success("Created and activated buildx builder 'boileroom-builder' with docker-container driver")
+    else:
+        # Builder exists with correct driver, ensure it's in use
+        use_result = subprocess.run(
+            ["docker", "buildx", "use", "boileroom-builder"],
+            capture_output=True,
+            text=True,
+        )
+        if use_result.returncode == 0:
+            log_info("Using existing buildx builder 'boileroom-builder' with docker-container driver")
+
+
 def load_supported_cuda(model_dir: Path) -> list[str] | None:
     config_path = model_dir / "config.yaml"
     if not config_path.exists():
@@ -214,7 +282,7 @@ def compute_cuda_versions(cuda_version: str | list[str] | None, all_cuda: bool) 
     return versions
 
 
-def build_base(cuda_version: str, tag: str, platform: str, no_cache: bool, images_dir: Path) -> str:
+def build_base(cuda_version: str, tag: str, no_cache: bool, images_dir: Path, push: bool) -> str:
     cuda_suffix = f"cuda{cuda_version}"
     if tag == "latest":
         base_tag = f"{DOCKER_REGISTRY}/boileroom-base:{cuda_suffix}"
@@ -225,14 +293,16 @@ def build_base(cuda_version: str, tag: str, platform: str, no_cache: bool, image
     log_info("")
     log_info(Colors.wrap(f"=== Building base for CUDA {cuda_version}: {base_tag}", Colors.bold))
     log_info(f"Using micromamba base: {micromamba_base}")
+    log_info("Building for platforms: linux/amd64,linux/arm64")
 
     log_file = Path.cwd() / f"{base_tag.replace('/', '_').replace(':', '_')}.log"
 
     cmd: list[str] = [
         "docker",
+        "buildx",
         "build",
         "--platform",
-        platform,
+        "linux/amd64,linux/arm64",
         "--build-arg",
         f"MICROMAMBA_BASE={micromamba_base}",
         "-t",
@@ -242,7 +312,11 @@ def build_base(cuda_version: str, tag: str, platform: str, no_cache: bool, image
         str(images_dir),
     ]
     if no_cache:
-        cmd.insert(3, "--no-cache")
+        cmd.append("--no-cache")
+    if push:
+        cmd.append("--push")
+    # When push=False, images are stored in buildx cache (not loadable to local daemon for multi-platform)
+    
     run(cmd, log_file=log_file, echo=False)
     return base_tag
 
@@ -255,14 +329,16 @@ def build_model(task: BuildTask) -> str:
         model_tag = f"{DOCKER_REGISTRY}/{task.model.tag_prefix}:{cuda_suffix}-{task.tag}"
 
     log_info(Colors.wrap(f"--- Building {task.model.name} {task.cuda_version}: {model_tag}", Colors.bold))
+    log_info("Building for platforms: linux/amd64,linux/arm64")
 
     log_file = Path.cwd() / f"{model_tag.replace('/', '_').replace(':', '_')}.log"
 
     cmd: list[str] = [
         "docker",
+        "buildx",
         "build",
         "--platform",
-        task.platform,
+        "linux/amd64,linux/arm64",
         "--build-arg",
         f"BASE_IMAGE={task.base_image_tag}",
         "--build-arg",
@@ -274,19 +350,17 @@ def build_model(task: BuildTask) -> str:
         str(task.model.dockerfile.parent),
     ]
     if task.no_cache:
-        cmd.insert(3, "--no-cache")
+        cmd.append("--no-cache")
+    if task.push:
+        cmd.append("--push")
+    # When push=False, images are stored in buildx cache (not loadable to local daemon for multi-platform)
 
     run(cmd, env=os.environ.copy(), log_file=log_file, echo=False)
-
-    if task.push:
-        log_info(f"Pushing {model_tag}")
-        run(["docker", "push", model_tag], log_file=log_file, echo=False)
 
     return model_tag
 
 
 def main(
-    platform: str = "linux/amd64",
     no_cache: bool = False,
     tag: str = "dev",
     cuda_version: str | list[str] | None = None,
@@ -295,19 +369,19 @@ def main(
     max_workers: int = 1,
 ) -> None:
     """
-    Build base and per-model Docker images.
+    Build base and per-model Docker images using buildx with multi-platform support.
 
     Args:
-        platform: Docker build platform.
         no_cache: Disable Docker build cache.
         tag: Tag suffix (e.g. dev, latest, myfeature).
         cuda_version: CUDA version(s) to build (11.8 or 12.6). Can be repeated.
         all_cuda: Build for all supported CUDA versions.
-        push: Push images to Docker Hub.
+        push: Push images to Docker Hub. Required for multi-platform images to be accessible.
         max_workers: Max parallel image builds (models) across all CUDA versions.
     """
     try:
         ensure_docker()
+        ensure_buildx_builder()
         repo_root, boileroom_dir, images_dir = resolve_paths()
         models = discover_models(boileroom_dir)
         cuda_versions = compute_cuda_versions(cuda_version, all_cuda)
@@ -320,6 +394,7 @@ def main(
         f"Models: {', '.join(m.name for m in models)}; "
         f"CUDA: {', '.join(cuda_versions)}"
     )
+    log_info("Building for platforms: linux/amd64,linux/arm64")
 
     all_images: list[str] = []
     tasks: list[BuildTask] = []
@@ -329,19 +404,10 @@ def main(
     for v in cuda_versions:
         torch_index = CUDA_TORCH_WHEEL_INDEX[v]
         try:
-            base_tag = build_base(v, tag, platform, no_cache, images_dir)
+            base_tag = build_base(v, tag, no_cache, images_dir, push)
         except Exception as exc:
             log_error(f"Failed to build base for CUDA {v}: {exc}")
             raise SystemExit(1) from exc
-
-        if push:
-            try:
-                log_info(f"Pushing {base_tag}")
-                base_log_file = Path.cwd() / f"{base_tag.replace('/', '_').replace(':', '_')}.log"
-                run(["docker", "push", base_tag], log_file=base_log_file, echo=False)
-            except Exception as exc:
-                log_error(f"Failed to push base {base_tag}: {exc}")
-                raise SystemExit(1) from exc
 
         all_images.append(base_tag)
         base_tags[v] = base_tag
@@ -361,7 +427,7 @@ def main(
                     model=model,
                     base_image_tag=base_tag,
                     torch_wheel_index=torch_index,
-                    platform=platform,
+                    platform="linux/amd64,linux/arm64",  # Not used but kept for compatibility
                     no_cache=no_cache,
                     tag=tag,
                     push=push,

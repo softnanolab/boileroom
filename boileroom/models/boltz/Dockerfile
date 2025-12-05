@@ -1,3 +1,9 @@
+# BuildKit platform arguments
+ARG TARGETPLATFORM
+ARG TARGETARCH
+ARG TARGETOS
+ARG BUILDPLATFORM
+
 ARG BASE_IMAGE=docker.io/jakublala/boileroom-base:latest
 FROM ${BASE_IMAGE}
 
