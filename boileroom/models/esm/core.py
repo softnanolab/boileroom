@@ -207,38 +207,47 @@ class ESM2Core(EmbeddingAlgorithm):
 
         logger.debug(f'Embedding {len(normalized_sequences)} sequences using {effective_config["model_name"]}')
 
-        if any(":" in seq for seq in normalized_sequences):
-            # Multimer logic
-            glycine_linker = effective_config["glycine_linker"]
-            multimer_properties = self._store_multimer_properties(normalized_sequences, glycine_linker)
-            tokenized = self.tokenizer(
-                replace_glycine_linkers(normalized_sequences, glycine_linker),
-                return_tensors="pt",
-                padding=True,
-                truncation=True,
-            )
-            # Add position_ids and attention_mask
-            tokenized["position_ids"] = compute_position_ids(
-                normalized_sequences, glycine_linker, effective_config["position_ids_skip"]
-            )
-            tokenized["attention_mask"] = (multimer_properties["linker_map"] == 1).to(torch.int32)
-        else:
-            # Monomer logic
-            tokenized = self.tokenizer(
-                normalized_sequences,
-                return_tensors="pt",
-                padding=True,
-                truncation=True,
-            )
-            multimer_properties = None
-        tokenized = tokenized.to(self._device)
-        tokenized["output_hidden_states"] = self._should_compute_hidden_states(effective_config.get("include_fields"))
+        with Timer("ESM2 preprocessing") as preprocess_timer:
+            if any(":" in seq for seq in normalized_sequences):
+                # Multimer logic
+                glycine_linker = effective_config["glycine_linker"]
+                multimer_properties = self._store_multimer_properties(normalized_sequences, glycine_linker)
+                tokenized = self.tokenizer(
+                    replace_glycine_linkers(normalized_sequences, glycine_linker),
+                    return_tensors="pt",
+                    padding=True,
+                    truncation=True,
+                )
+                # Add position_ids and attention_mask
+                tokenized["position_ids"] = compute_position_ids(
+                    normalized_sequences, glycine_linker, effective_config["position_ids_skip"]
+                )
+                tokenized["attention_mask"] = (multimer_properties["linker_map"] == 1).to(torch.int32)
+            else:
+                # Monomer logic
+                tokenized = self.tokenizer(
+                    normalized_sequences,
+                    return_tensors="pt",
+                    padding=True,
+                    truncation=True,
+                )
+                multimer_properties = None
+            tokenized = tokenized.to(self._device)
+            tokenized["output_hidden_states"] = self._should_compute_hidden_states(effective_config.get("include_fields"))
 
-        with Timer("Model Inference") as timer:
+        with Timer("Model Inference") as inference_timer:
             with torch.inference_mode():
                 outputs = self.model(**tokenized)
 
-        outputs = self._convert_outputs(outputs, multimer_properties, timer.duration, effective_config)
+        with Timer("ESM2 postprocessing") as postprocess_timer:
+            outputs = self._convert_outputs(
+                outputs,
+                multimer_properties,
+                preprocessing_time=preprocess_timer.duration,
+                inference_time=inference_timer.duration,
+                postprocessing_time=postprocess_timer.duration,
+                config=effective_config,
+            )
 
         return outputs
 
@@ -288,7 +297,9 @@ class ESM2Core(EmbeddingAlgorithm):
         self,
         outputs: "BaseModelOutputWithPoolingAndCrossAttentions",
         multimer_properties: dict[str, torch.Tensor] | None,
-        prediction_time: float,
+        preprocessing_time: float,
+        inference_time: float,
+        postprocessing_time: float,
         config: dict,
     ) -> ESM2Output:
         """Convert raw HuggingFace model outputs into a finalized ESM2Output, applying multimer linker masking when provided and filtering fields according to config.
@@ -299,15 +310,19 @@ class ESM2Core(EmbeddingAlgorithm):
             The model output object containing `last_hidden_state` and optionally `hidden_states`.
         multimer_properties : dict | None
             When present, provides tensors for `linker_map`, `residue_index`, and `chain_index` used to mask and reshape multimer embeddings.
-        prediction_time : float
-            Elapsed time in seconds for the prediction; stored in the output metadata.
+        preprocessing_time : float
+            Elapsed time in seconds for the preprocessing phase; stored in the output metadata.
+        inference_time : float
+            Elapsed time in seconds for the inference phase; stored in the output metadata.
+        postprocessing_time : float
+            Elapsed time in seconds for the postprocessing phase; stored in the output metadata.
         config : dict
             Effective configuration for this call; may include `include_fields` to control which fields are retained in the returned output.
 
         Returns
         -------
         ESM2Output
-            Structured prediction containing `embeddings`, optional `hidden_states`, `chain_index`, `residue_index`, and updated `metadata` with `prediction_time`.
+            Structured prediction containing `embeddings`, optional `hidden_states`, `chain_index`, `residue_index`, and updated `metadata` with timing information.
         """
 
         embeddings = outputs.last_hidden_state.cpu().numpy()
@@ -333,7 +348,9 @@ class ESM2Core(EmbeddingAlgorithm):
             chain_index_output = np.zeros((batch_size, seq_len), dtype=np.int32)
             residue_index_output = np.tile(np.arange(seq_len, dtype=np.int32), (batch_size, 1))
 
-        self.metadata.prediction_time = prediction_time
+        self.metadata.preprocessing_time = preprocessing_time
+        self.metadata.inference_time = inference_time
+        self.metadata.postprocessing_time = postprocessing_time
 
         # Build full output with all fields
         full_output = ESM2Output(
@@ -535,13 +552,22 @@ class ESMFoldCore(FoldingAlgorithm):
         validated_sequences = self._validate_sequences(sequences)
         self.metadata.sequence_lengths = self._compute_sequence_lengths(validated_sequences)
 
-        tokenized_input, multimer_properties = self._tokenize_sequences(validated_sequences, effective_config)
+        with Timer("ESMFold preprocessing") as preprocess_timer:
+            tokenized_input, multimer_properties = self._tokenize_sequences(validated_sequences, effective_config)
 
-        with Timer("Model Inference") as timer:
+        with Timer("Model Inference") as inference_timer:
             with torch.inference_mode():
                 outputs = self.model(**tokenized_input)
 
-        outputs = self._convert_outputs(outputs, multimer_properties, timer.duration, effective_config)
+        with Timer("ESMFold postprocessing") as postprocess_timer:
+            outputs = self._convert_outputs(
+                outputs,
+                multimer_properties,
+                preprocessing_time=preprocess_timer.duration,
+                inference_time=inference_timer.duration,
+                postprocessing_time=postprocess_timer.duration,
+                config=effective_config,
+            )
         return outputs
 
     def _tokenize_sequences(self, sequences: List[str], config: dict) -> tuple[dict, dict[str, torch.Tensor] | None]:
@@ -794,7 +820,9 @@ class ESMFoldCore(FoldingAlgorithm):
         self,
         outputs: dict,
         multimer_properties: dict[str, torch.Tensor] | None,
-        prediction_time: float,
+        preprocessing_time: float,
+        inference_time: float,
+        postprocessing_time: float,
         config: dict,
     ) -> ESMFoldOutput:
         """Convert raw model outputs and optional multimer metadata into a populated ESMFoldOutput.
@@ -805,8 +833,12 @@ class ESMFoldCore(FoldingAlgorithm):
             Raw model outputs (tensor values) produced by the folding model.
         multimer_properties : dict[str, torch.Tensor] | None
             Multimer-related tensors (e.g., linker map, residue and chain indices). When provided, linker regions are masked and per-chain residue mappings are applied.
-        prediction_time : float
-            Elapsed time (seconds) for the prediction; recorded in the output metadata.
+        preprocessing_time : float
+            Elapsed time (seconds) for the preprocessing phase; recorded in the output metadata.
+        inference_time : float
+            Elapsed time (seconds) for the inference phase; recorded in the output metadata.
+        postprocessing_time : float
+            Elapsed time (seconds) for the postprocessing phase; recorded in the output metadata.
         config : dict
             Per-call configuration; the "include_fields" entry controls which optional fields (for example, "pdb" or "cif") are produced and which fields are retained in the returned output.
 
@@ -823,7 +855,9 @@ class ESMFoldCore(FoldingAlgorithm):
         else:  # only MONOMERs
             outputs["chain_index"] = np.zeros(outputs["residue_index"].shape, dtype=np.int32)
 
-        self.metadata.prediction_time = prediction_time
+        self.metadata.preprocessing_time = preprocessing_time
+        self.metadata.inference_time = inference_time
+        self.metadata.postprocessing_time = postprocessing_time
 
         # Always generate atom_array
         atom_array = self._convert_outputs_to_atomarray(outputs)
@@ -914,7 +948,7 @@ class ESMFoldCore(FoldingAlgorithm):
                         chain_id=chain_id,
                         atom_name=atom_types[atom_idx],
                         res_name=res_name,
-                        res_id=outputs["residue_index"][b, res_idx],  # 0-indexed
+                        res_id=outputs["residue_index"][b, res_idx],  # 0-indexed # TODO: make it 1-indexed
                         element=atom_types[atom_idx][0],
                         # we only support C, N, O, S, [according to OpenFold Protein class]
                         # element is thus the first character of any atom name (according to PDB nomenclature)

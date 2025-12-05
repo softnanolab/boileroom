@@ -963,7 +963,7 @@ class Boltz2Core(FoldingAlgorithm):
         with TemporaryDirectory() as tmp:
             work_path = Path(tmp).resolve()
 
-            with Timer("Boltz-2 preprocessing"):
+            with Timer("Boltz-2 preprocessing") as preprocess_timer:
                 # Pass cached MSA paths to FASTA generation
                 fasta_text = self._sequences_to_fasta(
                     validated_sequences,
@@ -988,42 +988,45 @@ class Boltz2Core(FoldingAlgorithm):
 
             datamodule = self._build_datamodule(processed, int(effective_config.get("num_workers", 2)), cache_dir)
 
-            with Timer("Boltz-2 inference") as t:
+            with Timer("Boltz-2 inference") as inference_timer:
                 preds = self._predict_with_trainer(datamodule)
 
-            # Extract and organize per-sample outputs succinctly
-            extracted = [self._extract_sample_from_pred(item) for item in (preds or []) if isinstance(item, dict)]
+            with Timer("Boltz-2 postprocessing") as postprocess_timer:
+                # Extract and organize per-sample outputs succinctly
+                extracted = [self._extract_sample_from_pred(item) for item in (preds or []) if isinstance(item, dict)]
 
-            confidences: List[Dict[str, Any]] = [a for (_, a, _, _, _) in extracted if a]
-            plddts: List[np.ndarray] = [p for (_, _, p, _, _) in extracted if p is not None]
-            paes: List[np.ndarray] = [a for (_, _, _, a, _) in extracted if a is not None]
-            pdes: List[np.ndarray] = [d for (_, _, _, _, d) in extracted if d is not None]
+                confidences: List[Dict[str, Any]] = [a for (_, a, _, _, _) in extracted if a]
+                plddts: List[np.ndarray] = [p for (_, _, p, _, _) in extracted if p is not None]
+                paes: List[np.ndarray] = [a for (_, _, _, a, _) in extracted if a is not None]
+                pdes: List[np.ndarray] = [d for (_, _, _, _, d) in extracted if d is not None]
 
-            # Validate shapes where present
-            for arr in plddts:
-                self._validate_sample_arrays(arr, None, None)
-            for arr in paes:
-                self._validate_sample_arrays(None, arr, None)
-            for arr in pdes:
-                self._validate_sample_arrays(None, None, arr)
+                # Validate shapes where present
+                for arr in plddts:
+                    self._validate_sample_arrays(arr, None, None)
+                for arr in paes:
+                    self._validate_sample_arrays(None, arr, None)
+                for arr in pdes:
+                    self._validate_sample_arrays(None, None, arr)
 
-            # Extract coords directly for atom_array generation
-            coords_list = [c for (c, _, _, _, _) in extracted if c is not None]
-            coords_np = np.array(coords_list, dtype=object)
-            atom_array_list, cif_strings = self._convert_outputs_using_boltz_structure(
-                coords_np, processed, plddt=plddts if plddts else None
-            )
+                # Extract coords directly for atom_array generation
+                coords_list = [c for (c, _, _, _, _) in extracted if c is not None]
+                coords_np = np.array(coords_list, dtype=object)
+                atom_array_list, cif_strings = self._convert_outputs_using_boltz_structure(
+                    coords_np, processed, plddt=plddts if plddts else None
+                )
 
-            include_fields = effective_config.get("include_fields")
-            pdb_list = None
-            if include_fields and ("*" in include_fields or "pdb" in include_fields):
-                pdb_list = [self._convert_outputs_to_pdb(arr) for arr in atom_array_list]
+                include_fields = effective_config.get("include_fields")
+                pdb_list = None
+                if include_fields and ("*" in include_fields or "pdb" in include_fields):
+                    pdb_list = [self._convert_outputs_to_pdb(arr) for arr in atom_array_list]
 
-            cif_list = None
-            if include_fields and ("*" in include_fields or "cif" in include_fields):
-                cif_list = cif_strings
+                cif_list = None
+                if include_fields and ("*" in include_fields or "cif" in include_fields):
+                    cif_list = cif_strings
 
-            self.metadata.prediction_time = t.duration
+            self.metadata.preprocessing_time = preprocess_timer.duration
+            self.metadata.inference_time = inference_timer.duration
+            self.metadata.postprocessing_time = postprocess_timer.duration
 
             # Build full output with all fields
             full_output = Boltz2Output(

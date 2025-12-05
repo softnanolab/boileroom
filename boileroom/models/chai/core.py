@@ -100,11 +100,12 @@ class Chai1Core(FoldingAlgorithm):
 
         with TemporaryDirectory() as buffer_dir:
             buffer_path = Path(buffer_dir)
-            fasta_path = self._write_fasta(validated_sequences, buffer_path)
-            constraint_path = self._write_constraint(buffer_path, effective_config)
-            output_dir = buffer_path / "outputs"
-            output_dir.mkdir(parents=True, exist_ok=True)
-            with Timer("Model Inference") as timer:
+            with Timer("Chai-1 preprocessing") as preprocess_timer:
+                fasta_path = self._write_fasta(validated_sequences, buffer_path)
+                constraint_path = self._write_constraint(buffer_path, effective_config)
+                output_dir = buffer_path / "outputs"
+                output_dir.mkdir(parents=True, exist_ok=True)
+            with Timer("Model Inference") as inference_timer:
                 candidate = run_inference(
                     fasta_file=fasta_path,
                     output_dir=output_dir,
@@ -119,7 +120,14 @@ class Chai1Core(FoldingAlgorithm):
                     device=str(self._device),
                     low_memory=False,
                 )
-            output = self._convert_outputs(candidate, elapsed_time=timer.duration, effective_config=effective_config)
+            with Timer("Chai-1 postprocessing") as postprocess_timer:
+                output = self._convert_outputs(
+                    candidate,
+                    preprocessing_time=preprocess_timer.duration,
+                    inference_time=inference_timer.duration,
+                    postprocessing_time=postprocess_timer.duration,
+                    effective_config=effective_config,
+                )
 
         return output
 
@@ -200,7 +208,12 @@ class Chai1Core(FoldingAlgorithm):
         return constraint_path
 
     def _convert_outputs(
-        self, candidate: "StructureCandidates", elapsed_time: float, effective_config: dict
+        self,
+        candidate: "StructureCandidates",
+        preprocessing_time: float,
+        inference_time: float,
+        postprocessing_time: float,
+        effective_config: dict,
     ) -> Chai1Output:
         """Convert a raw inference candidate into a Chai1Output, applying include_fields filtering.
 
@@ -208,8 +221,12 @@ class Chai1Core(FoldingAlgorithm):
         ----------
         candidate : StructureCandidates
             The raw prediction candidate produced by the inference engine for a single sample.
-        elapsed_time : float
-            Total wall-clock time spent generating the prediction (seconds); stored in output metadata.
+        preprocessing_time : float
+            Time spent in preprocessing phase (seconds); stored in output metadata.
+        inference_time : float
+            Time spent in inference phase (seconds); stored in output metadata.
+        postprocessing_time : float
+            Time spent in postprocessing phase (seconds); stored in output metadata.
         effective_config : dict
             Merged configuration used for this call; may contain `include_fields` to limit returned fields.
 
@@ -221,7 +238,9 @@ class Chai1Core(FoldingAlgorithm):
         """
         pae, pde, plddt, ptm, iptm, per_chain_iptm = self._extract_confidence_metrics(candidate)
         cif_string_list, atom_array = self._process_cif(candidate.cif_paths[0], effective_config)
-        self.metadata.prediction_time = elapsed_time
+        self.metadata.preprocessing_time = preprocessing_time
+        self.metadata.inference_time = inference_time
+        self.metadata.postprocessing_time = postprocessing_time
 
         # Build full output with all attributes
         # cif_string_list is a list with one element; convert [None] to None, keep [string] as [string]

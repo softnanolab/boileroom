@@ -533,7 +533,12 @@ class ApptainerBackend(Backend):
         self._wait_for_health_check()
         
         logger.info(f"Creating HTTP client for {self._base_url}")
-        self._client = httpx.Client(base_url=self._base_url, timeout=300.0)
+        # Use 30 minute timeout to handle large responses (e.g., PAE matrices for long sequences)
+        # This matches Modal backend timeout of 20 minutes with some buffer for serialization/transmission
+        # Set explicit timeouts: connect=10s, read=1800s (30min), write=60s, pool=10s
+        # The read timeout is the critical one for large response bodies
+        timeout_config = httpx.Timeout(connect=10.0, read=1800.0, write=60.0, pool=10.0)
+        self._client = httpx.Client(base_url=self._base_url, timeout=timeout_config)
         logger.info("Apptainer backend startup complete")
 
     def shutdown(self) -> None:
