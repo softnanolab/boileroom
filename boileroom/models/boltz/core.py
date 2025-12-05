@@ -29,7 +29,7 @@ from boltz.model.models.boltz2 import Boltz2 as Boltz2Model
 from typing import Optional, Any, Union, Sequence, List, Dict, cast
 
 from ...base import FoldingAlgorithm
-from ...utils import MODAL_MODEL_DIR, Timer
+from ...utils import MODAL_MODEL_DIR, Timer, safe_mkdir
 from .types import Boltz2Output
 
 logger = logging.getLogger(__name__)
@@ -118,8 +118,9 @@ class Boltz2Core(FoldingAlgorithm):
         else:
             if self.model_dir is None:
                 raise ValueError("model_dir must be set when cache_dir is not provided")
-            cache_dir = Path(self.model_dir).resolve() / "boltz"
-        cache_dir.mkdir(parents=True, exist_ok=True)
+            cache_dir = Path(self.model_dir) / "boltz"
+        # Use safe_mkdir to avoid creating parent directories that don't exist in containers
+        safe_mkdir(cache_dir, parents=False)
 
         # Download boltz2 weights and resources (mols)
         download_boltz2(cache_dir)
@@ -215,22 +216,22 @@ class Boltz2Core(FoldingAlgorithm):
         """
         cache_dir_str = self.config.get("cache_dir")
         if cache_dir_str is not None:
-            base_cache_dir = Path(cache_dir_str).resolve()
+            base_cache_dir = Path(cache_dir_str)
         else:
             if self.model_dir is None:
                 raise ValueError("model_dir must be set when cache_dir is not provided")
-            base_cache_dir = Path(self.model_dir).resolve() / "boltz"
+            base_cache_dir = Path(self.model_dir) / "boltz"
 
         # Check if we're in Modal environment and adjust path
         modal_model_dir = os.environ.get("MODAL_MODEL_DIR")
         if modal_model_dir:
-            base_cache_dir = Path(modal_model_dir).resolve() / "boltz"
+            base_cache_dir = Path(modal_model_dir) / "boltz"
         elif cache_dir_str is None and self.model_dir == MODAL_MODEL_DIR:
             # If model_dir was set to MODAL_MODEL_DIR but env var not set, use it directly
-            base_cache_dir = Path(MODAL_MODEL_DIR).resolve() / "boltz"
+            base_cache_dir = Path(MODAL_MODEL_DIR) / "boltz"
 
         msa_cache_dir = base_cache_dir / "msa_cache"
-        msa_cache_dir.mkdir(parents=True, exist_ok=True)
+        safe_mkdir(msa_cache_dir, parents=True)
         return msa_cache_dir
 
     def _get_msa_cache_index_path(self) -> Path:
@@ -283,7 +284,7 @@ class Boltz2Core(FoldingAlgorithm):
         """
         index_path = self._get_msa_cache_index_path()
         cache_dir = index_path.parent
-        cache_dir.mkdir(parents=True, exist_ok=True)
+        safe_mkdir(cache_dir, parents=True)
 
         # Write to temporary file first for atomic update
         temp_path = index_path.with_suffix(".json.tmp")
@@ -378,7 +379,7 @@ class Boltz2Core(FoldingAlgorithm):
 
             # Create hash-prefixed directory structure: {hash[:2]}/{hash[2:4]}/
             hash_prefix_dir = cache_dir / seq_hash[:2] / seq_hash[2:4]
-            hash_prefix_dir.mkdir(parents=True, exist_ok=True)
+            safe_mkdir(hash_prefix_dir, parents=True)
 
             # Destination path
             msa_cache_path = hash_prefix_dir / f"{seq_hash}.csv"
@@ -953,11 +954,11 @@ class Boltz2Core(FoldingAlgorithm):
         # Always use a temporary working directory on the machine
         cache_dir_str = effective_config.get("cache_dir")
         if cache_dir_str is not None:
-            cache_dir = Path(cache_dir_str).resolve()
+            cache_dir = Path(cache_dir_str)
         else:
             if self.model_dir is None:
                 raise ValueError("model_dir must be set when cache_dir is not provided")
-            cache_dir = Path(self.model_dir).resolve() / "boltz"
+            cache_dir = Path(self.model_dir) / "boltz"
 
         with TemporaryDirectory() as tmp:
             work_path = Path(tmp).resolve()

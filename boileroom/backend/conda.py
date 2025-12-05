@@ -7,11 +7,7 @@ import shutil
 import socket
 import subprocess
 import time
-<<<<<<< HEAD
-import yaml  # type: ignore[import]
-=======
 import yaml  # type: ignore[import-not-found]
->>>>>>> origin/feat/conda-progress-debug
 from pathlib import Path
 from typing import Any, Optional
 
@@ -19,6 +15,7 @@ import httpx  # type: ignore[import-not-found]
 
 from .base import Backend
 from .progress import ProgressTracker
+from ..utils import get_model_cache_dir
 
 logger = logging.getLogger(__name__)
 
@@ -461,11 +458,14 @@ class CondaBackend(Backend):
         if device_number is not None:
             env["CUDA_VISIBLE_DEVICES"] = device_number
 
-        # Pass through MODEL_DIR and other relevant env vars
-        # TODO: this is not ideal, as it requires dependency on individual models, so we should make this more robust and general.
-        for key in ["MODEL_DIR", "CHAI_DOWNLOADS_DIR"]:
-            if key in os.environ:
-                env[key] = os.environ[key]
+        # Pass through MODEL_DIR if present
+        if "MODEL_DIR" in os.environ:
+            env["MODEL_DIR"] = os.environ["MODEL_DIR"]
+            # Automatically derive CHAI_DOWNLOADS_DIR from MODEL_DIR/chai
+            # Only set if not already explicitly set (allows override if needed)
+            if "CHAI_DOWNLOADS_DIR" not in os.environ:
+                chai_cache_dir = get_model_cache_dir("chai")
+                env["CHAI_DOWNLOADS_DIR"] = str(chai_cache_dir)
 
         # Set PYTHONPATH to project root
         env["PYTHONPATH"] = str(project_root)

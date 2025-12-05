@@ -201,6 +201,60 @@ def _check_architecture_compatibility(host_arch: str, image_arch: str) -> bool:
     return _normalize_arch(host_arch) == _normalize_arch(image_arch)
 
 
+def _build_ld_library_path() -> str:
+    """Build LD_LIBRARY_PATH for CUDA libraries in conda environments.
+
+    Includes paths for:
+    - cuequivariance_ops (libcue_ops.so)
+    - NVIDIA conda packages (libcublas.so.12)
+    - PyTorch CUDA libraries (libnvrtc.so.12)
+    - System CUDA toolkit paths
+    - NVIDIA driver libraries (added by --nv flag)
+
+    Returns
+    -------
+    str
+        Colon-separated LD_LIBRARY_PATH string.
+    """
+    conda_base = "/opt/conda/lib"
+    python_version = "3.12"
+    site_packages = f"{conda_base}/python{python_version}/site-packages"
+
+    # Conda package-specific library paths (highest priority)
+    conda_lib_paths = [
+        f"{site_packages}/cuequivariance_ops/lib",  # libcue_ops.so
+        f"{site_packages}/nvidia/cublas/lib",  # libcublas.so.12
+        f"{site_packages}/torch/lib",  # libnvrtc.so.12 and other PyTorch CUDA libs
+        f"{site_packages}/nvidia",  # Other NVIDIA conda packages
+        conda_base,  # Base conda lib directory
+    ]
+
+    # System CUDA toolkit paths (fallback if not in conda)
+    cuda_toolkit_paths = [
+        "/usr/local/cuda/lib64",
+        "/usr/local/cuda/lib",
+        "/usr/local/cuda-12/lib64",
+        "/usr/local/cuda-12/lib",
+    ]
+
+    # NVIDIA driver paths (--nv flag adds these, but include explicitly for clarity)
+    nvidia_driver_paths = [
+        "/usr/local/nvidia/lib64",
+        "/usr/local/nvidia/lib",
+        "/.singularity.d/libs",
+    ]
+
+    # Combine all paths in priority order
+    ld_path_parts = conda_lib_paths + cuda_toolkit_paths + nvidia_driver_paths
+
+    # Append host LD_LIBRARY_PATH if present (lowest priority)
+    if "LD_LIBRARY_PATH" in os.environ:
+        host_paths = [p for p in os.environ["LD_LIBRARY_PATH"].split(":") if p and p not in ld_path_parts]
+        ld_path_parts.extend(host_paths)
+
+    return ":".join(ld_path_parts)
+
+
 def _pull_image(image_uri: str, sif_path: Path, log_file: Path | None = None) -> None:
     """Pull Docker image and convert to .sif format.
 
@@ -384,20 +438,26 @@ class ApptainerBackend(Backend):
 
         # Bind mount MODEL_DIR if present
         if model_dir:
-            model_dir_path = Path(model_dir).resolve()
-            # Ensure directory exists
-            model_dir_path.mkdir(parents=True, exist_ok=True)
-            # Mount to same path in container
-            container_model_dir = str(model_dir_path)
-            cmd.extend(["-B", f"{container_model_dir}:{container_model_dir}"])
-
-        # Bind mount CHAI_DOWNLOADS_DIR if present
-        chai_dir = os.environ.get("CHAI_DOWNLOADS_DIR")
-        if chai_dir:
-            chai_dir_path = Path(chai_dir).resolve()
-            chai_dir_path.mkdir(parents=True, exist_ok=True)
-            container_chai_dir = str(chai_dir_path)
-            cmd.extend(["-B", f"{container_chai_dir}:{container_chai_dir}"])
+            # Use the already-resolved model_dir_path from above
+            try:
+                model_dir_path.mkdir(parents=True, exist_ok=True)
+            except OSError as e:
+                logger.warning(f"Failed to create MODEL_DIR {model_dir_path} on host: {e}")
+                raise RuntimeError(
+                    f"Cannot create MODEL_DIR {model_dir_path} on host. "
+                    f"Ensure parent directories exist and you have write permissions."
+                ) from e
+            
+            if not model_dir_path.exists():
+                raise RuntimeError(f"MODEL_DIR {model_dir_path} does not exist after creation attempt")
+            
+            if not model_dir_path.is_dir():
+                raise RuntimeError(f"MODEL_DIR {model_dir_path} exists but is not a directory")
+            
+            # Mount host MODEL_DIR to fixed container path for simplicity
+            container_model_dir = "/.model_cache"
+            cmd.extend(["-B", f"{model_dir_path}:{container_model_dir}"])
+            logger.info(f"Bind mounting MODEL_DIR: {model_dir_path} -> {container_model_dir}")
 
         # Set environment variables
         env_vars = {
@@ -416,43 +476,24 @@ class ApptainerBackend(Backend):
             "CXX": "g++",
         }
 
-        # TODO: BOLTZ NEEDS CUDA 12 !!$@($_(!@#$!(@$@!)))
-        
-        # Build LD_LIBRARY_PATH to include conda libraries
-        # libcue_ops.so is in /opt/conda/lib/python3.12/site-packages/cuequivariance_ops/lib/
-        # libcublas.so.12 is in /opt/conda/lib/python3.12/site-packages/nvidia/cublas/lib/
-        # Both need to be in LD_LIBRARY_PATH
-        # Note: --nv will add /usr/local/nvidia/lib and /usr/local/nvidia/lib64 automatically
-        # Also include the base conda lib directory as a fallback
-        conda_base_lib_path = "/opt/conda/lib"
-        conda_cue_ops_lib_path = "/opt/conda/lib/python3.12/site-packages/cuequivariance_ops/lib"
-        conda_cuda_lib_path = "/opt/conda/lib/python3.12/site-packages/nvidia/cublas/lib"
-        # Start with conda library paths (highest priority), then NVIDIA paths that --nv sets
-        ld_path_parts = [
-            conda_cue_ops_lib_path,  # Where libcue_ops.so is located
-            conda_cuda_lib_path,  # Where libcublas.so.12 is located
-            conda_base_lib_path,  # Base conda lib directory as fallback
-            "/usr/local/nvidia/lib64",
-            "/usr/local/nvidia/lib",
-            "/.singularity.d/libs",
-        ]
-        # If host has LD_LIBRARY_PATH, append any additional paths (but conda path takes priority)
-        if "LD_LIBRARY_PATH" in os.environ:
-            host_paths = [p for p in os.environ["LD_LIBRARY_PATH"].split(":") if p]
-            for path in host_paths:
-                if path not in ld_path_parts:
-                    ld_path_parts.append(path)
-        env_vars["LD_LIBRARY_PATH"] = ":".join(ld_path_parts)
+        # Build LD_LIBRARY_PATH to include all necessary CUDA library paths
+        # This ensures conda-installed CUDA libraries (libcue_ops.so, libcublas.so.12, libnvrtc.so.12)
+        # and system CUDA toolkit libraries are accessible
+        env_vars["LD_LIBRARY_PATH"] = _build_ld_library_path()
 
         if device_number is not None:
             env_vars["CUDA_VISIBLE_DEVICES"] = device_number
 
-        # Pass through MODEL_DIR and CHAI_DOWNLOADS_DIR if present
-        # TODO: this should be unified, and simplified
-        # TODO: all env variables should be passed through to the container, in a programmatic way
-        for key in ["MODEL_DIR", "CHAI_DOWNLOADS_DIR"]:
-            if key in os.environ:
-                env_vars[key] = os.environ[key]
+        # Set MODEL_DIR to container path if host MODEL_DIR is present
+        if model_dir:
+            # Use container path where MODEL_DIR is mounted
+            container_model_dir_env = "/.model_cache"
+            env_vars["MODEL_DIR"] = container_model_dir_env
+            # Automatically derive CHAI_DOWNLOADS_DIR from MODEL_DIR/chai
+            # Only set if not already explicitly set (allows override if needed)
+            if "CHAI_DOWNLOADS_DIR" not in os.environ:
+                # Directly construct container path since MODEL_DIR will be /.model_cache in container
+                env_vars["CHAI_DOWNLOADS_DIR"] = f"{container_model_dir_env}/chai"
 
         # Add environment variables to command
         for key, value in env_vars.items():
