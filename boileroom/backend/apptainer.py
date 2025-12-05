@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import platform
 import shutil
 import socket
 import subprocess
@@ -18,6 +19,20 @@ from .base import Backend
 from ..utils import ensure_cache_dir
 
 logger = logging.getLogger(__name__)
+
+ARCH_NORMALIZATION = {
+    "x86_64": "amd64",
+    "amd64": "amd64",
+    "aarch64": "arm64",
+    "arm64": "arm64",
+    "armv7l": "arm",
+    "armv6l": "arm",
+}
+
+
+def _normalize_arch(arch: str) -> str:
+    """Normalize architecture labels to a small set."""
+    return ARCH_NORMALIZATION.get(arch.lower(), arch.lower())
 
 
 def _find_available_port(start_port: int = 8000, max_attempts: int = 100) -> int:
@@ -122,6 +137,70 @@ def _is_image_cached(sif_path: Path) -> bool:
     return sif_path.exists() and sif_path.stat().st_size > 0
 
 
+def _get_host_architecture() -> str:
+    """Get the host system architecture.
+
+    Returns
+    -------
+    str
+        Architecture string (e.g., 'amd64', 'arm64', 'x86_64', 'aarch64').
+    """
+    return _normalize_arch(platform.machine())
+
+
+def _get_image_architecture(sif_path: Path) -> str | None:
+    """Get the architecture of a cached .sif file.
+
+    Parameters
+    ----------
+    sif_path : Path
+        Path to .sif file.
+
+    Returns
+    -------
+    str | None
+        Architecture string (e.g., 'amd64', 'arm64') if found, None otherwise.
+    """
+    result = subprocess.run(
+        ["apptainer", "inspect", "--json", str(sif_path)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    try:
+        data = json.loads(result.stdout)
+        if isinstance(data, dict):
+            arch = (
+                data.get("data", {}).get("attributes", {}).get("arch")
+                or data.get("arch")
+                or data.get("architecture")
+            )
+            return arch.lower() if arch else None
+    except (json.JSONDecodeError, KeyError):
+        pass
+    return None
+
+
+def _check_architecture_compatibility(host_arch: str, image_arch: str) -> bool:
+    """Check if image architecture matches host architecture.
+
+    Parameters
+    ----------
+    host_arch : str
+        Host architecture (e.g., 'amd64', 'arm64').
+    image_arch : str
+        Image architecture.
+
+    Returns
+    -------
+    bool
+        True if architectures match, False otherwise.
+    """
+    return _normalize_arch(host_arch) == _normalize_arch(image_arch)
+
+
 def _pull_image(image_uri: str, sif_path: Path, log_file: Path | None = None) -> None:
     """Pull Docker image and convert to .sif format.
 
@@ -137,39 +216,21 @@ def _pull_image(image_uri: str, sif_path: Path, log_file: Path | None = None) ->
     Raises
     ------
     RuntimeError
-        If image pull fails.
+        If image pull fails or architecture is incompatible.
     """
     logger.info(f"Pulling image: {image_uri}")
-
-    # Ensure cache directory exists
     sif_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Build apptainer pull command
     cmd = ["apptainer", "pull", "--force", str(sif_path), image_uri]
-
-    logger.debug(f"Running: {' '.join(cmd)}")
-    
     if log_file is not None:
-        with open(log_file, "a") as log_handle:
-            result = subprocess.run(
-                cmd,
-                stdout=log_handle,
-                stderr=subprocess.STDOUT,
-                text=True,
-                check=False,
-            )
+        with open(log_file, "a") as f:
+            result = subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT, text=True, check=False)
     else:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
 
     if result.returncode != 0:
         error_msg = f"Failed to pull Apptainer image '{image_uri}':\n"
-        error_msg += f"Command: {' '.join(cmd)}\n"
-        error_msg += f"Return code: {result.returncode}\n"
+        error_msg += f"Command: {' '.join(cmd)}\nReturn code: {result.returncode}\n"
         if log_file is None:
             if result.stdout:
                 error_msg += f"stdout:\n{result.stdout}\n"
@@ -177,13 +238,18 @@ def _pull_image(image_uri: str, sif_path: Path, log_file: Path | None = None) ->
                 error_msg += f"stderr:\n{result.stderr}\n"
         else:
             error_msg += f"See log file: {log_file}\n"
-        logger.error(error_msg)
-        raise RuntimeError(error_msg) from subprocess.CalledProcessError(result.returncode, cmd)
+        raise RuntimeError(error_msg)
 
     if not _is_image_cached(sif_path):
         raise RuntimeError(f"Image pull completed but .sif file not found at {sif_path}")
 
-    logger.info(f"Successfully pulled and cached image: {sif_path}")
+    host_arch = _get_host_architecture()
+    pulled_arch = _get_image_architecture(sif_path)
+    if pulled_arch and not _check_architecture_compatibility(host_arch, pulled_arch):
+        raise RuntimeError(
+            f"Architecture mismatch: host is {host_arch}, image is {pulled_arch}. "
+            f"Remove {sif_path} and pull a compatible version."
+        )
 
 
 class ApptainerBackend(Backend):
@@ -280,12 +346,17 @@ class ApptainerBackend(Backend):
         self._log_file_path = log_dir / log_filename
 
         logger.info(f"Starting ApptainerBackend with image_uri={self._image_uri}, device={self._device}")
-        logger.info(f"Log file: {self._log_file_path}")
 
-        # Pull image if not cached
         if not _is_image_cached(self._sif_path):
-            logger.info("Image not cached, pulling...")
             _pull_image(self._image_uri, self._sif_path, log_file=self._log_file_path)
+        else:
+            host_arch = _get_host_architecture()
+            cached_arch = _get_image_architecture(self._sif_path)
+            if cached_arch and not _check_architecture_compatibility(host_arch, cached_arch):
+                raise RuntimeError(
+                    f"Architecture mismatch: host is {host_arch}, cached image is {cached_arch}. "
+                    f"Remove {self._sif_path} and pull a compatible version."
+                )
 
         # Find available port
         self._port = _find_available_port()
