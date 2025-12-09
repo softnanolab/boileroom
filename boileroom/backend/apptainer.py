@@ -275,12 +275,30 @@ def _pull_image(image_uri: str, sif_path: Path, log_file: Path | None = None) ->
     logger.info(f"Pulling image: {image_uri}")
     sif_path.parent.mkdir(parents=True, exist_ok=True)
 
+    # Set APPTAINER_TMPDIR to a writable location for the pull command
+    # This is needed because apptainer pull creates temporary build directories
+    # Use existing APPTAINER_TMPDIR if set, otherwise use TMPDIR, or fall back to cache_dir/tmp
+    apptainer_tmpdir = os.environ.get("APPTAINER_TMPDIR")
+    if not apptainer_tmpdir:
+        apptainer_tmpdir = os.environ.get("TMPDIR")
+    if not apptainer_tmpdir:
+        # Fall back to a tmp directory in the cache directory
+        apptainer_tmpdir = str(sif_path.parent.parent / "tmp")
+    
+    apptainer_tmpdir_path = Path(apptainer_tmpdir)
+    apptainer_tmpdir_path.mkdir(parents=True, exist_ok=True)
+    
+    # Prepare environment with APPTAINER_TMPDIR set
+    env = os.environ.copy()
+    env["APPTAINER_TMPDIR"] = str(apptainer_tmpdir_path)
+    logger.debug(f"Setting APPTAINER_TMPDIR={env['APPTAINER_TMPDIR']} for image pull")
+
     cmd = ["apptainer", "pull", "--force", str(sif_path), image_uri]
     if log_file is not None:
         with open(log_file, "a") as f:
-            result = subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT, text=True, check=False)
+            result = subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT, text=True, check=False, env=env)
     else:
-        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False, env=env)
 
     if result.returncode != 0:
         error_msg = f"Failed to pull Apptainer image '{image_uri}':\n"
@@ -580,7 +598,7 @@ class ApptainerBackend(Backend):
         """
         if self._client is None:
             raise RuntimeError("Apptainer backend is not initialized. Call start() before use.")
-        return _ApptainerModelProxy(self._client)
+        return _ApptainerModelProxy(self._client, log_file_path=self._log_file_path)
 
     def _wait_for_health_check(self, timeout: float = 300.0, poll_interval: float = 1.0) -> None:
         """Wait for the server to become ready by polling the /health endpoint.
@@ -652,15 +670,18 @@ class ApptainerBackend(Backend):
 class _ApptainerModelProxy:
     """HTTP proxy for making requests to the Apptainer container server."""
 
-    def __init__(self, client: httpx.Client) -> None:
+    def __init__(self, client: httpx.Client, log_file_path: Path | None = None) -> None:
         """Initialize the proxy with an HTTP client.
 
         Parameters
         ----------
         client : httpx.Client
             HTTP client configured with the server's base URL.
+        log_file_path : Path | None
+            Optional path to the server log file for error reporting.
         """
         self._client = client
+        self._log_file_path = log_file_path
 
     def embed(self, sequences: str | list[str], options: dict | None = None) -> Any:
         """Embed sequences by making a POST request to /embed.
@@ -680,7 +701,19 @@ class _ApptainerModelProxy:
         """
         payload = {"sequences": sequences, "options": options}
         response = self._client.post("/embed", json=payload)
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            if response.status_code == 500:
+                log_file_msg = ""
+                if self._log_file_path is not None:
+                    log_file_msg = f"\n\nServer log file: {self._log_file_path}"
+                # Raise RuntimeError with log file path, chaining from the original HTTPStatusError
+                raise RuntimeError(
+                    f"Internal server error (500) occurred.{log_file_msg}\n"
+                    f"HTTP request failed: {e}"
+                ) from e
+            raise
         return _deserialize_output(response.json())
 
     def fold(self, sequences: str | list[str], options: dict | None = None) -> Any:
@@ -701,7 +734,19 @@ class _ApptainerModelProxy:
         """
         payload = {"sequences": sequences, "options": options}
         response = self._client.post("/fold", json=payload)
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            if response.status_code == 500:
+                log_file_msg = ""
+                if self._log_file_path is not None:
+                    log_file_msg = f"\n\nServer log file: {self._log_file_path}"
+                # Raise RuntimeError with log file path, chaining from the original HTTPStatusError
+                raise RuntimeError(
+                    f"Internal server error (500) occurred.{log_file_msg}\n"
+                    f"HTTP request failed: {e}"
+                ) from e
+            raise
         return _deserialize_output(response.json())
 
 
