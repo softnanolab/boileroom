@@ -25,13 +25,14 @@ def compute_position_ids(sequences: List[str], glycine_linker: str, position_ids
         chains = multimer_seq.split(":")
         chain_count = len(chains)
         linker_length = len(glycine_linker)
+        has_linker = linker_length > 0
 
         for chain_id, chain_seq in enumerate(chains):
             intrachain_position_ids = np.arange(len(chain_seq))
             if chain_id != 0:
                 intrachain_position_ids = (intrachain_position_ids + (previous_chain_end + 1)) + position_ids_skip
             # add linker if not last chain
-            if chain_id != chain_count - 1 and linker_length:
+            if chain_id != chain_count - 1 and has_linker:
                 linker_position_ids = np.arange(linker_length) + intrachain_position_ids[-1] + 1
                 intrachain_position_ids = np.concatenate([intrachain_position_ids, linker_position_ids])
             previous_chain_end = intrachain_position_ids[-1]
