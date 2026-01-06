@@ -427,7 +427,6 @@ def main(
                     model=model,
                     base_image_tag=base_tag,
                     torch_wheel_index=torch_index,
-                    platform="linux/amd64,linux/arm64",  # Not used but kept for compatibility
                     no_cache=no_cache,
                     tag=tag,
                     push=push,
