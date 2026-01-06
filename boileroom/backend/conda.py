@@ -7,11 +7,7 @@ import shutil
 import socket
 import subprocess
 import time
-<<<<<<< HEAD
-import yaml  # type: ignore[import]
-=======
 import yaml  # type: ignore[import-not-found]
->>>>>>> origin/feat/conda-progress-debug
 from pathlib import Path
 from typing import Any, Optional
 
@@ -19,6 +15,7 @@ import httpx  # type: ignore[import-not-found]
 
 from .base import Backend
 from .progress import ProgressTracker
+from ..utils import get_model_cache_dir
 
 logger = logging.getLogger(__name__)
 
@@ -461,11 +458,14 @@ class CondaBackend(Backend):
         if device_number is not None:
             env["CUDA_VISIBLE_DEVICES"] = device_number
 
-        # Pass through MODEL_DIR and other relevant env vars
-        # TODO: this is not ideal, as it requires dependency on individual models, so we should make this more robust and general.
-        for key in ["MODEL_DIR", "CHAI_DOWNLOADS_DIR"]:
-            if key in os.environ:
-                env[key] = os.environ[key]
+        # Pass through MODEL_DIR if present
+        if "MODEL_DIR" in os.environ:
+            env["MODEL_DIR"] = os.environ["MODEL_DIR"]
+            # Automatically derive CHAI_DOWNLOADS_DIR from MODEL_DIR/chai
+            # Only set if not already explicitly set (allows override if needed)
+            if "CHAI_DOWNLOADS_DIR" not in os.environ:
+                chai_cache_dir = get_model_cache_dir("chai")
+                env["CHAI_DOWNLOADS_DIR"] = str(chai_cache_dir)
 
         # Set PYTHONPATH to project root
         env["PYTHONPATH"] = str(project_root)
@@ -483,7 +483,12 @@ class CondaBackend(Backend):
         self._wait_for_health_check()
 
         # Create HTTP client
-        self._client = httpx.Client(base_url=self._base_url, timeout=300.0)
+        # Use 30 minute timeout to handle large responses (e.g., PAE matrices for long sequences)
+        # This matches Modal backend timeout of 20 minutes with some buffer for serialization/transmission
+        # Set explicit timeouts: connect=10s, read=1800s (30min), write=60s, pool=10s
+        # The read timeout is the critical one for large response bodies
+        timeout_config = httpx.Timeout(connect=10.0, read=1800.0, write=60.0, pool=10.0)
+        self._client = httpx.Client(base_url=self._base_url, timeout=timeout_config)
 
     def shutdown(self) -> None:
         """Shutdown the conda environment server gracefully.

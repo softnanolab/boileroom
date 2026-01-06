@@ -57,9 +57,9 @@
 - The `_ApptainerModelProxy` in `apptainer.py` provides the client-side interface that forwards method calls (`embed()` or `fold()`) to the HTTP server via POST requests.
 - Models in the same family (e.g., ESM2 and ESMFold) can share the same Docker image.
 - `ApptainerBackend` expects a Docker image URI (e.g., `docker://docker.io/jakublala/boileroom-boltz:cuda12.6-dev`), pulls it as a `.sif` into a cache directory (default `~/.cache/boileroom/images` or `MODEL_DIR`), and starts `server.py` inside the container using `apptainer exec`. It:
-  - Binds the repo source tree read-only and any model data directories (`MODEL_DIR`, `CHAI_DOWNLOADS_DIR`) into the container.
-  - Sets `MODEL_CLASS`, `MODEL_CONFIG`, `DEVICE`, and CUDA-related env vars (`CUDA_VISIBLE_DEVICES`, `LD_LIBRARY_PATH`) before starting.
-  - Uses `/health` polling to wait for readiness and exposes a thin HTTP client proxy for `embed()`/`fold()`.
+- Binds the repo source tree read-only and `MODEL_DIR` into the container. Model-specific subdirectories (e.g., `MODEL_DIR/chai`, `MODEL_DIR/boltz`) are automatically accessible as subdirectories of the mounted `MODEL_DIR`.
+- Sets `MODEL_CLASS`, `MODEL_CONFIG`, `DEVICE`, and CUDA-related env vars (`CUDA_VISIBLE_DEVICES`, `LD_LIBRARY_PATH`) before starting. Model-specific environment variables (e.g., `CHAI_DOWNLOADS_DIR`) are automatically derived from `MODEL_DIR` when present.
+- Uses `/health` polling to wait for readiness and exposes a thin HTTP client proxy for `embed()`/`fold()`.
 
 ## Adding a New Model
 
@@ -177,7 +177,8 @@ The `types.py` file contains output dataclasses (e.g., `MyFoldOutput`) that can 
     - `image_uri=f"docker://docker.io/jakublala/boileroom-<model>:{backend_tag}"`, where `backend_tag` encodes CUDA and version (e.g., `cuda12.6-dev` or `cuda12.6-latest`).
   - The backend:
     - Caches `.sif` images under `~/.cache/boileroom/images` or `MODEL_DIR`.
-    - Binds the repo source tree and data directories (`MODEL_DIR`, `CHAI_DOWNLOADS_DIR`) into the container.
+    - Binds the repo source tree and `MODEL_DIR` into the container. Model-specific subdirectories are automatically accessible.
+    - Automatically derives model-specific environment variables (e.g., `CHAI_DOWNLOADS_DIR=MODEL_DIR/chai`) from `MODEL_DIR` when present.
     - Starts `server.py` with `micromamba run -n base python server.py` and waits for `/health` before serving requests.
 
 ### Docker Images & Build Tooling

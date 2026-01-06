@@ -127,7 +127,7 @@ apptainer exec chai1.sif python -c "import torch; print(torch.cuda.is_available(
 ```
 
 ### 📂 Configure model storage location (MODEL_DIR)
-Set `MODEL_DIR` at runtime to the host-mounted path that should store model weights. The runtime will also set `CHAI_DOWNLOADS_DIR=$MODEL_DIR/chai1` automatically when `MODEL_DIR` is defined.
+Set `MODEL_DIR` at runtime to the host-mounted path that should store model weights. Model-specific directories are automatically derived under `MODEL_DIR` (e.g., `MODEL_DIR/chai` for Chai, `MODEL_DIR/boltz` for Boltz). The runtime automatically sets `CHAI_DOWNLOADS_DIR=$MODEL_DIR/chai` when `MODEL_DIR` is defined.
 
 Docker example:
 ```bash

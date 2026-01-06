@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import platform
 import shutil
 import socket
 import subprocess
@@ -18,6 +19,20 @@ from .base import Backend
 from ..utils import ensure_cache_dir
 
 logger = logging.getLogger(__name__)
+
+ARCH_NORMALIZATION = {
+    "x86_64": "amd64",
+    "amd64": "amd64",
+    "aarch64": "arm64",
+    "arm64": "arm64",
+    "armv7l": "arm",
+    "armv6l": "arm",
+}
+
+
+def _normalize_arch(arch: str) -> str:
+    """Normalize architecture labels to a small set."""
+    return ARCH_NORMALIZATION.get(arch.lower(), arch.lower())
 
 
 def _find_available_port(start_port: int = 8000, max_attempts: int = 100) -> int:
@@ -122,6 +137,124 @@ def _is_image_cached(sif_path: Path) -> bool:
     return sif_path.exists() and sif_path.stat().st_size > 0
 
 
+def _get_host_architecture() -> str:
+    """Get the host system architecture.
+
+    Returns
+    -------
+    str
+        Architecture string (e.g., 'amd64', 'arm64', 'x86_64', 'aarch64').
+    """
+    return _normalize_arch(platform.machine())
+
+
+def _get_image_architecture(sif_path: Path) -> str | None:
+    """Get the architecture of a cached .sif file.
+
+    Parameters
+    ----------
+    sif_path : Path
+        Path to .sif file.
+
+    Returns
+    -------
+    str | None
+        Architecture string (e.g., 'amd64', 'arm64') if found, None otherwise.
+    """
+    result = subprocess.run(
+        ["apptainer", "inspect", "--json", str(sif_path)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    try:
+        data = json.loads(result.stdout)
+        if isinstance(data, dict):
+            arch = (
+                data.get("data", {}).get("attributes", {}).get("arch")
+                or data.get("arch")
+                or data.get("architecture")
+            )
+            return arch.lower() if arch else None
+    except (json.JSONDecodeError, KeyError):
+        pass
+    return None
+
+
+def _check_architecture_compatibility(host_arch: str, image_arch: str) -> bool:
+    """Check if image architecture matches host architecture.
+
+    Parameters
+    ----------
+    host_arch : str
+        Host architecture (e.g., 'amd64', 'arm64').
+    image_arch : str
+        Image architecture.
+
+    Returns
+    -------
+    bool
+        True if architectures match, False otherwise.
+    """
+    return _normalize_arch(host_arch) == _normalize_arch(image_arch)
+
+
+def _build_ld_library_path() -> str:
+    """Build LD_LIBRARY_PATH for CUDA libraries in conda environments.
+
+    Includes paths for:
+    - cuequivariance_ops (libcue_ops.so)
+    - NVIDIA conda packages (libcublas.so.12)
+    - PyTorch CUDA libraries (libnvrtc.so.12)
+    - System CUDA toolkit paths
+    - NVIDIA driver libraries (added by --nv flag)
+
+    Returns
+    -------
+    str
+        Colon-separated LD_LIBRARY_PATH string.
+    """
+    conda_base = "/opt/conda/lib"
+    python_version = "3.12"
+    site_packages = f"{conda_base}/python{python_version}/site-packages"
+
+    # Conda package-specific library paths (highest priority)
+    conda_lib_paths = [
+        f"{site_packages}/cuequivariance_ops/lib",  # libcue_ops.so
+        f"{site_packages}/nvidia/cublas/lib",  # libcublas.so.12
+        f"{site_packages}/torch/lib",  # libnvrtc.so.12 and other PyTorch CUDA libs
+        f"{site_packages}/nvidia",  # Other NVIDIA conda packages
+        conda_base,  # Base conda lib directory
+    ]
+
+    # System CUDA toolkit paths (fallback if not in conda)
+    cuda_toolkit_paths = [
+        "/usr/local/cuda/lib64",
+        "/usr/local/cuda/lib",
+        "/usr/local/cuda-12/lib64",
+        "/usr/local/cuda-12/lib",
+    ]
+
+    # NVIDIA driver paths (--nv flag adds these, but include explicitly for clarity)
+    nvidia_driver_paths = [
+        "/usr/local/nvidia/lib64",
+        "/usr/local/nvidia/lib",
+        "/.singularity.d/libs",
+    ]
+
+    # Combine all paths in priority order
+    ld_path_parts = conda_lib_paths + cuda_toolkit_paths + nvidia_driver_paths
+
+    # Append host LD_LIBRARY_PATH if present (lowest priority)
+    if "LD_LIBRARY_PATH" in os.environ:
+        host_paths = [p for p in os.environ["LD_LIBRARY_PATH"].split(":") if p and p not in ld_path_parts]
+        ld_path_parts.extend(host_paths)
+
+    return ":".join(ld_path_parts)
+
+
 def _pull_image(image_uri: str, sif_path: Path, log_file: Path | None = None) -> None:
     """Pull Docker image and convert to .sif format.
 
@@ -137,39 +270,39 @@ def _pull_image(image_uri: str, sif_path: Path, log_file: Path | None = None) ->
     Raises
     ------
     RuntimeError
-        If image pull fails.
+        If image pull fails or architecture is incompatible.
     """
     logger.info(f"Pulling image: {image_uri}")
-
-    # Ensure cache directory exists
     sif_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Build apptainer pull command
-    cmd = ["apptainer", "pull", "--force", str(sif_path), image_uri]
-
-    logger.debug(f"Running: {' '.join(cmd)}")
+    # Set APPTAINER_TMPDIR to a writable location for the pull command
+    # This is needed because apptainer pull creates temporary build directories
+    # Use existing APPTAINER_TMPDIR if set, otherwise use TMPDIR, or fall back to cache_dir/tmp
+    apptainer_tmpdir = os.environ.get("APPTAINER_TMPDIR")
+    if not apptainer_tmpdir:
+        apptainer_tmpdir = os.environ.get("TMPDIR")
+    if not apptainer_tmpdir:
+        # Fall back to a tmp directory in the cache directory
+        apptainer_tmpdir = str(sif_path.parent.parent / "tmp")
     
+    apptainer_tmpdir_path = Path(apptainer_tmpdir)
+    apptainer_tmpdir_path.mkdir(parents=True, exist_ok=True)
+    
+    # Prepare environment with APPTAINER_TMPDIR set
+    env = os.environ.copy()
+    env["APPTAINER_TMPDIR"] = str(apptainer_tmpdir_path)
+    logger.debug(f"Setting APPTAINER_TMPDIR={env['APPTAINER_TMPDIR']} for image pull")
+
+    cmd = ["apptainer", "pull", "--force", str(sif_path), image_uri]
     if log_file is not None:
-        with open(log_file, "a") as log_handle:
-            result = subprocess.run(
-                cmd,
-                stdout=log_handle,
-                stderr=subprocess.STDOUT,
-                text=True,
-                check=False,
-            )
+        with open(log_file, "a") as f:
+            result = subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT, text=True, check=False, env=env)
     else:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False, env=env)
 
     if result.returncode != 0:
         error_msg = f"Failed to pull Apptainer image '{image_uri}':\n"
-        error_msg += f"Command: {' '.join(cmd)}\n"
-        error_msg += f"Return code: {result.returncode}\n"
+        error_msg += f"Command: {' '.join(cmd)}\nReturn code: {result.returncode}\n"
         if log_file is None:
             if result.stdout:
                 error_msg += f"stdout:\n{result.stdout}\n"
@@ -177,13 +310,18 @@ def _pull_image(image_uri: str, sif_path: Path, log_file: Path | None = None) ->
                 error_msg += f"stderr:\n{result.stderr}\n"
         else:
             error_msg += f"See log file: {log_file}\n"
-        logger.error(error_msg)
-        raise RuntimeError(error_msg) from subprocess.CalledProcessError(result.returncode, cmd)
+        raise RuntimeError(error_msg)
 
     if not _is_image_cached(sif_path):
         raise RuntimeError(f"Image pull completed but .sif file not found at {sif_path}")
 
-    logger.info(f"Successfully pulled and cached image: {sif_path}")
+    host_arch = _get_host_architecture()
+    pulled_arch = _get_image_architecture(sif_path)
+    if pulled_arch and not _check_architecture_compatibility(host_arch, pulled_arch):
+        raise RuntimeError(
+            f"Architecture mismatch: host is {host_arch}, image is {pulled_arch}. "
+            f"Remove {sif_path} and pull a compatible version."
+        )
 
 
 class ApptainerBackend(Backend):
@@ -280,12 +418,17 @@ class ApptainerBackend(Backend):
         self._log_file_path = log_dir / log_filename
 
         logger.info(f"Starting ApptainerBackend with image_uri={self._image_uri}, device={self._device}")
-        logger.info(f"Log file: {self._log_file_path}")
 
-        # Pull image if not cached
         if not _is_image_cached(self._sif_path):
-            logger.info("Image not cached, pulling...")
             _pull_image(self._image_uri, self._sif_path, log_file=self._log_file_path)
+        else:
+            host_arch = _get_host_architecture()
+            cached_arch = _get_image_architecture(self._sif_path)
+            if cached_arch and not _check_architecture_compatibility(host_arch, cached_arch):
+                raise RuntimeError(
+                    f"Architecture mismatch: host is {host_arch}, cached image is {cached_arch}. "
+                    f"Remove {self._sif_path} and pull a compatible version."
+                )
 
         # Find available port
         self._port = _find_available_port()
@@ -305,7 +448,7 @@ class ApptainerBackend(Backend):
 
         # Enable NVIDIA GPU support if device is CUDA
         device_number = _extract_device_number(self._device)
-        if device_number is not None:
+        if self._device.startswith("cuda"):
             cmd.append("--nv")
 
         # Bind mount boileroom source code (read-only)
@@ -313,20 +456,26 @@ class ApptainerBackend(Backend):
 
         # Bind mount MODEL_DIR if present
         if model_dir:
-            model_dir_path = Path(model_dir).resolve()
-            # Ensure directory exists
-            model_dir_path.mkdir(parents=True, exist_ok=True)
-            # Mount to same path in container
-            container_model_dir = str(model_dir_path)
-            cmd.extend(["-B", f"{container_model_dir}:{container_model_dir}"])
-
-        # Bind mount CHAI_DOWNLOADS_DIR if present
-        chai_dir = os.environ.get("CHAI_DOWNLOADS_DIR")
-        if chai_dir:
-            chai_dir_path = Path(chai_dir).resolve()
-            chai_dir_path.mkdir(parents=True, exist_ok=True)
-            container_chai_dir = str(chai_dir_path)
-            cmd.extend(["-B", f"{container_chai_dir}:{container_chai_dir}"])
+            # Use the already-resolved model_dir_path from above
+            try:
+                model_dir_path.mkdir(parents=True, exist_ok=True)
+            except OSError as e:
+                logger.warning(f"Failed to create MODEL_DIR {model_dir_path} on host: {e}")
+                raise RuntimeError(
+                    f"Cannot create MODEL_DIR {model_dir_path} on host. "
+                    f"Ensure parent directories exist and you have write permissions."
+                ) from e
+            
+            if not model_dir_path.exists():
+                raise RuntimeError(f"MODEL_DIR {model_dir_path} does not exist after creation attempt")
+            
+            if not model_dir_path.is_dir():
+                raise RuntimeError(f"MODEL_DIR {model_dir_path} exists but is not a directory")
+            
+            # Mount host MODEL_DIR to fixed container path for simplicity
+            container_model_dir = "/.model_cache"
+            cmd.extend(["-B", f"{model_dir_path}:{container_model_dir}"])
+            logger.info(f"Bind mounting MODEL_DIR: {model_dir_path} -> {container_model_dir}")
 
         # Set environment variables
         env_vars = {
@@ -345,43 +494,24 @@ class ApptainerBackend(Backend):
             "CXX": "g++",
         }
 
-        # TODO: BOLTZ NEEDS CUDA 12 !!$@($_(!@#$!(@$@!)))
-        
-        # Build LD_LIBRARY_PATH to include conda libraries
-        # libcue_ops.so is in /opt/conda/lib/python3.12/site-packages/cuequivariance_ops/lib/
-        # libcublas.so.12 is in /opt/conda/lib/python3.12/site-packages/nvidia/cublas/lib/
-        # Both need to be in LD_LIBRARY_PATH
-        # Note: --nv will add /usr/local/nvidia/lib and /usr/local/nvidia/lib64 automatically
-        # Also include the base conda lib directory as a fallback
-        conda_base_lib_path = "/opt/conda/lib"
-        conda_cue_ops_lib_path = "/opt/conda/lib/python3.12/site-packages/cuequivariance_ops/lib"
-        conda_cuda_lib_path = "/opt/conda/lib/python3.12/site-packages/nvidia/cublas/lib"
-        # Start with conda library paths (highest priority), then NVIDIA paths that --nv sets
-        ld_path_parts = [
-            conda_cue_ops_lib_path,  # Where libcue_ops.so is located
-            conda_cuda_lib_path,  # Where libcublas.so.12 is located
-            conda_base_lib_path,  # Base conda lib directory as fallback
-            "/usr/local/nvidia/lib64",
-            "/usr/local/nvidia/lib",
-            "/.singularity.d/libs",
-        ]
-        # If host has LD_LIBRARY_PATH, append any additional paths (but conda path takes priority)
-        if "LD_LIBRARY_PATH" in os.environ:
-            host_paths = [p for p in os.environ["LD_LIBRARY_PATH"].split(":") if p]
-            for path in host_paths:
-                if path not in ld_path_parts:
-                    ld_path_parts.append(path)
-        env_vars["LD_LIBRARY_PATH"] = ":".join(ld_path_parts)
+        # Build LD_LIBRARY_PATH to include all necessary CUDA library paths
+        # This ensures conda-installed CUDA libraries (libcue_ops.so, libcublas.so.12, libnvrtc.so.12)
+        # and system CUDA toolkit libraries are accessible
+        env_vars["LD_LIBRARY_PATH"] = _build_ld_library_path()
 
         if device_number is not None:
             env_vars["CUDA_VISIBLE_DEVICES"] = device_number
 
-        # Pass through MODEL_DIR and CHAI_DOWNLOADS_DIR if present
-        # TODO: this should be unified, and simplified
-        # TODO: all env variables should be passed through to the container, in a programmatic way
-        for key in ["MODEL_DIR", "CHAI_DOWNLOADS_DIR"]:
-            if key in os.environ:
-                env_vars[key] = os.environ[key]
+        # Set MODEL_DIR to container path if host MODEL_DIR is present
+        if model_dir:
+            # Use container path where MODEL_DIR is mounted
+            container_model_dir_env = "/.model_cache"
+            env_vars["MODEL_DIR"] = container_model_dir_env
+            # Automatically derive CHAI_DOWNLOADS_DIR from MODEL_DIR/chai
+            # Only set if not already explicitly set (allows override if needed)
+            if "CHAI_DOWNLOADS_DIR" not in os.environ:
+                # Directly construct container path since MODEL_DIR will be /.model_cache in container
+                env_vars["CHAI_DOWNLOADS_DIR"] = f"{container_model_dir_env}/chai"
 
         # Add environment variables to command
         for key, value in env_vars.items():
@@ -421,7 +551,12 @@ class ApptainerBackend(Backend):
         self._wait_for_health_check()
         
         logger.info(f"Creating HTTP client for {self._base_url}")
-        self._client = httpx.Client(base_url=self._base_url, timeout=300.0)
+        # Use 30 minute timeout to handle large responses (e.g., PAE matrices for long sequences)
+        # This matches Modal backend timeout of 20 minutes with some buffer for serialization/transmission
+        # Set explicit timeouts: connect=10s, read=1800s (30min), write=60s, pool=10s
+        # The read timeout is the critical one for large response bodies
+        timeout_config = httpx.Timeout(connect=10.0, read=1800.0, write=60.0, pool=10.0)
+        self._client = httpx.Client(base_url=self._base_url, timeout=timeout_config)
         logger.info("Apptainer backend startup complete")
 
     def shutdown(self) -> None:
@@ -463,7 +598,7 @@ class ApptainerBackend(Backend):
         """
         if self._client is None:
             raise RuntimeError("Apptainer backend is not initialized. Call start() before use.")
-        return _ApptainerModelProxy(self._client)
+        return _ApptainerModelProxy(self._client, log_file_path=self._log_file_path)
 
     def _wait_for_health_check(self, timeout: float = 300.0, poll_interval: float = 1.0) -> None:
         """Wait for the server to become ready by polling the /health endpoint.
@@ -535,15 +670,18 @@ class ApptainerBackend(Backend):
 class _ApptainerModelProxy:
     """HTTP proxy for making requests to the Apptainer container server."""
 
-    def __init__(self, client: httpx.Client) -> None:
+    def __init__(self, client: httpx.Client, log_file_path: Path | None = None) -> None:
         """Initialize the proxy with an HTTP client.
 
         Parameters
         ----------
         client : httpx.Client
             HTTP client configured with the server's base URL.
+        log_file_path : Path | None
+            Optional path to the server log file for error reporting.
         """
         self._client = client
+        self._log_file_path = log_file_path
 
     def embed(self, sequences: str | list[str], options: dict | None = None) -> Any:
         """Embed sequences by making a POST request to /embed.
@@ -563,7 +701,19 @@ class _ApptainerModelProxy:
         """
         payload = {"sequences": sequences, "options": options}
         response = self._client.post("/embed", json=payload)
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            if response.status_code == 500:
+                log_file_msg = ""
+                if self._log_file_path is not None:
+                    log_file_msg = f"\n\nServer log file: {self._log_file_path}"
+                # Raise RuntimeError with log file path, chaining from the original HTTPStatusError
+                raise RuntimeError(
+                    f"Internal server error (500) occurred.{log_file_msg}\n"
+                    f"HTTP request failed: {e}"
+                ) from e
+            raise
         return _deserialize_output(response.json())
 
     def fold(self, sequences: str | list[str], options: dict | None = None) -> Any:
@@ -584,7 +734,19 @@ class _ApptainerModelProxy:
         """
         payload = {"sequences": sequences, "options": options}
         response = self._client.post("/fold", json=payload)
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            if response.status_code == 500:
+                log_file_msg = ""
+                if self._log_file_path is not None:
+                    log_file_msg = f"\n\nServer log file: {self._log_file_path}"
+                # Raise RuntimeError with log file path, chaining from the original HTTPStatusError
+                raise RuntimeError(
+                    f"Internal server error (500) occurred.{log_file_msg}\n"
+                    f"HTTP request failed: {e}"
+                ) from e
+            raise
         return _deserialize_output(response.json())
 
 

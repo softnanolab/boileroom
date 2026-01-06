@@ -29,7 +29,7 @@ from boltz.model.models.boltz2 import Boltz2 as Boltz2Model
 from typing import Optional, Any, Union, Sequence, List, Dict, cast
 
 from ...base import FoldingAlgorithm
-from ...utils import MODAL_MODEL_DIR, Timer
+from ...utils import MODAL_MODEL_DIR, Timer, safe_mkdir
 from .types import Boltz2Output
 
 logger = logging.getLogger(__name__)
@@ -118,8 +118,9 @@ class Boltz2Core(FoldingAlgorithm):
         else:
             if self.model_dir is None:
                 raise ValueError("model_dir must be set when cache_dir is not provided")
-            cache_dir = Path(self.model_dir).resolve() / "boltz"
-        cache_dir.mkdir(parents=True, exist_ok=True)
+            cache_dir = Path(self.model_dir) / "boltz"
+        # Use safe_mkdir to avoid creating parent directories that don't exist in containers
+        safe_mkdir(cache_dir, parents=False)
 
         # Download boltz2 weights and resources (mols)
         download_boltz2(cache_dir)
@@ -215,22 +216,22 @@ class Boltz2Core(FoldingAlgorithm):
         """
         cache_dir_str = self.config.get("cache_dir")
         if cache_dir_str is not None:
-            base_cache_dir = Path(cache_dir_str).resolve()
+            base_cache_dir = Path(cache_dir_str)
         else:
             if self.model_dir is None:
                 raise ValueError("model_dir must be set when cache_dir is not provided")
-            base_cache_dir = Path(self.model_dir).resolve() / "boltz"
+            base_cache_dir = Path(self.model_dir) / "boltz"
 
         # Check if we're in Modal environment and adjust path
         modal_model_dir = os.environ.get("MODAL_MODEL_DIR")
         if modal_model_dir:
-            base_cache_dir = Path(modal_model_dir).resolve() / "boltz"
+            base_cache_dir = Path(modal_model_dir) / "boltz"
         elif cache_dir_str is None and self.model_dir == MODAL_MODEL_DIR:
             # If model_dir was set to MODAL_MODEL_DIR but env var not set, use it directly
-            base_cache_dir = Path(MODAL_MODEL_DIR).resolve() / "boltz"
+            base_cache_dir = Path(MODAL_MODEL_DIR) / "boltz"
 
         msa_cache_dir = base_cache_dir / "msa_cache"
-        msa_cache_dir.mkdir(parents=True, exist_ok=True)
+        safe_mkdir(msa_cache_dir, parents=True)
         return msa_cache_dir
 
     def _get_msa_cache_index_path(self) -> Path:
@@ -283,7 +284,7 @@ class Boltz2Core(FoldingAlgorithm):
         """
         index_path = self._get_msa_cache_index_path()
         cache_dir = index_path.parent
-        cache_dir.mkdir(parents=True, exist_ok=True)
+        safe_mkdir(cache_dir, parents=True)
 
         # Write to temporary file first for atomic update
         temp_path = index_path.with_suffix(".json.tmp")
@@ -340,6 +341,12 @@ class Boltz2Core(FoldingAlgorithm):
                     # Check if file actually exists
                     if msa_path.exists() and msa_path.is_file():
                         cached_paths[sequence] = msa_path
+                        # Log hash and path so users can locate and remove cached MSAs if needed
+                        logger.info(
+                            "Using cached MSA for sequence hash %s at %s",
+                            seq_hash,
+                            msa_path,
+                        )
                         # Update last_accessed timestamp
                         if entry.get("last_accessed") != now:
                             entry["last_accessed"] = now
@@ -378,7 +385,7 @@ class Boltz2Core(FoldingAlgorithm):
 
             # Create hash-prefixed directory structure: {hash[:2]}/{hash[2:4]}/
             hash_prefix_dir = cache_dir / seq_hash[:2] / seq_hash[2:4]
-            hash_prefix_dir.mkdir(parents=True, exist_ok=True)
+            safe_mkdir(hash_prefix_dir, parents=True)
 
             # Destination path
             msa_cache_path = hash_prefix_dir / f"{seq_hash}.csv"
@@ -953,16 +960,16 @@ class Boltz2Core(FoldingAlgorithm):
         # Always use a temporary working directory on the machine
         cache_dir_str = effective_config.get("cache_dir")
         if cache_dir_str is not None:
-            cache_dir = Path(cache_dir_str).resolve()
+            cache_dir = Path(cache_dir_str)
         else:
             if self.model_dir is None:
                 raise ValueError("model_dir must be set when cache_dir is not provided")
-            cache_dir = Path(self.model_dir).resolve() / "boltz"
+            cache_dir = Path(self.model_dir) / "boltz"
 
         with TemporaryDirectory() as tmp:
             work_path = Path(tmp).resolve()
 
-            with Timer("Boltz-2 preprocessing"):
+            with Timer("Boltz-2 preprocessing") as preprocess_timer:
                 # Pass cached MSA paths to FASTA generation
                 fasta_text = self._sequences_to_fasta(
                     validated_sequences,
@@ -987,42 +994,45 @@ class Boltz2Core(FoldingAlgorithm):
 
             datamodule = self._build_datamodule(processed, int(effective_config.get("num_workers", 2)), cache_dir)
 
-            with Timer("Boltz-2 inference") as t:
+            with Timer("Boltz-2 inference") as inference_timer:
                 preds = self._predict_with_trainer(datamodule)
 
-            # Extract and organize per-sample outputs succinctly
-            extracted = [self._extract_sample_from_pred(item) for item in (preds or []) if isinstance(item, dict)]
+            with Timer("Boltz-2 postprocessing") as postprocess_timer:
+                # Extract and organize per-sample outputs succinctly
+                extracted = [self._extract_sample_from_pred(item) for item in (preds or []) if isinstance(item, dict)]
 
-            confidences: List[Dict[str, Any]] = [a for (_, a, _, _, _) in extracted if a]
-            plddts: List[np.ndarray] = [p for (_, _, p, _, _) in extracted if p is not None]
-            paes: List[np.ndarray] = [a for (_, _, _, a, _) in extracted if a is not None]
-            pdes: List[np.ndarray] = [d for (_, _, _, _, d) in extracted if d is not None]
+                confidences: List[Dict[str, Any]] = [a for (_, a, _, _, _) in extracted if a]
+                plddts: List[np.ndarray] = [p for (_, _, p, _, _) in extracted if p is not None]
+                paes: List[np.ndarray] = [a for (_, _, _, a, _) in extracted if a is not None]
+                pdes: List[np.ndarray] = [d for (_, _, _, _, d) in extracted if d is not None]
 
-            # Validate shapes where present
-            for arr in plddts:
-                self._validate_sample_arrays(arr, None, None)
-            for arr in paes:
-                self._validate_sample_arrays(None, arr, None)
-            for arr in pdes:
-                self._validate_sample_arrays(None, None, arr)
+                # Validate shapes where present
+                for arr in plddts:
+                    self._validate_sample_arrays(arr, None, None)
+                for arr in paes:
+                    self._validate_sample_arrays(None, arr, None)
+                for arr in pdes:
+                    self._validate_sample_arrays(None, None, arr)
 
-            # Extract coords directly for atom_array generation
-            coords_list = [c for (c, _, _, _, _) in extracted if c is not None]
-            coords_np = np.array(coords_list, dtype=object)
-            atom_array_list, cif_strings = self._convert_outputs_using_boltz_structure(
-                coords_np, processed, plddt=plddts if plddts else None
-            )
+                # Extract coords directly for atom_array generation
+                coords_list = [c for (c, _, _, _, _) in extracted if c is not None]
+                coords_np = np.array(coords_list, dtype=object)
+                atom_array_list, cif_strings = self._convert_outputs_using_boltz_structure(
+                    coords_np, processed, plddt=plddts if plddts else None
+                )
 
-            include_fields = effective_config.get("include_fields")
-            pdb_list = None
-            if include_fields and ("*" in include_fields or "pdb" in include_fields):
-                pdb_list = [self._convert_outputs_to_pdb(arr) for arr in atom_array_list]
+                include_fields = effective_config.get("include_fields")
+                pdb_list = None
+                if include_fields and ("*" in include_fields or "pdb" in include_fields):
+                    pdb_list = [self._convert_outputs_to_pdb(arr) for arr in atom_array_list]
 
-            cif_list = None
-            if include_fields and ("*" in include_fields or "cif" in include_fields):
-                cif_list = cif_strings
+                cif_list = None
+                if include_fields and ("*" in include_fields or "cif" in include_fields):
+                    cif_list = cif_strings
 
-            self.metadata.prediction_time = t.duration
+            self.metadata.preprocessing_time = preprocess_timer.duration
+            self.metadata.inference_time = inference_timer.duration
+            self.metadata.postprocessing_time = postprocess_timer.duration
 
             # Build full output with all fields
             full_output = Boltz2Output(

@@ -21,8 +21,10 @@ class PredictionMetadata:
 
     model_name: str
     model_version: str
-    prediction_time: Optional[float]  # in seconds
     sequence_lengths: Optional[List[int]]
+    preprocessing_time: Optional[float] = None  # in seconds
+    inference_time: Optional[float] = None  # in seconds
+    postprocessing_time: Optional[float] = None  # in seconds
 
 
 class StructurePrediction(Protocol):
@@ -161,10 +163,15 @@ class Algorithm(ABC):
         Returns
         -------
         PredictionMetadata
-            Instance with `model_name` and `model_version` set to the provided values, and `prediction_time` and `sequence_lengths` initialized to None.
+            Instance with `model_name` and `model_version` set to the provided values, and timing fields and `sequence_lengths` initialized to None.
         """
         return PredictionMetadata(
-            model_name=model_name, model_version=model_version, prediction_time=None, sequence_lengths=None
+            model_name=model_name,
+            model_version=model_version,
+            sequence_lengths=None,
+            preprocessing_time=None,
+            inference_time=None,
+            postprocessing_time=None,
         )
 
 

@@ -3,9 +3,10 @@
 from pathlib import Path
 
 from ...images.base import base_image
-from ...utils import MODAL_MODEL_DIR
+from ...utils import MODAL_MODEL_DIR, get_model_cache_dir
 
-_chai_downloads_dir = Path(MODAL_MODEL_DIR) / "chai1"
+# Derive CHAI_DOWNLOADS_DIR from MODEL_DIR/chai, fallback to MODAL_MODEL_DIR/chai
+_chai_downloads_dir = Path(MODAL_MODEL_DIR) / "chai"
 
 chai_image = (
     base_image.pip_install(
