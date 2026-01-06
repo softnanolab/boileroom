@@ -448,7 +448,7 @@ class ApptainerBackend(Backend):
 
         # Enable NVIDIA GPU support if device is CUDA
         device_number = _extract_device_number(self._device)
-        if device_number is not None:
+        if self._device.startswith("cuda"):
             cmd.append("--nv")
 
         # Bind mount boileroom source code (read-only)
