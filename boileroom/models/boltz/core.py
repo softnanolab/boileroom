@@ -341,6 +341,12 @@ class Boltz2Core(FoldingAlgorithm):
                     # Check if file actually exists
                     if msa_path.exists() and msa_path.is_file():
                         cached_paths[sequence] = msa_path
+                        # Log hash and path so users can locate and remove cached MSAs if needed
+                        logger.info(
+                            "Using cached MSA for sequence hash %s at %s",
+                            seq_hash,
+                            msa_path,
+                        )
                         # Update last_accessed timestamp
                         if entry.get("last_accessed") != now:
                             entry["last_accessed"] = now
