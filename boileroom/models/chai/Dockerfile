@@ -1,12 +1,24 @@
+# BuildKit platform arguments
+ARG TARGETPLATFORM
+ARG TARGETARCH
+ARG TARGETOS
+ARG BUILDPLATFORM
+
 ARG BASE_IMAGE=docker.io/jakublala/boileroom-base:latest
 FROM ${BASE_IMAGE}
 
-# Use micromamba run to ensure python and pip in mamba-user env.
-RUN micromamba run -n base python -m pip install --no-cache-dir \
-    --extra-index-url https://download.pytorch.org/whl/cu118 \
-    torch==2.5.1 \
-    hf_transfer==0.1.8 \
-    chai_lab==0.6.1
+ARG ENV_FILE=environment.yml
+COPY ${ENV_FILE} /tmp/environment.yml
+USER root
+RUN chown ${MAMBA_USER}:${MAMBA_USER} /tmp/environment.yml
+USER ${MAMBA_USER}
+
+ARG TORCH_WHEEL_INDEX=https://download.pytorch.org/whl/cu118
+ENV PIP_EXTRA_INDEX_URL=${TORCH_WHEEL_INDEX}
+
+RUN micromamba env update -n base -f /tmp/environment.yml \
+    && micromamba clean --all --yes \
+    && rm /tmp/environment.yml
 
 ENV HF_HUB_ENABLE_HF_TRANSFER=1 \
     DISABLE_PANDERA_IMPORT_WARNING=True

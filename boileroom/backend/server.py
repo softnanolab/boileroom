@@ -8,12 +8,28 @@ import argparse
 import base64
 import importlib
 import json
+import logging
 import os
 import pickle
 import site
 import sys
 from pathlib import Path
-from typing import Any, Optional, Sequence, Union
+from typing import Any, Optional, Union
+
+# Ensure conda library paths are in LD_LIBRARY_PATH for cuequivariance_ops_torch
+# This is needed because libcue_ops.so and libcublas.so.12 are in conda site-packages
+_conda_lib_paths = [
+    "/opt/conda/lib/python3.12/site-packages/cuequivariance_ops/lib",
+    "/opt/conda/lib/python3.12/site-packages/nvidia/cublas/lib",
+    "/opt/conda/lib",
+]
+_current_ld_path = os.environ.get("LD_LIBRARY_PATH", "")
+_ld_path_parts = [p for p in _current_ld_path.split(":") if p] if _current_ld_path else []
+for lib_path in _conda_lib_paths:
+    if lib_path not in _ld_path_parts:
+        _ld_path_parts.insert(0, lib_path)  # Insert at beginning for priority
+if _ld_path_parts:
+    os.environ["LD_LIBRARY_PATH"] = ":".join(_ld_path_parts)
 
 # Ensure installed packages take precedence over source tree
 # This prevents local files (like boileroom/backend/modal.py) from shadowing installed packages
@@ -35,11 +51,13 @@ if str(_boileroom_source_root) not in sys.path:
 # With lazy imports, this should rarely be needed, but serves as a safety net
 _original_import = __import__
 
+
 def _import_with_modal_fix(name, globals=None, locals=None, fromlist=(), level=0):
     """Import hook that prevents local modal.py from shadowing installed modal package."""
     if name == "modal" and level == 0:
         try:
             import importlib.util
+
             spec = importlib.util.find_spec("modal")
             if spec and spec.origin:
                 origin_path = Path(spec.origin)
@@ -55,13 +73,23 @@ def _import_with_modal_fix(name, globals=None, locals=None, fromlist=(), level=0
             pass
     return _original_import(name, globals, locals, fromlist, level)
 
+
 # Replace __import__ before any imports
-import builtins
+import builtins  # noqa: E402
+
 builtins.__import__ = _import_with_modal_fix
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from fastapi import FastAPI, HTTPException  # noqa: E402
+from fastapi.responses import JSONResponse  # noqa: E402
+from pydantic import BaseModel  # noqa: E402
+
+# Set up logging to stderr so it gets captured in the log file
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    stream=sys.stderr,
+)
+logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
@@ -198,6 +226,7 @@ async def embed(request: EmbedRequest) -> JSONResponse:
         serialized = _serialize_output(output)
         return JSONResponse(content=serialized)
     except Exception as e:
+        logger.error(f"Embedding failed: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Embedding failed: {str(e)}") from e
 
 
@@ -223,6 +252,7 @@ async def fold(request: FoldRequest) -> JSONResponse:
         serialized = _serialize_output(output)
         return JSONResponse(content=serialized)
     except Exception as e:
+        logger.error(f"Folding failed: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Folding failed: {str(e)}") from e
 
 
@@ -240,4 +270,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

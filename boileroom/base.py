@@ -6,7 +6,7 @@ import torch
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Union, Sequence, Optional, Protocol, List, cast
+from typing import Any, Union, Sequence, Optional, Protocol, List, cast, Literal
 
 import numpy as np
 
@@ -21,8 +21,10 @@ class PredictionMetadata:
 
     model_name: str
     model_version: str
-    prediction_time: Optional[float]  # in seconds
     sequence_lengths: Optional[List[int]]
+    preprocessing_time: Optional[float] = None  # in seconds
+    inference_time: Optional[float] = None  # in seconds
+    postprocessing_time: Optional[float] = None  # in seconds
 
 
 class StructurePrediction(Protocol):
@@ -161,10 +163,15 @@ class Algorithm(ABC):
         Returns
         -------
         PredictionMetadata
-            Instance with `model_name` and `model_version` set to the provided values, and `prediction_time` and `sequence_lengths` initialized to None.
+            Instance with `model_name` and `model_version` set to the provided values, and timing fields and `sequence_lengths` initialized to None.
         """
         return PredictionMetadata(
-            model_name=model_name, model_version=model_version, prediction_time=None, sequence_lengths=None
+            model_name=model_name,
+            model_version=model_version,
+            sequence_lengths=None,
+            preprocessing_time=None,
+            inference_time=None,
+            postprocessing_time=None,
         )
 
 
@@ -404,6 +411,42 @@ class ModelWrapper:
         self.device = device
         self.config = config or {}
 
+    @staticmethod
+    def parse_backend(backend: str) -> tuple[str, Optional[str]]:
+        """Parse backend identifier into backend type and optional tag.
+
+        This helper allows backends to be specified with an optional tag suffix
+        using the syntax ``\"backend:tag\"``. Tags are currently only interpreted
+        for the ``\"apptainer\"`` backend, where they map to Docker image tags.
+        All other backends ignore any tag and treat the full string before the
+        first colon as the backend identifier.
+
+        Parameters
+        ----------
+        backend : str
+            Backend identifier string, optionally including a tag suffix.
+
+        Returns
+        -------
+        tuple[str, Optional[str]]
+            A tuple of ``(backend_type, backend_tag)`` where ``backend_type`` is
+            the base backend identifier (for example ``\"modal\"`` or
+            ``\"apptainer\"``) and ``backend_tag`` is either the tag string for
+            ``\"apptainer\"`` backends (defaulting to ``\"latest\"`` when no tag
+            is provided) or ``None`` for all other backends.
+        """
+        if ":" in backend:
+            backend_type, backend_tag = backend.split(":", 1)
+        else:
+            backend_type, backend_tag = backend, None
+
+        backend_type = backend_type.strip()
+        if backend_type == "apptainer":
+            backend_tag = (backend_tag or "latest").strip() or "latest"
+            return backend_type, backend_tag
+
+        return backend_type, None
+
     def __del__(self) -> None:
         """Clean up backend when ModelWrapper is destroyed.
 
@@ -429,7 +472,7 @@ class ModelWrapper:
         """
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+    def __exit__(self, exc_type, exc_val, exc_tb) -> Literal[False]:
         """Context manager exit - ensures backend is stopped.
 
         Parameters
@@ -443,7 +486,7 @@ class ModelWrapper:
 
         Returns
         -------
-        None
+        bool
             Always returns False to not suppress exceptions.
         """
         backend = getattr(self, "_backend", None)

@@ -10,7 +10,7 @@ authors = [
 ]
 description = "Protein prediction models with Modal"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = "==3.12"
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License",
@@ -24,6 +24,7 @@ dependencies = [
     "torch>=2.6.0,<2.7.0",
     "deprecated>=1.2.14",
     "pyyaml>=6.0.0",
+    "rich>=14.0.0",
 ]
 [project.optional-dependencies]
 dev = [
@@ -31,6 +32,7 @@ dev = [
     "pytest>=8.3.4",
     "pytest-xdist>=3.6.1",
     "pytest-mock>=3.14.0",
+    "fire>=0.7.0",
 ]
 esm = [
     "transformers>=4.49.0",
