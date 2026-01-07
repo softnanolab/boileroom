@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "boileroom"
-version = "0.2.1"
+version = "0.2.2"
 authors = [
     { name="Jakub Lála", email="jakublala@gmail.com" },
 ]
@@ -17,7 +17,7 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
-    "modal>=0.73.12",
+    "modal>=1.1.0",
     "numpy>=2.2.2",
     "biotite>=1.0.1",
     "torch>=2.5.1,<2.7.0",
