@@ -9,7 +9,7 @@ def pytest_addoption(parser):
     """Register pytest CLI options used by the test suite.
 
     Adds two command-line options:
-    - --backend: selects the execution backend for tests; allowed value is "modal" and defaults to "modal".
+    - --backend: selects the execution backend for tests; allowed values are "modal" and "apptainer", defaults to "modal".
     - --gpu: specifies the GPU type for Modal backend tests (examples: "A100-40GB", "A100-80GB", "T4"); defaults to None which uses the test-suite default.
 
     Parameters
@@ -21,8 +21,8 @@ def pytest_addoption(parser):
         "--backend",
         action="store",
         default="modal",
-        choices=("modal",),
-        help="Execution backend for models in tests: modal (default)",
+        choices=("modal", "apptainer"),
+        help="Execution backend for models in tests: modal (default) or apptainer (runs locally in containers)",
     )
     parser.addoption(
         "--gpu",
@@ -40,6 +40,23 @@ def model_dir():
     Computes the path as two levels up from this file joined with ".model_cache" and assigns that string to the MODEL_DIR environment variable.
     """
     os.environ["MODEL_DIR"] = str(pathlib.Path(__file__).parent.parent / ".model_cache")
+
+
+@pytest.fixture(scope="session")
+def backend_option(request):
+    """Provide the selected backend from the `--backend` command-line option.
+
+    Parameters
+    ----------
+    request : Any
+        Pytest request object.
+
+    Returns
+    -------
+    str
+        The backend string as provided via `--backend` (defaults to "modal").
+    """
+    return request.config.getoption("--backend")
 
 
 @pytest.fixture(scope="session")
