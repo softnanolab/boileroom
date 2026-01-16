@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING, Optional, Sequence, Union
 
 import modal
 
-from ...backend import LocalBackend, ModalBackend
+from ...backend import ModalBackend
 from ...backend.base import Backend
 from ...backend.modal import app
 from .image import boltz_image
@@ -72,10 +72,6 @@ class Boltz2(ModelWrapper):
         backend : str
             Backend type to use. Supported values:
             - "modal": Use Modal backend (default)
-            - "local": Use local backend (requires dependencies in current environment)
-            - "conda": Use conda backend with auto-detection (micromamba > mamba > conda)
-            - "mamba": Use mamba explicitly
-            - "micromamba": Use micromamba explicitly
             - "apptainer": Use Apptainer backend (requires Apptainer installed)
         device : Optional[str]
             Device hint passed to the chosen backend (e.g., "cuda:0" or "cpu"); may be ignored by some backends.
@@ -85,8 +81,7 @@ class Boltz2(ModelWrapper):
         Raises
         ------
         ValueError
-            If an unsupported backend string is provided, or if conda backend is
-            requested but no compatible tool (conda/mamba/micromamba) is available.
+            If an unsupported backend string is provided.
         """
         if config is None:
             config = {}
@@ -96,26 +91,6 @@ class Boltz2(ModelWrapper):
         backend_instance: Backend
         if backend_type == "modal":
             backend_instance = ModalBackend(ModalBoltz2, config, device=device)
-        elif backend_type == "local":
-            from .core import Boltz2Core
-
-            backend_instance = LocalBackend(Boltz2Core, config, device=device)
-        elif backend_type in ("conda", "mamba", "micromamba"):
-            from pathlib import Path
-            from ...backend.conda import CondaBackend
-
-            environment_yml = Path(__file__).parent / "environment.yml"
-            # Pass Core class as string path to avoid importing it in main process
-            # This keeps dependencies completely independent between Boiler Room and conda servers
-            core_class_path = "boileroom.models.boltz.core.Boltz2Core"
-            # Pass backend string directly as runner_command
-            backend_instance = CondaBackend(
-                core_class_path,
-                config or {},
-                device=device,
-                environment_yml_path=environment_yml,
-                runner_command=backend_type,
-            )
         elif backend_type == "apptainer":
             from ...backend.apptainer import ApptainerBackend
 

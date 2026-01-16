@@ -150,6 +150,7 @@ def test_boltz2_invalid_amino_acids_validation(test_sequences: dict[str, str]):
         Mapping of named test sequences; must include an "invalid" entry containing a sequence with invalid/unsupported amino-acid codes.
     """
     # Use the core's validator directly to ensure it raises for invalid inputs
+    pytest.importorskip("boltz", reason="requires boltz")
     from boileroom.models.boltz.core import Boltz2Core
 
     core = Boltz2Core(config={"device": "cpu"})
@@ -159,6 +160,7 @@ def test_boltz2_invalid_amino_acids_validation(test_sequences: dict[str, str]):
 
 def test_boltz2_static_config_enforcement(test_sequences: dict[str, str]):
     """Test that static config keys cannot be overridden in options."""
+    pytest.importorskip("boltz", reason="requires boltz")
     from boileroom.models.boltz.core import Boltz2Core
 
     core = Boltz2Core(config={"device": "cpu"})
@@ -183,6 +185,7 @@ def test_boltz2_msa_cache_hit(test_sequences: dict[str, str]):
     test_sequences : dict[str, str]
         Mapping of test sequence names to sequence strings. Uses "short" for quick testing.
     """
+    pytest.importorskip("boltz", reason="requires boltz")
     from boileroom.models.boltz.core import Boltz2Core
     import hashlib
 
@@ -260,6 +263,7 @@ def test_boltz2_msa_cache_per_chain_multimer_reuse(test_sequences: dict[str, str
     test_sequences : dict[str, str]
         Mapping of test sequence names to sequence strings.
     """
+    pytest.importorskip("boltz", reason="requires boltz")
     from boileroom.models.boltz.core import Boltz2Core
 
     # Use three distinct sequences for testing
@@ -381,6 +385,7 @@ def test_boltz2_msa_cache_integration(test_sequences: dict[str, str]):
     test_sequences : dict[str, str]
         Mapping of test sequence names to sequence strings.
     """
+    pytest.importorskip("boltz", reason="requires boltz")
     from boileroom.models.boltz.core import Boltz2Core
 
     sequence = test_sequences["short"]

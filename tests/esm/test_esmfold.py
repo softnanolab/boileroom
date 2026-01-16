@@ -6,7 +6,6 @@ from typing import Generator, Optional
 from modal import enable_output
 
 from boileroom import ESMFold
-from boileroom.models.esm.core import ESMFoldCore
 from boileroom.models.esm.types import ESMFoldOutput
 from boileroom.models.esm.linker import store_multimer_properties
 from boileroom.convert import pdb_string_to_atomarray
@@ -210,6 +209,7 @@ def test_esmfold_batch(test_sequences: dict[str, str], gpu_device: Optional[str]
 
 def test_tokenize_sequences_with_mocker(mocker):
     """Test tokenization of multimer sequences using pytest-mock."""
+    pytest.importorskip("transformers", reason="requires transformers")
     from boileroom.models.esm.core import ESMFoldCore
 
     # Test data
@@ -251,6 +251,8 @@ def test_tokenize_sequences_with_mocker(mocker):
 
 def test_sequence_validation(test_sequences: dict[str, str]):
     """Test sequence validation in FoldingAlgorithm."""
+    pytest.importorskip("transformers", reason="requires transformers")
+    from boileroom.models.esm.core import ESMFoldCore
 
     esmfold_core = ESMFoldCore(config={"device": "cpu"})
 
@@ -276,6 +278,9 @@ def test_sequence_validation(test_sequences: dict[str, str]):
 
 def test_esmfold_static_config_enforcement(test_sequences: dict[str, str]):
     """Test that static config keys cannot be overridden in options."""
+    pytest.importorskip("transformers", reason="requires transformers")
+    from boileroom.models.esm.core import ESMFoldCore
+
     esmfold_core = ESMFoldCore(config={"device": "cpu"})
     # device is a static config key
     with pytest.raises(ValueError, match="device"):

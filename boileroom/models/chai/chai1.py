@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING, Optional, Sequence, Union
 
 import modal
 
-from ...backend import LocalBackend, ModalBackend
+from ...backend import ModalBackend
 from ...backend.base import Backend
 from ...backend.modal import app
 from .image import chai_image
@@ -87,10 +87,6 @@ class Chai1(ModelWrapper):
         backend : str
             Backend type to use. Supported values:
             - "modal": Use Modal backend (default)
-            - "local": Use local backend (requires dependencies in current environment)
-            - "conda": Use conda backend with auto-detection (micromamba > mamba > conda)
-            - "mamba": Use mamba explicitly
-            - "micromamba": Use micromamba explicitly
             - "apptainer": Use Apptainer backend (requires Apptainer installed)
         device : Optional[str]
             Optional device identifier to pass to the backend (e.g., "cuda:0" or None to let the backend choose).
@@ -100,8 +96,7 @@ class Chai1(ModelWrapper):
         Raises
         ------
         ValueError
-            If an unsupported backend string is provided, or if conda backend is
-            requested but no compatible tool (conda/mamba/micromamba) is available.
+            If an unsupported backend string is provided.
         """
         if config is None:
             config = {}
@@ -111,26 +106,6 @@ class Chai1(ModelWrapper):
         backend_instance: Backend
         if backend_type == "modal":
             backend_instance = ModalBackend(ModalChai1, config, device=device)
-        elif backend_type == "local":
-            from .core import Chai1Core
-
-            backend_instance = LocalBackend(Chai1Core, config, device=device)
-        elif backend_type in ("conda", "mamba", "micromamba"):
-            from pathlib import Path
-            from ...backend.conda import CondaBackend
-
-            environment_yml = Path(__file__).parent / "environment.yml"
-            # Pass Core class as string path to avoid importing it in main process
-            # This keeps dependencies completely independent between Boiler Room and conda servers
-            core_class_path = "boileroom.models.chai.core.Chai1Core"
-            # Pass backend string directly as runner_command
-            backend_instance = CondaBackend(
-                core_class_path,
-                config or {},
-                device=device,
-                environment_yml_path=environment_yml,
-                runner_command=backend_type,
-            )
         elif backend_type == "apptainer":
             from ...backend.apptainer import ApptainerBackend
 

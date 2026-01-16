@@ -34,9 +34,6 @@ dev = [
     "pytest-mock>=3.14.0",
     "fire>=0.7.0",
 ]
-esm = [
-    "transformers>=4.49.0",
-]
 
 [project.urls]
 Homepage = "https://github.com/softnanolab/boileroom"

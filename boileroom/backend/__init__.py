@@ -3,12 +3,10 @@ import sys
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .conda import CondaBackend
-    from .local import LocalBackend
     from .modal import ModalBackend
     from .apptainer import ApptainerBackend
 
-__all__ = ["CondaBackend", "LocalBackend", "ModalBackend", "ApptainerBackend"]
+__all__ = ["ModalBackend", "ApptainerBackend"]
 
 
 def __getattr__(name: str):
@@ -29,13 +27,7 @@ def __getattr__(name: str):
     AttributeError
         If an unknown attribute is requested.
     """
-    if name == "CondaBackend":
-        module = importlib.import_module(".conda", __name__)
-        value = module.CondaBackend
-    elif name == "LocalBackend":
-        module = importlib.import_module(".local", __name__)
-        value = module.LocalBackend
-    elif name == "ModalBackend":
+    if name == "ModalBackend":
         module = importlib.import_module(".modal", __name__)
         value = module.ModalBackend
     elif name == "ApptainerBackend":
