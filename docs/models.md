@@ -9,7 +9,7 @@ Example Usage:
 os.environ['MODEL_DIR'] = "/.model_cache" # somewhere with a lot of storage
 model = Boltz2(backend='apptainer', device="cuda:0", config={"no_kernels": True})
 result = model.fold(
-    sequence=['MLKNVHVLVLGAGDVGSVVVRLLEK'], 
+    sequence=['MLKNVHVLVLGAGDVGSVVVRLLEK'],
     options={
         "include_fields": ["plddt", "pae"]
     }

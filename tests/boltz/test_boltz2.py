@@ -122,6 +122,7 @@ def test_boltz2_nipah_matches_reference(gpu_device: Optional[str]):
 
     # TODO: check confidence metrics within tolerance
 
+
 def test_boltz2_minimal_output(test_sequences: dict[str, str], gpu_device: Optional[str]):
     """Test that Boltz2 returns minimal output by default (metadata + atom_array)."""
     with enable_output():
@@ -136,6 +137,7 @@ def test_boltz2_minimal_output(test_sequences: dict[str, str], gpu_device: Optio
     assert out.plddt is None, "plddt should be None in minimal output"
     assert out.pae is None, "pae should be None in minimal output"
     assert out.pde is None, "pde should be None in minimal output"
+
 
 # TODO: we should have an integration test that would check that the MSA is properly hit for multiple runs (and swapped sequences)
 def test_boltz2_msa_cache_hit(test_sequences: dict[str, str]):
@@ -482,6 +484,4 @@ def test_boltz2_msa_cache_integration(test_sequences: dict[str, str]):
 
         assert len(ca_atoms1) > 0, "First structure should have CA atoms"
         assert len(ca_atoms2) > 0, "Second structure should have CA atoms"
-        assert (
-            len(ca_atoms1) == len(ca_atoms2)
-        ), "Both structures should have same number of CA atoms"
+        assert len(ca_atoms1) == len(ca_atoms2), "Both structures should have same number of CA atoms"

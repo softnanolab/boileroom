@@ -233,7 +233,9 @@ class ESM2Core(EmbeddingAlgorithm):
                 )
                 multimer_properties = None
             tokenized = tokenized.to(self._device)
-            tokenized["output_hidden_states"] = self._should_compute_hidden_states(effective_config.get("include_fields"))
+            tokenized["output_hidden_states"] = self._should_compute_hidden_states(
+                effective_config.get("include_fields")
+            )
 
         with Timer("Model Inference") as inference_timer:
             with torch.inference_mode():

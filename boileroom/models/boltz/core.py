@@ -40,7 +40,7 @@ class Boltz2Core(FoldingAlgorithm):
 
     DEFAULT_CONFIG = {
         "device": "cuda:0",
-        "use_msa_server": True, # setting to False automatically sets to no MSA mode
+        "use_msa_server": True,  # setting to False automatically sets to no MSA mode
         "msa_server_url": "https://api.colabfold.com",
         "msa_pairing_strategy": "greedy",
         "msa_server_username": None,

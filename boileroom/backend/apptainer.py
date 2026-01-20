@@ -173,9 +173,7 @@ def _get_image_architecture(sif_path: Path) -> str | None:
         data = json.loads(result.stdout)
         if isinstance(data, dict):
             arch = (
-                data.get("data", {}).get("attributes", {}).get("arch")
-                or data.get("arch")
-                or data.get("architecture")
+                data.get("data", {}).get("attributes", {}).get("arch") or data.get("arch") or data.get("architecture")
             )
             return arch.lower() if arch else None
     except (json.JSONDecodeError, KeyError):
@@ -284,10 +282,10 @@ def _pull_image(image_uri: str, sif_path: Path, log_file: Path | None = None) ->
     if not apptainer_tmpdir:
         # Fall back to a tmp directory in the cache directory
         apptainer_tmpdir = str(sif_path.parent.parent / "tmp")
-    
+
     apptainer_tmpdir_path = Path(apptainer_tmpdir)
     apptainer_tmpdir_path.mkdir(parents=True, exist_ok=True)
-    
+
     # Prepare environment with APPTAINER_TMPDIR set
     env = os.environ.copy()
     env["APPTAINER_TMPDIR"] = str(apptainer_tmpdir_path)
@@ -388,7 +386,7 @@ class ApptainerBackend(Backend):
 
         self._port: int | None = None
         self._base_url: str | None = None
-        self._process: subprocess.Popen[bytes] | None = None
+        self._process: subprocess.Popen[str] | None = None
         self._client: httpx.Client | None = None
         self._log_file_path: Path | None = None
 
@@ -411,7 +409,7 @@ class ApptainerBackend(Backend):
             model_dir_path = Path(model_dir).expanduser().resolve()
         else:
             model_dir_path = self._cache_dir
-        
+
         log_dir = model_dir_path / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
         log_filename = f"apptainer_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.log"
@@ -465,13 +463,13 @@ class ApptainerBackend(Backend):
                     f"Cannot create MODEL_DIR {model_dir_path} on host. "
                     f"Ensure parent directories exist and you have write permissions."
                 ) from e
-            
+
             if not model_dir_path.exists():
                 raise RuntimeError(f"MODEL_DIR {model_dir_path} does not exist after creation attempt")
-            
+
             if not model_dir_path.is_dir():
                 raise RuntimeError(f"MODEL_DIR {model_dir_path} exists but is not a directory")
-            
+
             # Mount host MODEL_DIR to fixed container path for simplicity
             container_model_dir = "/.model_cache"
             cmd.extend(["-B", f"{model_dir_path}:{container_model_dir}"])
@@ -549,7 +547,7 @@ class ApptainerBackend(Backend):
 
         logger.info(f"Waiting for health check at {self._base_url} (port {self._port})")
         self._wait_for_health_check()
-        
+
         logger.info(f"Creating HTTP client for {self._base_url}")
         # Use 30 minute timeout to handle large responses (e.g., PAE matrices for long sequences)
         # This matches Modal backend timeout of 20 minutes with some buffer for serialization/transmission
@@ -625,12 +623,16 @@ class ApptainerBackend(Backend):
             health_check_count += 1
 
             try:
-                if health_check_count == 1 or elapsed % 5 < poll_interval:  # Log first check and roughly every 5 seconds
+                if (
+                    health_check_count == 1 or elapsed % 5 < poll_interval
+                ):  # Log first check and roughly every 5 seconds
                     logger.debug(f"Attempting health check to {self._base_url}/health (elapsed: {elapsed:.1f}s)")
                 response = httpx.get(f"{self._base_url}/health", timeout=5.0)
                 logger.debug(f"Health check response: status={response.status_code}, url={response.url}")
                 if response.status_code == 200:
-                    logger.info(f"Health check passed at {self._base_url}, server is ready (check #{health_check_count}, elapsed: {elapsed:.1f}s)")
+                    logger.info(
+                        f"Health check passed at {self._base_url}, server is ready (check #{health_check_count}, elapsed: {elapsed:.1f}s)"
+                    )
                     return
                 else:
                     logger.warning(f"Health check returned non-200 status: {response.status_code}")
@@ -644,7 +646,10 @@ class ApptainerBackend(Backend):
                     logger.debug(f"Health check request error: {e}, base_url={self._base_url}, elapsed={elapsed:.1f}s")
             except Exception as e:
                 # Catch any other unexpected exceptions
-                logger.warning(f"Unexpected error during health check: {e}, base_url={self._base_url}, elapsed={elapsed:.1f}s", exc_info=True)
+                logger.warning(
+                    f"Unexpected error during health check: {e}, base_url={self._base_url}, elapsed={elapsed:.1f}s",
+                    exc_info=True,
+                )
 
             # Check if process has died
             if self._process is not None and self._process.poll() is not None:
@@ -658,7 +663,7 @@ class ApptainerBackend(Backend):
                     except Exception as e:
                         logger.debug(f"Failed to read log file for error context: {e}")
                         error_context = f"(Could not read log file: {e})"
-                
+
                 error_msg = f"Server process died. Last 50 lines of log:\n{error_context}"
                 raise RuntimeError(error_msg)
 
@@ -710,8 +715,7 @@ class _ApptainerModelProxy:
                     log_file_msg = f"\n\nServer log file: {self._log_file_path}"
                 # Raise RuntimeError with log file path, chaining from the original HTTPStatusError
                 raise RuntimeError(
-                    f"Internal server error (500) occurred.{log_file_msg}\n"
-                    f"HTTP request failed: {e}"
+                    f"Internal server error (500) occurred.{log_file_msg}\n" f"HTTP request failed: {e}"
                 ) from e
             raise
         return _deserialize_output(response.json())
@@ -743,8 +747,7 @@ class _ApptainerModelProxy:
                     log_file_msg = f"\n\nServer log file: {self._log_file_path}"
                 # Raise RuntimeError with log file path, chaining from the original HTTPStatusError
                 raise RuntimeError(
-                    f"Internal server error (500) occurred.{log_file_msg}\n"
-                    f"HTTP request failed: {e}"
+                    f"Internal server error (500) occurred.{log_file_msg}\n" f"HTTP request failed: {e}"
                 ) from e
             raise
         return _deserialize_output(response.json())
