@@ -13,14 +13,16 @@ import os
 import pickle
 import site
 import sys
+import sysconfig
 from pathlib import Path
 from typing import Any, Optional, Union
 
 # Ensure conda library paths are in LD_LIBRARY_PATH for cuequivariance_ops_torch
 # This is needed because libcue_ops.so and libcublas.so.12 are in conda site-packages
+_site_packages = sysconfig.get_path("purelib")
 _conda_lib_paths = [
-    "/opt/conda/lib/python3.12/site-packages/cuequivariance_ops/lib",
-    "/opt/conda/lib/python3.12/site-packages/nvidia/cublas/lib",
+    f"{_site_packages}/cuequivariance_ops/lib",
+    f"{_site_packages}/nvidia/cublas/lib",
     "/opt/conda/lib",
 ]
 _current_ld_path = os.environ.get("LD_LIBRARY_PATH", "")

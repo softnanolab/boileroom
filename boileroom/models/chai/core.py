@@ -237,6 +237,8 @@ class Chai1Core(FoldingAlgorithm):
             and the AtomArray structures; fields not produced are set to `None`.
         """
         pae, pde, plddt, ptm, iptm, per_chain_iptm = self._extract_confidence_metrics(candidate)
+        if not candidate.cif_paths:
+            raise RuntimeError("Inference produced no CIF output files")
         cif_string_list, atom_array = self._process_cif(candidate.cif_paths[0], effective_config)
         self.metadata.preprocessing_time = preprocessing_time
         self.metadata.inference_time = inference_time

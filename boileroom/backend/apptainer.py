@@ -597,7 +597,7 @@ class ApptainerBackend(Backend):
             If the backend has not been started.
         """
         if self._client is None:
-            raise RuntimeError("Apptainer backend is not initialized. Call start() before use.")
+            raise RuntimeError("Apptainer backend is not initialized. Call startup() before use.")
         return _ApptainerModelProxy(self._client, log_file_path=self._log_file_path)
 
     def _wait_for_health_check(self, timeout: float = 300.0, poll_interval: float = 1.0) -> None:
