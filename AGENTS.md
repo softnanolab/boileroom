@@ -10,6 +10,7 @@
 - `docs/` captures design notes (`architecture.md`, `backend_support_matrix.md`); update alongside feature work.
 
 ## Build, Test, and Dev Commands
+- Everything in this repo has to be run with `uv run`, and not the system-level Python.
 - `uv python install 3.12 && uv sync` installs the pinned toolchain and dependencies.
 - `uv run pytest` runs the full test suite; add `-n auto` when you need xdist parallelism.
 - `uv run python script.py` exercises the orchestration demo.

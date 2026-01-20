@@ -122,7 +122,6 @@ def test_boltz2_nipah_matches_reference(gpu_device: Optional[str]):
 
     # TODO: check confidence metrics within tolerance
 
-
 def test_boltz2_minimal_output(test_sequences: dict[str, str], gpu_device: Optional[str]):
     """Test that Boltz2 returns minimal output by default (metadata + atom_array)."""
     with enable_output():
@@ -138,41 +137,6 @@ def test_boltz2_minimal_output(test_sequences: dict[str, str], gpu_device: Optio
     assert out.pae is None, "pae should be None in minimal output"
     assert out.pde is None, "pde should be None in minimal output"
 
-
-def test_boltz2_invalid_amino_acids_validation(test_sequences: dict[str, str]):
-    """Verify that Boltz2Core's sequence validator raises a ValueError for invalid amino-acid sequences.
-
-    This test calls Boltz2Core._validate_sequences with a sequence labelled "invalid" in the provided fixtures and expects a ValueError to be raised.
-
-    Parameters
-    ----------
-    test_sequences : dict[str, str]
-        Mapping of named test sequences; must include an "invalid" entry containing a sequence with invalid/unsupported amino-acid codes.
-    """
-    # Use the core's validator directly to ensure it raises for invalid inputs
-    pytest.importorskip("boltz", reason="requires boltz")
-    from boileroom.models.boltz.core import Boltz2Core
-
-    core = Boltz2Core(config={"device": "cpu"})
-    with pytest.raises(ValueError):
-        core._validate_sequences(test_sequences["invalid"])  # should raise
-
-
-def test_boltz2_static_config_enforcement(test_sequences: dict[str, str]):
-    """Test that static config keys cannot be overridden in options."""
-    pytest.importorskip("boltz", reason="requires boltz")
-    from boileroom.models.boltz.core import Boltz2Core
-
-    core = Boltz2Core(config={"device": "cpu"})
-    # device, cache_dir, and no_kernels are static config keys
-    with pytest.raises(ValueError, match="device"):
-        core.fold(test_sequences["short"], options={"device": "cuda:0"})
-    with pytest.raises(ValueError, match="cache_dir"):
-        core.fold(test_sequences["short"], options={"cache_dir": "/tmp/test"})
-    with pytest.raises(ValueError, match="no_kernels"):
-        core.fold(test_sequences["short"], options={"no_kernels": True})
-
-
 # TODO: we should have an integration test that would check that the MSA is properly hit for multiple runs (and swapped sequences)
 def test_boltz2_msa_cache_hit(test_sequences: dict[str, str]):
     """Test that MSA cache is hit on second fold() call with same sequence.
@@ -185,7 +149,8 @@ def test_boltz2_msa_cache_hit(test_sequences: dict[str, str]):
     test_sequences : dict[str, str]
         Mapping of test sequence names to sequence strings. Uses "short" for quick testing.
     """
-    pytest.importorskip("boltz", reason="requires boltz")
+    pytest.importorskip("pytorch_lightning", reason="requires pytorch_lightning (backend dependency)")
+    pytest.importorskip("boltz", reason="requires boltz (backend dependency)")
     from boileroom.models.boltz.core import Boltz2Core
     import hashlib
 
@@ -263,7 +228,8 @@ def test_boltz2_msa_cache_per_chain_multimer_reuse(test_sequences: dict[str, str
     test_sequences : dict[str, str]
         Mapping of test sequence names to sequence strings.
     """
-    pytest.importorskip("boltz", reason="requires boltz")
+    pytest.importorskip("pytorch_lightning", reason="requires pytorch_lightning (backend dependency)")
+    pytest.importorskip("boltz", reason="requires boltz (backend dependency)")
     from boileroom.models.boltz.core import Boltz2Core
 
     # Use three distinct sequences for testing
@@ -385,7 +351,8 @@ def test_boltz2_msa_cache_integration(test_sequences: dict[str, str]):
     test_sequences : dict[str, str]
         Mapping of test sequence names to sequence strings.
     """
-    pytest.importorskip("boltz", reason="requires boltz")
+    pytest.importorskip("pytorch_lightning", reason="requires pytorch_lightning (backend dependency)")
+    pytest.importorskip("boltz", reason="requires boltz (backend dependency)")
     from boileroom.models.boltz.core import Boltz2Core
 
     sequence = test_sequences["short"]

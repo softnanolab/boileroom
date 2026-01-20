@@ -309,7 +309,7 @@ class Chai1Core(FoldingAlgorithm):
             element is a list with the extracted AtomArray structure.
         """
         cif_file = CIFFile.read(str(cif_path))
-        structure = get_structure(cif_file)
+        structure = get_structure(cif_file, model=1)
 
         # Always generate atom_array
         atom_array = [structure]
