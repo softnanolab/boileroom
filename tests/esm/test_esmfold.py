@@ -6,7 +6,7 @@ from typing import Generator, Optional
 from modal import enable_output
 
 from boileroom import ESMFold
-from boileroom.models.esm.esmfold import ESMFoldCore, ESMFoldOutput
+from boileroom.models.esm.types import ESMFoldOutput
 from boileroom.models.esm.linker import store_multimer_properties
 from boileroom.convert import pdb_string_to_atomarray
 from boileroom.constants import restype_3to1
@@ -96,7 +96,7 @@ def test_esmfold_multimer(test_sequences, gpu_device: Optional[str]):
     assert chain_b_residues == 54, f"Chain B should have 54 residues, got {chain_b_residues}"
 
     # Assert correct folding outputs metrics (need to do it as we slice the linker out)
-    assert result.predicted_aligned_error is not None, "predicted_aligned_error should be generated"
+    assert result.pae is not None, "pae should be generated"
     assert result.plddt is not None, "plddt should be generated"
     assert result.ptm_logits is not None, "ptm_logits should be generated"
     assert result.aligned_confidence_probs is not None, "aligned_confidence_probs should be generated"
@@ -105,7 +105,7 @@ def test_esmfold_multimer(test_sequences, gpu_device: Optional[str]):
     assert result.distogram_logits is not None, "distogram_logits should be generated"
     assert result.lm_logits is not None, "lm_logits should be generated"
     assert result.lddt_head is not None, "lddt_head should be generated"
-    assert result.predicted_aligned_error.shape == (1, n_residues, n_residues), "PAE matrix shape mismatch"
+    assert result.pae.shape == (1, n_residues, n_residues), "PAE matrix shape mismatch"
     assert result.plddt.shape == (1, n_residues, 37), "pLDDT matrix shape mismatch"
     assert result.ptm_logits.shape == (1, n_residues, n_residues, 64), "pTM matrix shape mismatch"
     assert result.aligned_confidence_probs.shape == (1, n_residues, n_residues, 64), "aligned confidence shape mismatch"
@@ -200,16 +200,17 @@ def test_esmfold_batch(test_sequences: dict[str, str], gpu_device: Optional[str]
     assert result.aatype is not None, "aatype should be present in full output"
     assert result.plddt is not None, "plddt should be present in full output"
     assert result.ptm_logits is not None, "ptm_logits should be present in full output"
-    assert result.predicted_aligned_error is not None, "predicted_aligned_error should be present in full output"
+    assert result.pae is not None, "pae should be present in full output"
     assert result.aatype.shape[0] == len(sequences), "Batch size mismatch in aatype"
     assert result.plddt.shape[0] == len(sequences), "Batch size mismatch in plddt"
     assert result.ptm_logits.shape[0] == len(sequences), "Batch size mismatch in ptm_logits"
-    assert result.predicted_aligned_error.shape[0] == len(sequences), "Batch size mismatch in predicted_aligned_error"
+    assert result.pae.shape[0] == len(sequences), "Batch size mismatch in pae"
 
 
 def test_tokenize_sequences_with_mocker(mocker):
     """Test tokenization of multimer sequences using pytest-mock."""
-    from boileroom.models.esm.esmfold import ESMFoldCore
+    pytest.importorskip("transformers", reason="requires transformers")
+    from boileroom.models.esm.core import ESMFoldCore
 
     # Test data
     sequences = ["AAAAAA:CCCCCCCCC", "CCCCC:DDDDDDD:EEEEEEE", "HHHH"]
@@ -250,6 +251,8 @@ def test_tokenize_sequences_with_mocker(mocker):
 
 def test_sequence_validation(test_sequences: dict[str, str]):
     """Test sequence validation in FoldingAlgorithm."""
+    pytest.importorskip("transformers", reason="requires transformers")
+    from boileroom.models.esm.core import ESMFoldCore
 
     esmfold_core = ESMFoldCore(config={"device": "cpu"})
 
@@ -275,6 +278,9 @@ def test_sequence_validation(test_sequences: dict[str, str]):
 
 def test_esmfold_static_config_enforcement(test_sequences: dict[str, str]):
     """Test that static config keys cannot be overridden in options."""
+    pytest.importorskip("transformers", reason="requires transformers")
+    from boileroom.models.esm.core import ESMFoldCore
+
     esmfold_core = ESMFoldCore(config={"device": "cpu"})
     # device is a static config key
     with pytest.raises(ValueError, match="device"):

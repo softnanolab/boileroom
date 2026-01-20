@@ -9,4 +9,8 @@ __pycache__/
 .venv/
 dist/
 .cursor/
+.claude/
 script.py
+
+
+docker.io*.log

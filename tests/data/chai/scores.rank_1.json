@@ -1,0 +1,9 @@
+{
+  "aggregate_score": 0.15718920528888702,
+  "ptm": 0.7859460115432739,
+  "iptm": 0.0,
+  "per_chain_ptm": 0.7859460115432739,
+  "per_chain_pair_iptm": 0.7859460115432739,
+  "has_inter_chain_clashes": false,
+  "chain_chain_clashes": 1
+}
