@@ -97,7 +97,7 @@ If you use `boileroom` in your research, please cite:
   title = {boileroom: serverless protein prediction models},
   year = {2025},
   publisher = {GitHub},
-  url = {https://github.com/jakublala/boileroom}
+  url = {https://github.com/softnanolab/boileroom}
 }
 ```
 
