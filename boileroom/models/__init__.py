@@ -13,6 +13,9 @@ def __getattr__(name: str):
     if name == "Boltz2":
         from .boltz.boltz2 import Boltz2
         return Boltz2
+    if name == "MiniFold":
+        from .minifold.minifold import MiniFold
+        return MiniFold
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 __all__ = [
@@ -20,4 +23,5 @@ __all__ = [
     "ESM2",
     "Chai1",
     "Boltz2",
+    "MiniFold",
 ]

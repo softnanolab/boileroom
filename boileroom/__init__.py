@@ -13,6 +13,9 @@ def __getattr__(name: str):
     if name == "Boltz2":
         from .models import Boltz2
         return Boltz2
+    if name == "MiniFold":
+        from .models import MiniFold
+        return MiniFold
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
-__all__ = ["ESMFold", "ESM2", "Chai1", "Boltz2"]
+__all__ = ["ESMFold", "ESM2", "Chai1", "Boltz2", "MiniFold"]

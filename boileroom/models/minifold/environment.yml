@@ -1,0 +1,21 @@
+name: boileroom-minifold
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.12
+  - numpy<2.0
+  - pip
+  - pip:
+    - torch>=2.5.1,<2.7.0
+    - fair-esm
+    - biopython==1.81
+    - ml_collections
+    - dm-tree
+    - einops
+    - modelcif
+    - minifold @ git+https://github.com/jwohlwend/minifold.git
+    - biotite>=1.0.1
+    - fastapi
+    - uvicorn
+    - pydantic
