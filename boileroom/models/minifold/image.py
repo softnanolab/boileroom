@@ -15,7 +15,7 @@ minifold_image = (
     )
     .run_commands(
         # minifold's pyproject.toml only declares packages=["minifold"], missing subpackages.
-        # Clone and install with find_packages discovery via pip editable install workaround.
+        # Clone, patch to use find_packages discovery, then install.
         "git clone https://github.com/jwohlwend/minifold.git /tmp/minifold",
         'cd /tmp/minifold && sed -i \'s/packages = \\["minifold"\\]/packages = {find = {}}/\' pyproject.toml && pip install .',
     )

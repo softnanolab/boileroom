@@ -1,4 +1,4 @@
-"""Type definitions for MiniFold outputs without heavy dependencies."""
+"""MiniFold output types."""
 
 from dataclasses import dataclass
 from typing import Optional, List, TYPE_CHECKING
@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 
 @dataclass
 class MiniFoldOutput(StructurePrediction):
-    """Output from MiniFold prediction including all model outputs."""
+    """Output from MiniFold prediction."""
 
     # Required by StructurePrediction protocol
     metadata: PredictionMetadata

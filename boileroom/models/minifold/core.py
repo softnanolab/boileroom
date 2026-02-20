@@ -1,4 +1,4 @@
-"""Core MiniFold algorithm implementation without modal dependencies."""
+"""MiniFold core algorithm."""
 
 import logging
 import urllib.request
@@ -53,7 +53,7 @@ class MiniFoldCore(FoldingAlgorithm):
         self._load()
 
     def _load(self) -> None:
-        """Download checkpoint if needed, load the model and alphabet, and prepare for inference."""
+        """Load the model, alphabet, and checkpoint, then prepare for inference."""
         from minifold.model.model import MiniFoldModel
         from minifold.data.config import model_config
         from esm.pretrained import load_model_and_alphabet
@@ -66,17 +66,15 @@ class MiniFoldCore(FoldingAlgorithm):
         cache_path = Path(cache_dir)
         cache_path.mkdir(parents=True, exist_ok=True)
 
-        # Set torch hub dir so ESM2 weights are cached in the same location
+        # ESM2 weights should be cached alongside the minifold checkpoint
         torch.hub.set_dir(str(cache_path))
 
-        # Download checkpoint if needed
         checkpoint_path = cache_path / f"minifold_{model_size}.ckpt"
         if not checkpoint_path.exists():
             url = MODEL_URL_48L if model_size == "48L" else MODEL_URL_12L
             logger.info(f"Downloading MiniFold {model_size} checkpoint to {checkpoint_path}")
             urllib.request.urlretrieve(url, str(checkpoint_path))  # noqa: S310
 
-        # Load checkpoint and create model
         ckpt = torch.load(str(checkpoint_path), map_location="cpu")
         hparams = ckpt["hyper_parameters"]
 
@@ -95,10 +93,8 @@ class MiniFoldCore(FoldingAlgorithm):
             kernels=self.config["kernels"],
         )
 
-        # Initialize alphabet
         _, alphabet = load_model_and_alphabet(hparams["esm_model_name"])
 
-        # Load pretrained weights
         state_dict = ckpt["state_dict"]
         state_dict = {k: v for k, v in state_dict.items() if "boundaries" not in k}
         state_dict = {k: v for k, v in state_dict.items() if "mid_points" not in k}
@@ -106,7 +102,6 @@ class MiniFoldCore(FoldingAlgorithm):
         state_dict = {k.replace("model.", ""): v for k, v in state_dict.items()}
         model.load_state_dict(state_dict, strict=False)
 
-        # Compile folding block if requested
         if self.config["compile"]:
             model.fold.miniformer = torch.compile(
                 model.fold.miniformer,
@@ -121,7 +116,7 @@ class MiniFoldCore(FoldingAlgorithm):
         self.model = model
         self.alphabet = alphabet
 
-        # Store OpenFold config for input preparation
+        # Second config call to get the .data sub-config for input preparation
         self._of_config = model_config(
             "initial_training",
             train=False,
@@ -177,19 +172,14 @@ class MiniFoldCore(FoldingAlgorithm):
 
         open_fold_batch = of_inference(sequence, "predict", self._of_config)
 
-        # Reconstruct the sequence from the OpenFold features
         of_seq = "".join(
             [restype_order_with_x_inverse[x.item()] for x in open_fold_batch["aatype"]]
         )[:open_fold_batch["seq_length"]]
 
-        # Encode for minifold
         encoded_seq = self.alphabet.encode(of_seq)
         encoded_seq = torch.tensor(encoded_seq, dtype=torch.long)
-
-        # Prepare mask
         mask = open_fold_batch["seq_mask"][:, 0].bool()
 
-        # Keep only relevant keys
         relevant = {"aatype", "seq_mask", "residx_atom37_to_atom14", "atom37_atom_exists"}
         open_fold_batch = {k: v for k, v in open_fold_batch.items() if k in relevant}
 
@@ -207,7 +197,6 @@ class MiniFoldCore(FoldingAlgorithm):
         if self.config["kernels"]:
             max_len = (max_len + 127) // 128 * 128
 
-        # Pad sequences and masks
         seq = torch.stack(
             [F.pad(s, (0, max_len - len(s)), value=20) for s, _, _ in feats]
         )
@@ -242,18 +231,11 @@ class MiniFoldCore(FoldingAlgorithm):
         return model_batch
 
     def _tokenize_multimer(self, sequences: List[str], config: dict) -> tuple[dict, dict[str, torch.Tensor]]:
-        """Prepare input for multimer sequences containing ':' chain separators.
-
-        Replaces ':' with glycine linker, stores multimer properties for post-processing,
-        then prepares the batch from joined sequences.
-        """
+        """Prepare input for multimer sequences containing ':' chain separators."""
         glycine_linker = config["glycine_linker"]
         linker_map, residue_index, chain_index = store_multimer_properties(sequences, glycine_linker)
 
-        # Replace ':' with glycine linker
         joined_sequences = [seq.replace(":", glycine_linker) for seq in sequences]
-
-        # Prepare batch from joined sequences
         model_batch = self._prepare_batch(joined_sequences)
 
         multimer_properties = {
@@ -302,18 +284,14 @@ class MiniFoldCore(FoldingAlgorithm):
                 masked_aa.chain_id[atom_mask] = chr(65 + ch_idx[i])
 
             masked_atom_arrays.append(masked_aa)
-
-            # Mask plddt
             masked_plddt.append(plddt_list[batch_idx][keep_positions])
 
-            # Mask pae
             if pae_list is not None:
                 masked_pae.append(pae_list[batch_idx][keep_positions][:, keep_positions])
 
             residue_index_list.append(res_idx)
             chain_index_list.append(ch_idx)
 
-        # Pad and stack residue_index and chain_index
         max_len = max(arr.shape[0] for arr in residue_index_list)
         padded_res = np.stack(
             [np.pad(arr, (0, max_len - len(arr)), constant_values=-1) for arr in residue_index_list]
@@ -339,28 +317,21 @@ class MiniFoldCore(FoldingAlgorithm):
         config: dict,
     ) -> MiniFoldOutput:
         """Convert raw model outputs into a MiniFoldOutput."""
-        # Extract key outputs
         atom_positions = raw_outputs["final_atom_positions"].float().cpu().numpy()  # (B, L, 37, 3)
         atom_mask = raw_outputs["final_atom_mask"].float().cpu().numpy()  # (B, L, 37)
         plddt_raw = raw_outputs["plddt"].float().cpu().numpy()  # (B, L)
 
         batch_size = atom_positions.shape[0]
-
-        # Determine actual sequence lengths (without linker)
         seq_lengths = [len(seq.replace(":", config.get("glycine_linker", ""))) for seq in sequences]
 
-        # Convert to atom arrays and per-sequence outputs
         atom_array_list = self._convert_outputs_to_atomarray(
             atom_positions, atom_mask, plddt_raw, sequences, config
         )
 
-        # Per-sequence plddt (unpadded)
         plddt_list = [plddt_raw[i, :seq_lengths[i]] for i in range(batch_size)]
+        pae_list = None  # not available from MiniFold
 
-        # PAE is not directly available from MiniFold's standard output
-        pae_list = None
-
-        # Handle multimer: mask linker regions
+        # Multimer: mask linker regions
         if multimer_properties is not None:
             (
                 atom_array_list,
@@ -386,7 +357,6 @@ class MiniFoldCore(FoldingAlgorithm):
 
         self.metadata.prediction_time = prediction_time
 
-        # Generate PDB/CIF only if requested via include_fields
         include_fields = config.get("include_fields")
         pdb = None
         cif = None
@@ -419,14 +389,13 @@ class MiniFoldCore(FoldingAlgorithm):
     ) -> List[AtomArray]:
         """Convert atom37 tensors to biotite AtomArray list."""
         from biotite.structure import Atom, array
-        from minifold.utils.residue_constants import atom_types, restypes, restype_1to3, restype_order_with_x
+        from minifold.utils.residue_constants import atom_types, restype_1to3
 
         batch_size, n_residues, n_atoms = atom_mask.shape
 
         arrays = []
         for b in range(batch_size):
             atoms = []
-            # Get the actual sequence (with linker replaced)
             seq = sequences[b].replace(":", config.get("glycine_linker", ""))
             seq_len = len(seq)
 
