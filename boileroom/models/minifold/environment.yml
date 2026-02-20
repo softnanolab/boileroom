@@ -14,7 +14,6 @@ dependencies:
     - dm-tree
     - einops
     - modelcif
-    - minifold @ git+https://github.com/jwohlwend/minifold.git
     - biotite>=1.0.1
     - fastapi
     - uvicorn

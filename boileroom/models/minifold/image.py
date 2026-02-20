@@ -11,7 +11,7 @@ minifold_image = (
         "dm-tree",
         "einops",
         "modelcif",
-        "httpx",  # required by boileroom.backend (CondaBackend import chain)
+        "httpx",  # required by boileroom.backend import chain
     )
     .run_commands(
         # minifold's pyproject.toml only declares packages=["minifold"], missing subpackages.
