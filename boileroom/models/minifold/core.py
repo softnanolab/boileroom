@@ -3,7 +3,7 @@
 import logging
 import urllib.request
 from pathlib import Path
-from typing import List, Optional, Sequence, Union, cast
+from typing import Any, List, Optional, Sequence, Union, cast
 
 import numpy as np
 import torch
@@ -172,10 +172,11 @@ class MiniFoldCore(FoldingAlgorithm):
 
         open_fold_batch = of_inference(sequence, "predict", self._of_config)
 
-        of_seq = "".join(
-            [restype_order_with_x_inverse[x.item()] for x in open_fold_batch["aatype"]]
-        )[:open_fold_batch["seq_length"]]
+        of_seq = "".join([restype_order_with_x_inverse[x.item()] for x in open_fold_batch["aatype"]])[
+            : open_fold_batch["seq_length"]
+        ]
 
+        assert self.alphabet is not None
         encoded_seq = self.alphabet.encode(of_seq)
         encoded_seq = torch.tensor(encoded_seq, dtype=torch.long)
         mask = open_fold_batch["seq_mask"][:, 0].bool()
@@ -197,15 +198,11 @@ class MiniFoldCore(FoldingAlgorithm):
         if self.config["kernels"]:
             max_len = (max_len + 127) // 128 * 128
 
-        seq = torch.stack(
-            [F.pad(s, (0, max_len - len(s)), value=20) for s, _, _ in feats]
-        )
-        mask = torch.stack(
-            [F.pad(m, (0, max_len - len(m)), value=0) for _, m, _ in feats]
-        )
+        seq = torch.stack([F.pad(s, (0, max_len - len(s)), value=20) for s, _, _ in feats])
+        mask = torch.stack([F.pad(m, (0, max_len - len(m)), value=0) for _, m, _ in feats])
 
         # Collate OpenFold batch
-        batch_of = {}
+        batch_of: dict[str, Any] = {}
         for _, _, feats_of in feats:
             for k, v in feats_of.items():
                 batch_of.setdefault(k, []).append(v)
@@ -293,12 +290,8 @@ class MiniFoldCore(FoldingAlgorithm):
             chain_index_list.append(ch_idx)
 
         max_len = max(arr.shape[0] for arr in residue_index_list)
-        padded_res = np.stack(
-            [np.pad(arr, (0, max_len - len(arr)), constant_values=-1) for arr in residue_index_list]
-        )
-        padded_chain = np.stack(
-            [np.pad(arr, (0, max_len - len(arr)), constant_values=-1) for arr in chain_index_list]
-        )
+        padded_res = np.stack([np.pad(arr, (0, max_len - len(arr)), constant_values=-1) for arr in residue_index_list])
+        padded_chain = np.stack([np.pad(arr, (0, max_len - len(arr)), constant_values=-1) for arr in chain_index_list])
 
         return (
             masked_atom_arrays,
@@ -324,11 +317,9 @@ class MiniFoldCore(FoldingAlgorithm):
         batch_size = atom_positions.shape[0]
         seq_lengths = [len(seq.replace(":", config.get("glycine_linker", ""))) for seq in sequences]
 
-        atom_array_list = self._convert_outputs_to_atomarray(
-            atom_positions, atom_mask, plddt_raw, sequences, config
-        )
+        atom_array_list = self._convert_outputs_to_atomarray(atom_positions, atom_mask, plddt_raw, sequences, config)
 
-        plddt_list = [plddt_raw[i, :seq_lengths[i]] for i in range(batch_size)]
+        plddt_list = [plddt_raw[i, : seq_lengths[i]] for i in range(batch_size)]
         pae_list = None  # not available from MiniFold
 
         # Multimer: mask linker regions

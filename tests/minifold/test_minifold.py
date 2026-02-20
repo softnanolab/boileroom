@@ -82,7 +82,9 @@ def test_minifold_multimer(test_sequences: dict[str, str], gpu_device: Optional[
     chain_len = 54  # Each chain is 54 residues
 
     assert np.all(result.residue_index[0][:chain_len] == np.arange(0, chain_len)), "First chain residue index mismatch"
-    assert np.all(result.residue_index[0][chain_len:n_residues] == np.arange(0, chain_len)), "Second chain residue index mismatch"
+    assert np.all(
+        result.residue_index[0][chain_len:n_residues] == np.arange(0, chain_len)
+    ), "Second chain residue index mismatch"
     assert np.all(result.chain_index[0][:chain_len] == 0), "First chain index mismatch"
     assert np.all(result.chain_index[0][chain_len:n_residues] == 1), "Second chain index mismatch"
 
@@ -98,9 +100,7 @@ def test_minifold_output_pdb_cif(test_sequences: dict[str, str], gpu_device: Opt
     from biotite.structure.io.pdb import PDBFile
 
     with enable_output():
-        model = MiniFold(
-            backend="modal", device=gpu_device, config={"include_fields": ["pdb", "atom_array"]}
-        )
+        model = MiniFold(backend="modal", device=gpu_device, config={"include_fields": ["pdb", "atom_array"]})
         sequences = [test_sequences["short"], test_sequences["medium"]]
         result = model.fold(sequences)
 
