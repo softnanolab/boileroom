@@ -84,13 +84,30 @@ class ProtenixOutput(StructurePrediction):
     cif: Optional[list[str]] = None
 
 
-GPU_TO_USE = os.environ.get("BOILEROOM_GPU", "A100-40GB")
+GPU_TO_USE = os.environ.get("BOILEROOM_GPU", "A100-80GB")
 
 if GPU_TO_USE not in GPUS_AVAIL_ON_MODAL:
     logger.warning(
         f"GPU specified in BOILEROOM_GPU environment variable ('{GPU_TO_USE}') may not be suitable "
         f"for Protenix. Protenix requires significant GPU memory. Available GPUs: {GPUS_AVAIL_ON_MODAL}"
     )
+
+
+DEFAULT_CONFIG = {
+    # Output format config
+    "output_pdb": False,
+    "output_cif": False,
+    "output_atomarray": False,
+    # Protenix inference config
+    "model_name": "protenix_base_default_v1.0.0",
+    "n_cycle": 10,
+    "n_step": 200,
+    "n_sample": 1,
+    "seed": 101,
+    "use_msa": False,
+    "use_template": False,
+    "dtype": "bf16",
+}
 
 
 @app.cls(
@@ -100,7 +117,7 @@ if GPU_TO_USE not in GPUS_AVAIL_ON_MODAL:
     scaledown_window=10 * MINUTES,
     volumes={MODEL_DIR: model_weights},
 )
-class ProtenixFold(FoldingAlgorithm):
+class ProtenixFold:
     """Protenix protein structure prediction model.
 
     Wraps the Protenix inference pipeline (an AlphaFold 3 reproduction by ByteDance)
@@ -111,58 +128,45 @@ class ProtenixFold(FoldingAlgorithm):
 
     Parameters
     ----------
-    config : dict
-        Configuration dictionary. Supported keys:
+    config_json : str
+        JSON-serialised configuration dictionary. Supported keys:
 
         - ``output_pdb`` (bool): Whether to produce PDB strings. Default False.
         - ``output_cif`` (bool): Whether to produce CIF strings. Default False.
         - ``output_atomarray`` (bool): Whether to produce biotite AtomArrays. Default False.
-        - ``model_name`` (str): Name of the Protenix model checkpoint. Default "protenix_base_default_v1.0.0".
+        - ``model_name`` (str): Name of the Protenix model checkpoint.
         - ``n_cycle`` (int): Number of pairformer recycling cycles. Default 10.
         - ``n_step`` (int): Number of diffusion steps. Default 200.
         - ``n_sample`` (int): Number of output samples per seed. Default 1.
         - ``seed`` (int): Random seed for reproducibility. Default 101.
-        - ``use_msa`` (bool): Whether to use MSA features. Default False (for speed in design loops).
+        - ``use_msa`` (bool): Whether to use MSA features. Default False.
         - ``use_template`` (bool): Whether to use template features. Default False.
         - ``dtype`` (str): Precision for inference ("bf16" or "fp32"). Default "bf16".
     """
 
-    DEFAULT_CONFIG = {
-        # Output format config
-        "output_pdb": False,
-        "output_cif": False,
-        "output_atomarray": False,
-        # Protenix inference config
-        "model_name": "protenix_base_default_v1.0.0",
-        "n_cycle": 10,
-        "n_step": 200,
-        "n_sample": 1,
-        "seed": 101,
-        "use_msa": False,
-        "use_template": False,
-        "dtype": "bf16",
-    }
-
-    def __init__(self, config: dict = {}) -> None:
-        """Initialize Protenix."""
-        super().__init__(config)
-        self.metadata = self._initialize_metadata(
-            model_name="Protenix",
-            model_version="1.0.0",
-        )
-        self.model_dir: Optional[str] = os.environ.get("MODEL_DIR", MODEL_DIR)
-        self.runner = None
+    # ---- Modal parameter: config is serialised as JSON string ----
+    config_json: str = modal.parameter(default="{}")
 
     @modal.enter()
     def _initialize(self) -> None:
         """Initialize the model during container startup."""
+        # Deserialise config and merge with defaults
+        user_config = json.loads(self.config_json) if self.config_json else {}
+        self.config = {**DEFAULT_CONFIG, **user_config}
+        self.metadata = PredictionMetadata(
+            model_name="Protenix",
+            model_version="1.0.0",
+            prediction_time=None,
+            sequence_lengths=None,
+        )
+        self.model_dir: Optional[str] = os.environ.get("MODEL_DIR", MODEL_DIR)
+        self.runner = None
         self._load()
 
     def _load(self) -> None:
         """Load the Protenix model and prepare it for inference."""
         import sys
         import torch
-        from ml_collections.config_dict import ConfigDict
 
         # We need to add the protenix package paths to sys.path
         # since protenix uses relative imports from its runner/ and configs/ directories
@@ -244,6 +248,14 @@ class ProtenixFold(FoldingAlgorithm):
         }
 
         return [sample]
+
+    def _validate_sequences(self, sequences: Union[str, List[str]]) -> list[str]:
+        """Validate input sequences and convert to list format."""
+        from ...utils import validate_sequence
+
+        if isinstance(sequences, str):
+            sequences = [sequences]
+        return [seq for seq in sequences if validate_sequence(seq)]
 
     @modal.method()
     def fold(self, sequences: Union[str, List[str]]) -> ProtenixOutput:
@@ -563,7 +575,7 @@ class ProtenixFold(FoldingAlgorithm):
         return cifs
 
 
-def get_protenix(gpu_type: str = "A10G", config: dict = {}) -> ProtenixFold:
+def get_protenix(gpu_type: str = "A100-80GB", config: dict = {}) -> ProtenixFold:
     """Create a ProtenixFold instance with a specific GPU type.
 
     Parameters
@@ -580,4 +592,4 @@ def get_protenix(gpu_type: str = "A10G", config: dict = {}) -> ProtenixFold:
         Configured ProtenixFold instance.
     """
     Model = ProtenixFold.with_options(gpu=gpu_type)  # type: ignore
-    return Model(config=config)
+    return Model(config_json=json.dumps(config))
