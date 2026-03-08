@@ -394,6 +394,46 @@ class EmbeddingAlgorithm(Algorithm):
         return cast(EmbeddingPrediction, dataclasses.replace(dataclass_output, **updates))
 
 
+@dataclass
+class GenerationOutput:
+    """Output from a sequence generation algorithm."""
+
+    metadata: PredictionMetadata
+    sequences: list[str]
+    log_likelihoods: list[float]
+
+
+class GenerationAlgorithm(Algorithm):
+    """Abstract base class for autoregressive protein sequence generation."""
+
+    @abstractmethod
+    def generate(
+        self,
+        sequences: Union[str, Sequence[str]],
+        options: Optional[dict] = None,
+    ) -> GenerationOutput:
+        """Generate new protein sequences conditioned on input sequences.
+
+        Parameters
+        ----------
+        sequences : Union[str, Sequence[str]]
+            Input conditioning sequences (e.g., a protein family).
+        options : Optional[dict]
+            Per-call configuration overrides.
+
+        Returns
+        -------
+        GenerationOutput
+            Generated sequences with log-likelihoods and metadata.
+        """
+        raise NotImplementedError
+
+    def _validate_sequences(self, sequences: Union[str, Sequence[str]]) -> list[str]:
+        if isinstance(sequences, str):
+            sequences = [sequences]
+        return [seq for seq in sequences if validate_sequence(seq)]
+
+
 class ModelWrapper:
     def __init__(self, backend: str = "modal", device: str | None = None, config: dict | None = None) -> None:
         """Create a ModelWrapper configured to use a specified backend, execution device, and optional configuration.

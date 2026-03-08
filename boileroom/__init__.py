@@ -17,7 +17,11 @@ def __getattr__(name: str):
         from .models import Boltz2
 
         return Boltz2
+    if name == "ProFam":
+        from .models import ProFam
+
+        return ProFam
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
-__all__ = ["ESMFold", "ESM2", "Chai1", "Boltz2"]
+__all__ = ["ESMFold", "ESM2", "Chai1", "Boltz2", "ProFam"]
