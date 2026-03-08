@@ -21,6 +21,10 @@ def __getattr__(name: str):
         from .models import ProFam
 
         return ProFam
+    if name == "app":
+        from .backend.modal import app
+
+        return app
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 

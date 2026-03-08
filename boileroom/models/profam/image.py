@@ -24,6 +24,7 @@ profam_image = (
         "numba",
         "hydra-core",
         "pyyaml",
+        "rich",
     )
     # ProFam's setup.py uses find_packages() but several sub-packages
     # (src/sequence, src/evaluators, src/pipelines) are missing __init__.py.
