@@ -5,11 +5,9 @@ ModalProFam(@app.cls)            — Modal deployment with @modal.enter()
 ProFam(ModelWrapper)             — User-facing wrapper, backend dispatch
 """
 
-import copy
 import json
 import logging
 import time
-from dataclasses import dataclass
 from typing import Optional, Sequence, Union
 
 import modal
