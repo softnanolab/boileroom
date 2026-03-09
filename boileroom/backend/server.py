@@ -174,15 +174,8 @@ async def health() -> dict[str, str]:
     return {"status": "ready"}
 
 
-class EmbedRequest(BaseModel):
-    """Request model for embed endpoint."""
-
-    sequences: Union[str, list[str]]
-    options: Optional[dict[str, Any]] = None
-
-
-class FoldRequest(BaseModel):
-    """Request model for fold endpoint."""
+class ModelRequest(BaseModel):
+    """Request model for all model endpoints (embed, fold, generate)."""
 
     sequences: Union[str, list[str]]
     options: Optional[dict[str, Any]] = None
@@ -206,56 +199,58 @@ def _serialize_output(output: Any) -> dict[str, str]:
     return {"pickled": base64_encoded}
 
 
-@app.post("/embed")
-async def embed(request: EmbedRequest) -> JSONResponse:
-    """Embed sequences using the loaded model.
+def _call_model_method(method_name: str, request: ModelRequest) -> JSONResponse:
+    """Call a method on the loaded model, serialize the output, and handle errors.
 
     Parameters
     ----------
-    request : EmbedRequest
+    method_name : str
+        Name of the method to call on the model instance (e.g., 'embed', 'fold', 'generate').
+    request : ModelRequest
         Request containing sequences and optional options.
 
     Returns
     -------
     JSONResponse
-        Pickled and base64-encoded embedding output.
+        Pickled and base64-encoded model output.
+
+    Raises
+    ------
+    HTTPException
+        503 if model is not loaded, 500 if the method call fails.
     """
     if _model_instance is None:
         raise HTTPException(status_code=503, detail="Model not loaded")
 
+    if not hasattr(_model_instance, method_name):
+        raise HTTPException(status_code=501, detail=f"Model does not support '{method_name}'")
+
     try:
-        output = _model_instance.embed(request.sequences, options=request.options)
+        method = getattr(_model_instance, method_name)
+        output = method(request.sequences, options=request.options)
         serialized = _serialize_output(output)
         return JSONResponse(content=serialized)
     except Exception as e:
-        logger.error(f"Embedding failed: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Embedding failed: {str(e)}") from e
+        logger.error(f"{method_name} failed: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"{method_name} failed: {str(e)}") from e
+
+
+@app.post("/embed")
+async def embed(request: ModelRequest) -> JSONResponse:
+    """Embed sequences using the loaded model."""
+    return _call_model_method("embed", request)
 
 
 @app.post("/fold")
-async def fold(request: FoldRequest) -> JSONResponse:
-    """Fold sequences using the loaded model.
+async def fold(request: ModelRequest) -> JSONResponse:
+    """Fold sequences using the loaded model."""
+    return _call_model_method("fold", request)
 
-    Parameters
-    ----------
-    request : FoldRequest
-        Request containing sequences and optional options.
 
-    Returns
-    -------
-    JSONResponse
-        Pickled and base64-encoded folding output.
-    """
-    if _model_instance is None:
-        raise HTTPException(status_code=503, detail="Model not loaded")
-
-    try:
-        output = _model_instance.fold(request.sequences, options=request.options)
-        serialized = _serialize_output(output)
-        return JSONResponse(content=serialized)
-    except Exception as e:
-        logger.error(f"Folding failed: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Folding failed: {str(e)}") from e
+@app.post("/generate")
+async def generate(request: ModelRequest) -> JSONResponse:
+    """Generate sequences using the loaded model."""
+    return _call_model_method("generate", request)
 
 
 def main() -> None:

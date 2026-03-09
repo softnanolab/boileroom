@@ -1,6 +1,6 @@
 import json
 import logging
-from typing import TYPE_CHECKING, Optional, Sequence, Union
+from typing import Optional, Sequence, Union
 
 import modal
 
@@ -13,8 +13,7 @@ from ...utils import MINUTES, MODAL_MODEL_DIR
 from .image import esm_image
 from ...images.volumes import model_weights
 
-if TYPE_CHECKING:
-    from .types import ESM2Output
+from .types import ESM2Output
 
 logger = logging.getLogger(__name__)
 
