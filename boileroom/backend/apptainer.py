@@ -688,24 +688,32 @@ class _ApptainerModelProxy:
         self._client = client
         self._log_file_path = log_file_path
 
-    def embed(self, sequences: str | list[str], options: dict | None = None) -> Any:
-        """Embed sequences by making a POST request to /embed.
+    def _post(self, endpoint: str, sequences: str | list[str], options: dict | None = None) -> Any:
+        """POST to an endpoint, handle errors, and deserialize the response.
 
         Parameters
         ----------
+        endpoint : str
+            Server endpoint path (e.g., '/embed', '/fold', '/generate').
         sequences : str | list[str]
-            Single sequence or list of sequences. Multimer sequences with ':'
-            separator are passed through as-is.
+            Single sequence or list of sequences.
         options : dict | None
             Optional per-call configuration options.
 
         Returns
         -------
         Any
-            Deserialized embedding output with numpy arrays reconstructed.
+            Deserialized output object.
+
+        Raises
+        ------
+        RuntimeError
+            If the server returns a 500 error, with log file path included.
+        httpx.HTTPStatusError
+            For other non-2xx status codes.
         """
         payload = {"sequences": sequences, "options": options}
-        response = self._client.post("/embed", json=payload)
+        response = self._client.post(endpoint, json=payload)
         try:
             response.raise_for_status()
         except httpx.HTTPStatusError as e:
@@ -713,44 +721,23 @@ class _ApptainerModelProxy:
                 log_file_msg = ""
                 if self._log_file_path is not None:
                     log_file_msg = f"\n\nServer log file: {self._log_file_path}"
-                # Raise RuntimeError with log file path, chaining from the original HTTPStatusError
                 raise RuntimeError(
                     f"Internal server error (500) occurred.{log_file_msg}\n" f"HTTP request failed: {e}"
                 ) from e
             raise
         return _deserialize_output(response.json())
+
+    def embed(self, sequences: str | list[str], options: dict | None = None) -> Any:
+        """Embed sequences by making a POST request to /embed."""
+        return self._post("/embed", sequences, options)
 
     def fold(self, sequences: str | list[str], options: dict | None = None) -> Any:
-        """Fold sequences by making a POST request to /fold.
+        """Fold sequences by making a POST request to /fold."""
+        return self._post("/fold", sequences, options)
 
-        Parameters
-        ----------
-        sequences : str | list[str]
-            Single sequence or list of sequences. Multimer sequences with ':'
-            separator are passed through as-is.
-        options : dict | None
-            Optional per-call configuration options.
-
-        Returns
-        -------
-        Any
-            Deserialized folding output with numpy arrays reconstructed.
-        """
-        payload = {"sequences": sequences, "options": options}
-        response = self._client.post("/fold", json=payload)
-        try:
-            response.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            if response.status_code == 500:
-                log_file_msg = ""
-                if self._log_file_path is not None:
-                    log_file_msg = f"\n\nServer log file: {self._log_file_path}"
-                # Raise RuntimeError with log file path, chaining from the original HTTPStatusError
-                raise RuntimeError(
-                    f"Internal server error (500) occurred.{log_file_msg}\n" f"HTTP request failed: {e}"
-                ) from e
-            raise
-        return _deserialize_output(response.json())
+    def generate(self, sequences: str | list[str], options: dict | None = None) -> Any:
+        """Generate sequences by making a POST request to /generate."""
+        return self._post("/generate", sequences, options)
 
 
 def _deserialize_output(data: dict[str, Any]) -> Any:

@@ -8,15 +8,12 @@ ProFam(ModelWrapper)             — User-facing wrapper, backend dispatch
 import json
 import logging
 import time
-from typing import Optional, Sequence, Union
+from typing import TYPE_CHECKING, Optional, Sequence, Union
 
-import modal
-
-from ...backend import ModalBackend
-from ...backend.modal import app
 from ...base import GenerationAlgorithm, GenerationOutput, ModelWrapper, PredictionMetadata
-from ...utils import MINUTES
-from .image import profam_image
+
+if TYPE_CHECKING:
+    from ...backend.base import Backend
 
 logger = logging.getLogger(__name__)
 
@@ -209,34 +206,55 @@ class ProFamCore(GenerationAlgorithm):
 
 
 ############################################################
-# MODAL BACKEND
+# MODAL BACKEND (lazy — only evaluated when modal is available)
 ############################################################
 
 
-@app.cls(
-    image=profam_image,
-    gpu="T4",
-    timeout=20 * MINUTES,
-    scaledown_window=10 * MINUTES,
-)
-class ModalProFam:
-    """Modal-specific wrapper around ProFamCore."""
+_ModalProFam = None
 
-    config: bytes = modal.parameter(default=b"{}")
 
-    @modal.enter()
-    def _initialize(self) -> None:
-        cfg = json.loads(self.config.decode("utf-8"))
-        self._core = ProFamCore(cfg)
-        self._core._initialize()
+def _build_modal_cls():
+    """Build ModalProFam class lazily to avoid importing modal at module level.
 
-    @modal.method()
-    def generate(
-        self,
-        sequences: Union[str, Sequence[str]],
-        options: Optional[dict] = None,
-    ) -> GenerationOutput:
-        return self._core.generate(sequences, options=options)
+    Cached so the class is only registered with Modal once.
+    """
+    global _ModalProFam
+    if _ModalProFam is not None:
+        return _ModalProFam
+
+    import modal
+
+    from ...backend.modal import app
+    from ...utils import MINUTES
+    from .image import profam_image
+
+    @app.cls(
+        image=profam_image,
+        gpu="T4",
+        timeout=20 * MINUTES,
+        scaledown_window=10 * MINUTES,
+    )
+    class ModalProFam:
+        """Modal-specific wrapper around ProFamCore."""
+
+        config: bytes = modal.parameter(default=b"{}")
+
+        @modal.enter()
+        def _initialize(self) -> None:
+            cfg = json.loads(self.config.decode("utf-8"))
+            self._core = ProFamCore(cfg)
+            self._core._initialize()
+
+        @modal.method()
+        def generate(
+            self,
+            sequences: Union[str, Sequence[str]],
+            options: Optional[dict] = None,
+        ) -> GenerationOutput:
+            return self._core.generate(sequences, options=options)
+
+    _ModalProFam = ModalProFam
+    return _ModalProFam
 
 
 ############################################################
@@ -247,7 +265,7 @@ class ModalProFam:
 class ProFam(ModelWrapper):
     """User-facing interface for ProFam protein sequence generation.
 
-    Supports Modal backend for GPU-accelerated generation.
+    Supports Modal and Apptainer backends for GPU-accelerated generation.
     """
 
     def __init__(
@@ -260,11 +278,21 @@ class ProFam(ModelWrapper):
             config = {}
         self.config = config
         self.device = device
-        backend_type, _ = ModelWrapper.parse_backend(backend)
+        backend_type, backend_tag = ModelWrapper.parse_backend(backend)
+        backend_instance: "Backend"
         if backend_type == "modal":
+            from ...backend import ModalBackend
+
+            ModalProFam = _build_modal_cls()
             backend_instance = ModalBackend(ModalProFam, config, device=device)
+        elif backend_type == "apptainer":
+            from ...backend.apptainer import ApptainerBackend
+
+            core_class_path = "boileroom.models.profam.profam.ProFamCore"
+            image_uri = f"docker://docker.io/jakublala/boileroom-profam:{backend_tag}"
+            backend_instance = ApptainerBackend(core_class_path, image_uri, config or {}, device=device)
         else:
-            raise ValueError(f"Backend {backend_type} not supported for ProFam")
+            raise ValueError(f"Backend {backend_type} not supported")
         self._backend = backend_instance
         self._backend.start()
 
