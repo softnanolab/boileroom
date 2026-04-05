@@ -15,8 +15,14 @@ jobs:
       - name: Get version from PR branch
         id: pr_version
         run: |
-          VERSION=$(grep -Po '(?<=version = ")[^"]+' pyproject.toml)
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          VERSION=$(python - <<'PY'
+          import tomllib
+          from pathlib import Path
+
+          print(tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"])
+          PY
+          )
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Checkout main
         uses: actions/checkout@v4
@@ -26,8 +32,14 @@ jobs:
       - name: Get version from main
         id: main_version
         run: |
-          VERSION=$(grep -Po '(?<=version = ")[^"]+' pyproject.toml)
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          VERSION=$(python - <<'PY'
+          import tomllib
+          from pathlib import Path
+
+          print(tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"])
+          PY
+          )
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Compare versions
         run: |

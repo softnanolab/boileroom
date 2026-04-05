@@ -9,8 +9,8 @@ import modal
 from ...backend.modal import app
 from ...base import ModelWrapper
 from ...images.volumes import model_weights
-from ..registry import ESMFOLD_SPEC
 from ...utils import MINUTES, MODAL_MODEL_DIR
+from ..registry import ESMFOLD_SPEC
 from .image import esm_image
 from .types import ESMFoldOutput
 

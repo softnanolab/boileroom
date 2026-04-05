@@ -230,7 +230,7 @@ def test_esm2_embed_multimer(esm2_model_factory, test_sequences):
 def test_esm2_static_config_enforcement():
     """Test that static config keys cannot be overridden in options."""
     pytest.importorskip("transformers", reason="requires transformers (backend dependency)")
-    from boileroom.models.esm.esm2 import ESM2Core
+    from boileroom.models.esm.core import ESM2Core
 
     core = ESM2Core(config={"device": "cpu", "model_name": "esm2_t33_650M_UR50D"})
     # device and model_name are static config keys

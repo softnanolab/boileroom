@@ -222,7 +222,7 @@ def test_tokenize_sequences_with_mocker(mocker):
 
     # Create a model instance
     model = ESMFoldCore(config={"glycine_linker": GLYCINE_LINKER, "position_ids_skip": POSITION_IDS_SKIP})
-    model.device = "cpu"
+    model._device = torch.device("cpu")
 
     # Mock the tokenizer
     mock_tokenizer = mocker.patch.object(model, "tokenizer")

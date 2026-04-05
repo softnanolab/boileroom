@@ -7,8 +7,8 @@ import modal
 from ...backend.modal import app
 from ...base import ModelWrapper
 from ...images.volumes import model_weights
-from ..registry import CHAI1_SPEC
 from ...utils import MINUTES, MODAL_MODEL_DIR
+from ..registry import CHAI1_SPEC
 from .image import chai_image
 from .types import Chai1Output
 
