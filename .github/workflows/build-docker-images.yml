@@ -42,7 +42,7 @@ jobs:
 
       - name: Build and push latest images
         run: |
-          python3 ./scripts/images/build_model_images.py --all-cuda --tag=latest --push
+          python3 ./scripts/images/build_model_images.py --all-cuda --tag=latest --platform=linux/amd64 --push
 
       - name: Verify canonical latest image imports
         run: |
@@ -54,7 +54,7 @@ jobs:
 
       - name: Build and push versioned images
         run: |
-          python3 ./scripts/images/build_model_images.py --all-cuda --tag=${{ steps.project_version.outputs.value }} --push
+          python3 ./scripts/images/build_model_images.py --all-cuda --tag=${{ steps.project_version.outputs.value }} --platform=linux/amd64 --push
 
       - name: Verify canonical versioned image imports
         run: |

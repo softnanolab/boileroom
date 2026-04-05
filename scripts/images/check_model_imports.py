@@ -106,6 +106,19 @@ def check_image(
     if not core_path.exists():
         raise FileNotFoundError(f"Missing core module: {core_path}")
 
+    subprocess.run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            image_reference,
+            "/bin/sh",
+            "-lc",
+            "python --version && pip --version",
+        ],
+        check=True,
+    )
+
     script = f"""
 import ast
 import importlib

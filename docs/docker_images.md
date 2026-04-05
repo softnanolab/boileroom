@@ -1,10 +1,10 @@
 ## Boileroom Docker images
 
 ### What exists today
-- **base**: `boileroom/boileroom/images/Dockerfile` → CUDA-enabled micromamba base with Python 3.12. Tag: `docker.io/jakublala/boileroom-base`.
-- **boltz**: `boileroom/boileroom/models/boltz/Dockerfile` → copies `environment.yml` and installs the Boltz env. Tag: `docker.io/jakublala/boileroom-boltz`.
-- **chai1**: `boileroom/boileroom/models/chai/Dockerfile` → copies `environment.yml`, installs chai-specific deps, sets HF env vars. Tag: `docker.io/jakublala/boileroom-chai1`.
-- **esm**: `boileroom/boileroom/models/esm/Dockerfile` → copies `environment.yml` shared by esm2/esmfold. Tag: `docker.io/jakublala/boileroom-esm`.
+- **base**: `boileroom/images/Dockerfile` → CUDA-enabled micromamba base with Python 3.12. Tag: `docker.io/jakublala/boileroom-base`.
+- **boltz**: `boileroom/models/boltz/Dockerfile` → copies `environment.yml` and installs the Boltz env. Tag: `docker.io/jakublala/boileroom-boltz`.
+- **chai1**: `boileroom/models/chai/Dockerfile` → copies `environment.yml`, installs chai-specific deps, sets HF env vars. Tag: `docker.io/jakublala/boileroom-chai1`.
+- **esm**: `boileroom/models/esm/Dockerfile` → copies `environment.yml` shared by esm2/esmfold. Tag: `docker.io/jakublala/boileroom-esm`.
 
 Dockerfiles are the canonical image definition for all runtimes. Docker/Apptainer images are built from these Dockerfiles, and Modal pulls the corresponding published model image from Docker Hub instead of maintaining a separate handwritten dependency stack.
 
@@ -49,39 +49,39 @@ The GitHub Actions workflow (`.github/workflows/build-docker-images.yml`) runs t
 ```bash
 docker build \
   --platform linux/amd64 \
-  -t docker.io/jakublala/boileroom-base:dev \
-  -f boileroom/boileroom/images/Dockerfile \
-  boileroom/boileroom/images
+  -t docker.io/jakublala/boileroom-base:local \
+  -f boileroom/images/Dockerfile \
+  boileroom/images
 ```
 
-- Build boltz (using the dev base tag):
+- Build boltz (using the local base tag):
 ```bash
 docker build \
   --platform linux/amd64 \
-  --build-arg BASE_IMAGE=docker.io/jakublala/boileroom-base:dev \
-  -t docker.io/jakublala/boileroom-boltz:dev \
-  -f boileroom/boileroom/models/boltz/Dockerfile \
-  boileroom/boileroom/models/boltz
+  --build-arg BASE_IMAGE=docker.io/jakublala/boileroom-base:local \
+  -t docker.io/jakublala/boileroom-boltz:local \
+  -f boileroom/models/boltz/Dockerfile \
+  boileroom/models/boltz
 ```
 
 - Build chai1:
 ```bash
 docker build \
   --platform linux/amd64 \
-  --build-arg BASE_IMAGE=docker.io/jakublala/boileroom-base:dev \
-  -t docker.io/jakublala/boileroom-chai1:dev \
-  -f boileroom/boileroom/models/chai/Dockerfile \
-  boileroom/boileroom/models/chai
+  --build-arg BASE_IMAGE=docker.io/jakublala/boileroom-base:local \
+  -t docker.io/jakublala/boileroom-chai1:local \
+  -f boileroom/models/chai/Dockerfile \
+  boileroom/models/chai
 ```
 
 - Build esm:
 ```bash
 docker build \
   --platform linux/amd64 \
-  --build-arg BASE_IMAGE=docker.io/jakublala/boileroom-base:dev \
-  -t docker.io/jakublala/boileroom-esm:dev \
-  -f boileroom/boileroom/models/esm/Dockerfile \
-  boileroom/boileroom/models/esm
+  --build-arg BASE_IMAGE=docker.io/jakublala/boileroom-base:local \
+  -t docker.io/jakublala/boileroom-esm:local \
+  -f boileroom/models/esm/Dockerfile \
+  boileroom/models/esm
 ```
 
 ### ☁️ Push local tags to Docker Hub
@@ -98,7 +98,8 @@ This publishes:
 GitHub Actions at `.github/workflows/build-docker-images.yml` now drives the release pipeline:
 - Triggers automatically on pushes to `main` and can also be run manually via **Run workflow**.
 - Runs the same Python helper twice with Docker Buildx: once for `latest`, once for the current `project.version` from `pyproject.toml`.
-- Each invocation uses `--all-cuda --push`, so the base and per-model images land on Docker Hub with canonical CUDA-qualified tags and default `12.6` aliases.
+- Each invocation uses `--all-cuda --platform=linux/amd64 --push`, so the base and per-model images land on Docker Hub with canonical CUDA-qualified tags and default `12.6` aliases.
+- The official release path currently publishes `linux/amd64` only. If you want to experiment with additional architectures, pass an explicit multi-platform `--platform` value and validate it separately before treating it as supported.
 - Future merges inherit the cache layers thanks to BuildKit, keeping CI times reasonable.
 
 ### 🧱 Convert Docker images to Apptainer (SIF)
@@ -159,9 +160,9 @@ apptainer exec --env MODEL_DIR=/scratch/weights -B /scratch/weights:/scratch/wei
 ```
 
 ### 🧩 Add your own image
-1) Create a `Dockerfile` under `boileroom/boileroom/models/<your_image>/Dockerfile` that starts FROM the dev base locally:
+1) Create a `Dockerfile` under `boileroom/models/<your_image>/Dockerfile` that starts FROM the local base image:
 ```Dockerfile
-ARG BASE_IMAGE=docker.io/jakublala/boileroom-base:latest
+ARG BASE_IMAGE=docker.io/jakublala/boileroom-base:local
 FROM ${BASE_IMAGE}
 ```
 2) Build it locally (adjust path and tag):
@@ -173,5 +174,5 @@ uv run python scripts/images/build_model_images.py --cuda-version=12.6 --tag=lat
 
 ### 💡 Tips
 - Keep network-heavy `pip install` steps in as few layers as possible to improve caching.
-- Use `--platform linux/amd64` locally to match CI.
+- Use `--platform linux/amd64` locally to match the official release workflow.
 - Prefer canonical CUDA-qualified tags when you need exact reproducibility.

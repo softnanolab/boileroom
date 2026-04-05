@@ -189,8 +189,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--all-cuda", action="store_true", help="Build all supported CUDA variants.")
     parser.add_argument(
         "--platform",
-        default="linux/amd64,linux/arm64",
-        help="Comma-separated buildx platforms. Single-platform non-push builds auto-load into the local daemon.",
+        default="linux/amd64",
+        help="Comma-separated buildx platforms. The default release path publishes linux/amd64 only.",
     )
     parser.add_argument("--push", action="store_true", help="Push built images to Docker Hub.")
     parser.add_argument(
