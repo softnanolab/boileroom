@@ -40,4 +40,4 @@ jobs:
 
       - name: Run integration tests
         shell: bash -l {0}
-        run: uv run pytest -n auto -m integration
+        run: uv run pytest -n 4 -m integration

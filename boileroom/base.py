@@ -454,6 +454,7 @@ class ModelWrapper:
                 f"Backend {backend_type} not supported for {model_spec.public_name}. Supported backends: {supported}"
             )
 
+        backend_instance: Any
         if backend_type == "modal":
             if model_spec.modal_class_path is None:
                 raise ValueError(f"Modal backend is not configured for {model_spec.public_name}")

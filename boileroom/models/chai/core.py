@@ -30,6 +30,7 @@ class Chai1Core(FoldingAlgorithm):
         "num_diffn_timesteps": 200,
         "num_diffn_samples": 5,
         "num_trunk_samples": 1,
+        "seed": None,
         "use_esm_embeddings": False,
         "use_msa_server": False,
         "use_templates_server": False,
@@ -115,6 +116,7 @@ class Chai1Core(FoldingAlgorithm):
                     num_trunk_recycles=effective_config["num_trunk_recycles"],
                     num_diffn_timesteps=effective_config["num_diffn_timesteps"],
                     num_diffn_samples=effective_config["num_diffn_samples"],
+                    seed=effective_config["seed"],
                     use_esm_embeddings=effective_config["use_esm_embeddings"],
                     use_msa_server=effective_config["use_msa_server"],
                     use_templates_server=effective_config["use_templates_server"],
@@ -161,7 +163,7 @@ class Chai1Core(FoldingAlgorithm):
 
         constraint_path = buffer_path / "constraint.csv"
 
-        if isinstance(constraint_definition, (str, Path)):
+        if isinstance(constraint_definition, str | Path):
             source_path = Path(constraint_definition).expanduser().resolve()
             constraint_path.write_text(source_path.read_text())
             return constraint_path
