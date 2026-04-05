@@ -11,6 +11,7 @@ from typing import Any, Literal, Protocol, cast
 import numpy as np
 import torch
 
+from .models.registry import ModelSpec, resolve_object
 from .utils import validate_sequence
 
 logger = logging.getLogger(__name__)
@@ -413,6 +414,70 @@ class ModelWrapper:
         self.backend = backend
         self.device = device
         self.config = config or {}
+        self.model_spec: ModelSpec | None = None
+
+    def _initialize_backend_from_spec(
+        self,
+        model_spec: ModelSpec,
+        backend: str | None = None,
+        device: str | None = None,
+        config: dict | None = None,
+    ) -> None:
+        """Build and start a backend using shared model metadata.
+
+        Parameters
+        ----------
+        model_spec : ModelSpec
+            Registry entry describing how to construct backends for this model.
+        backend : str | None
+            Backend selector string. When omitted, uses the model spec default.
+        device : str | None
+            Optional device or GPU selector passed through to the backend.
+        config : dict | None
+            Optional backend/model configuration.
+
+        Raises
+        ------
+        ValueError
+            If the selected backend is unsupported or lacks the required spec metadata.
+        """
+        from .backend import ModalBackend
+        from .backend.apptainer import ApptainerBackend
+
+        resolved_backend = backend or model_spec.default_backend
+        resolved_config = config or {}
+        backend_type, backend_tag = self.parse_backend(resolved_backend)
+
+        if backend_type not in model_spec.supported_backends:
+            supported = ", ".join(model_spec.supported_backends)
+            raise ValueError(
+                f"Backend {backend_type} not supported for {model_spec.public_name}. Supported backends: {supported}"
+            )
+
+        if backend_type == "modal":
+            if model_spec.modal_class_path is None:
+                raise ValueError(f"Modal backend is not configured for {model_spec.public_name}")
+            modal_cls = resolve_object(model_spec.modal_class_path)
+            backend_instance = ModalBackend(modal_cls, resolved_config, device=device)
+        elif backend_type == "apptainer":
+            if model_spec.apptainer_core_class_path is None or model_spec.apptainer_image_name is None:
+                raise ValueError(f"Apptainer backend is not configured for {model_spec.public_name}")
+            image_uri = f"docker://docker.io/jakublala/{model_spec.apptainer_image_name}:{backend_tag}"
+            backend_instance = ApptainerBackend(
+                model_spec.apptainer_core_class_path,
+                image_uri,
+                resolved_config,
+                device=device,
+            )
+        else:
+            raise ValueError(f"Backend {backend_type} not supported")
+
+        self.backend = resolved_backend
+        self.device = device
+        self.config = resolved_config
+        self.model_spec = model_spec
+        self._backend = backend_instance
+        self._backend.start()
 
     @staticmethod
     def parse_backend(backend: str) -> tuple[str, str | None]:

@@ -4,11 +4,10 @@ from collections.abc import Sequence
 
 import modal
 
-from ...backend import ModalBackend
-from ...backend.base import Backend
 from ...backend.modal import app
 from ...base import ModelWrapper
 from ...images.volumes import model_weights
+from ..registry import CHAI1_SPEC
 from ...utils import MINUTES, MODAL_MODEL_DIR
 from .image import chai_image
 from .types import Chai1Output
@@ -75,6 +74,8 @@ class Chai1(ModelWrapper):
     # with proper documentation.
     """
 
+    MODEL_SPEC = CHAI1_SPEC
+
     def __init__(self, backend: str = "modal", device: str | None = None, config: dict | None = None) -> None:
         """Create a Chai1 model wrapper and start the selected backend.
 
@@ -94,25 +95,8 @@ class Chai1(ModelWrapper):
         ValueError
             If an unsupported backend string is provided.
         """
-        if config is None:
-            config = {}
-        self.config = config
-        self.device = device
-        backend_type, backend_tag = ModelWrapper.parse_backend(backend)
-        backend_instance: Backend
-        if backend_type == "modal":
-            backend_instance = ModalBackend(ModalChai1, config, device=device)
-        elif backend_type == "apptainer":
-            from ...backend.apptainer import ApptainerBackend
-
-            # Pass Core class as string path to avoid importing it in main process
-            core_class_path = "boileroom.models.chai.core.Chai1Core"
-            image_uri = f"docker://docker.io/jakublala/boileroom-chai1:{backend_tag}"
-            backend_instance = ApptainerBackend(core_class_path, image_uri, config or {}, device=device)
-        else:
-            raise ValueError(f"Backend {backend_type} not supported")
-        self._backend = backend_instance
-        self._backend.start()
+        super().__init__(backend=backend, device=device, config=config)
+        self._initialize_backend_from_spec(self.MODEL_SPEC, backend=backend, device=device, config=config)
 
     def fold(self, sequences: str | Sequence[str], options: dict | None = None) -> "Chai1Output":
         """Run structure prediction for the given sequence(s) using the configured backend.

@@ -4,11 +4,10 @@ from collections.abc import Sequence
 
 import modal
 
-from ...backend import ModalBackend
-from ...backend.base import Backend
 from ...backend.modal import app
 from ...base import ModelWrapper
 from ...images.volumes import model_weights
+from ..registry import BOLTZ2_SPEC
 from ...utils import MINUTES, MODAL_MODEL_DIR
 from .image import boltz_image
 from .types import Boltz2Output
@@ -60,6 +59,8 @@ class Boltz2(ModelWrapper):
     # TODO: rewrite the output to be a list of Boltz2Output objects, not a single object with many entries from a batch
     """
 
+    MODEL_SPEC = BOLTZ2_SPEC
+
     def __init__(self, backend: str = "modal", device: str | None = None, config: dict | None = None) -> None:
         """Create a Boltz-2 model wrapper that selects and starts a backend.
 
@@ -79,25 +80,8 @@ class Boltz2(ModelWrapper):
         ValueError
             If an unsupported backend string is provided.
         """
-        if config is None:
-            config = {}
-        self.config = config
-        self.device = device
-        backend_type, backend_tag = ModelWrapper.parse_backend(backend)
-        backend_instance: Backend
-        if backend_type == "modal":
-            backend_instance = ModalBackend(ModalBoltz2, config, device=device)
-        elif backend_type == "apptainer":
-            from ...backend.apptainer import ApptainerBackend
-
-            # Pass Core class as string path to avoid importing it in main process
-            core_class_path = "boileroom.models.boltz.core.Boltz2Core"
-            image_uri = f"docker://docker.io/jakublala/boileroom-boltz:{backend_tag}"
-            backend_instance = ApptainerBackend(core_class_path, image_uri, config or {}, device=device)
-        else:
-            raise ValueError(f"Backend {backend_type} not supported")
-        self._backend = backend_instance
-        self._backend.start()
+        super().__init__(backend=backend, device=device, config=config)
+        self._initialize_backend_from_spec(self.MODEL_SPEC, backend=backend, device=device, config=config)
 
     def fold(self, sequences: str | Sequence[str], options: dict | None = None) -> "Boltz2Output":
         """Run the Boltz-2 folding workflow for one or more protein sequences.

@@ -1,5 +1,6 @@
 version = 1
-requires-python = "==3.12"
+revision = 1
+requires-python = "==3.12.*"
 
 [[package]]
 name = "aiohappyeyeballs"
@@ -155,6 +156,7 @@ requires-dist = [
     { name = "rich", specifier = ">=14.0.0" },
     { name = "torch", specifier = ">=2.6.0,<2.7.0" },
 ]
+provides-extras = ["dev"]
 
 [[package]]
 name = "cbor2"

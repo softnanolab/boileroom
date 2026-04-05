@@ -3,6 +3,8 @@ import pytest
 
 from boileroom import ESM2
 
+pytestmark = [pytest.mark.integration, pytest.mark.slow, pytest.mark.gpu]
+
 
 # Each test instantiates its own model; keeping function scope avoids long-lived Modal handles.
 @pytest.fixture

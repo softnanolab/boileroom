@@ -10,7 +10,7 @@ authors = [
 ]
 description = "Protein prediction models with Modal"
 readme = "README.md"
-requires-python = "==3.12"
+requires-python = "==3.12.*"
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License",
@@ -54,3 +54,11 @@ python_version = "3.12"
 ignore_missing_imports = true
 check_untyped_defs = true
 warn_unused_ignores = true
+
+[tool.pytest.ini_options]
+markers = [
+    "contract: fast backend-free contract tests for public wrappers and onboarding behavior",
+    "integration: real model execution against Modal or Apptainer",
+    "slow: tests that take longer than a typical unit test run",
+    "gpu: tests that require GPU-backed execution or GPU-specific configuration",
+]

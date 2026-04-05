@@ -49,10 +49,6 @@ jobs:
       - name: Install the package
         run: uv pip install -e .
 
-      - name: Authenticate Modal
-        shell: bash -l {0}
-        run: uv run modal token set --token-id ${{ secrets.MODAL_API_TOKEN_ID }} --token-secret ${{ secrets.MODAL_API_TOKEN_SECRET }}
-
       - name: Run tests
         shell: bash -l {0}
-        run: uv run pytest -n auto
+        run: uv run pytest -n auto -m "not integration"

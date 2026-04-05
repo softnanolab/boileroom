@@ -15,6 +15,8 @@ from boileroom.convert import pdb_string_to_atomarray
 from boileroom.models.esm.linker import store_multimer_properties
 from boileroom.models.esm.types import ESMFoldOutput
 
+pytestmark = [pytest.mark.integration, pytest.mark.slow, pytest.mark.gpu]
+
 
 # Module scope keeps a single Modal container alive for the duration of the suite.
 @pytest.fixture(scope="module")
