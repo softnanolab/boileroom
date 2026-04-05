@@ -1,25 +1,23 @@
 import json
 import pathlib
 import tempfile
-from typing import Generator, Optional
+from collections.abc import Generator
 
 import numpy as np
 import pytest
+from biotite.structure import AtomArray, rmsd, superimpose
+from biotite.structure.io.pdbx import CIFFile, get_structure
 from modal import enable_output
 
 from boileroom import Boltz2
-from boileroom.models.boltz.types import Boltz2Output
 from boileroom.constants import restype_3to1
-
-from biotite.structure import AtomArray, rmsd, superimpose
-from biotite.structure.io.pdbx import CIFFile, get_structure
-
+from boileroom.models.boltz.types import Boltz2Output
 
 nipah_virus_sequence = "ICLQKTSNQILKPKLISYTLGQSGTCITDPLLAMDEGYFAYSHLERIGSCSRGVSKQRIIGVGEVLDRGDEVPSLFMTNVWTPPNPNTVYHCSAVYNNEFYYVLCAVSTVGDPILNSTYWSGSLMMTRLAVKPKSNGGGYNQHQLALRSIEKGRYDKVMPYGPSGIKQGDTLYFPAVGFLVRTEFKYNDSNCPITKCQYSKPENCRLSMGIRPNSHYILRSGLLKYNLSDGENPKVVFIEISDQRLSIGSPSKIYDSLGQPVFYQASFSWDTMIKFGDVLTVNPLVVNWRNNTVISRPGQSQCPRFNTCPEICWEGVYNDAFLIDRINWISAGVFLDSNQTAENPVFTVFKDNEILYRAQLASEDTNAQKTITNCFLLKNKIWCISLVEIYDTGDNVIRPKLFAVKIPEQCTH"
 
 
 @pytest.fixture(scope="module")
-def boltz2_model(config: Optional[dict] = None, gpu_device: Optional[str] = None) -> Generator[Boltz2, None, None]:
+def boltz2_model(config: dict | None = None, gpu_device: str | None = None) -> Generator[Boltz2, None, None]:
     """Provide a Boltz2 model instance configured for the Modal backend.
 
     Parameters
@@ -62,7 +60,7 @@ def _recover_chain_sequences(atomarray: AtomArray) -> list[str]:
     return chains
 
 
-def test_boltz2_nipah_matches_reference(gpu_device: Optional[str]):
+def test_boltz2_nipah_matches_reference(gpu_device: str | None):
     """Run Boltz2 on the Nipah virus sequence and validate the predicted structure against reference data.
 
     Checks that required reference files exist, runs the model requesting all output fields, verifies an atom array was produced, compares C-alpha (CA) atoms between the predicted and reference structures, and asserts the superimposed CA RMSD is less than 0.5 Å.
@@ -112,7 +110,7 @@ def test_boltz2_nipah_matches_reference(gpu_device: Optional[str]):
 
     # Ensure both structures have the same number of CA atoms
     assert len(predicted_ca) == len(reference_ca), (
-        f"Number of CA atoms must match: predicted has {len(predicted_ca)}, " f"reference has {len(reference_ca)}"
+        f"Number of CA atoms must match: predicted has {len(predicted_ca)}, reference has {len(reference_ca)}"
     )
 
     # Calculate RMSD between reference and superimposed predicted structure
@@ -123,7 +121,7 @@ def test_boltz2_nipah_matches_reference(gpu_device: Optional[str]):
     # TODO: check confidence metrics within tolerance
 
 
-def test_boltz2_minimal_output(test_sequences: dict[str, str], gpu_device: Optional[str]):
+def test_boltz2_minimal_output(test_sequences: dict[str, str], gpu_device: str | None):
     """Test that Boltz2 returns minimal output by default (metadata + atom_array)."""
     with enable_output():
         model = Boltz2(backend="modal", device=gpu_device, config={})  # No include_fields = minimal output
@@ -153,8 +151,9 @@ def test_boltz2_msa_cache_hit(test_sequences: dict[str, str]):
     """
     pytest.importorskip("pytorch_lightning", reason="requires pytorch_lightning (backend dependency)")
     pytest.importorskip("boltz", reason="requires boltz (backend dependency)")
-    from boileroom.models.boltz.core import Boltz2Core
     import hashlib
+
+    from boileroom.models.boltz.core import Boltz2Core
 
     sequence = test_sequences["short"]
     seq_hash = hashlib.sha256(sequence.encode()).hexdigest()
@@ -403,10 +402,7 @@ def test_boltz2_msa_cache_integration(test_sequences: dict[str, str]):
             if len(lines) < 2:
                 return False
             # Check format of sequence lines (key,sequence)
-            for line in lines[1:]:
-                if "," not in line:
-                    return False
-            return True
+            return all("," in line for line in lines[1:])
 
         # First call - cache miss, should generate and save MSA
         out1 = core.fold(sequence)
@@ -447,9 +443,9 @@ def test_boltz2_msa_cache_integration(test_sequences: dict[str, str]):
 
         # The MSA file should not have been regenerated (modification time should be same or older)
         # Note: We check <= instead of == because file systems may update metadata
-        assert (
-            mtime_after_second_call <= mtime_before_second_call + 0.5
-        ), "Cached MSA file should not be regenerated (modification time check)"
+        assert mtime_after_second_call <= mtime_before_second_call + 0.5, (
+            "Cached MSA file should not be regenerated (modification time check)"
+        )
 
         # Verify MSA content is still valid and unchanged
         cached_msa_content_2 = read_msa_content(cached_msa_path_2)

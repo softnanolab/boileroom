@@ -1,12 +1,10 @@
 import numpy as np
-from typing import List
-
 import torch
 import torch.nn.functional as F
 
 
 # --- Glycine linker and positional skip utilities ---
-def compute_position_ids(sequences: List[str], glycine_linker: str, position_ids_skip: int) -> torch.Tensor:
+def compute_position_ids(sequences: list[str], glycine_linker: str, position_ids_skip: int) -> torch.Tensor:
     """
     Compute the position ids for the sequences.
     Parameters
@@ -40,7 +38,7 @@ def compute_position_ids(sequences: List[str], glycine_linker: str, position_ids
     return torch.stack(position_ids)
 
 
-def store_multimer_properties(_sequences: List[str], glycine_linker: str):
+def store_multimer_properties(_sequences: list[str], glycine_linker: str):
     """Store properties needed for multimer processing.
 
     Parameters
@@ -100,5 +98,5 @@ def store_multimer_properties(_sequences: List[str], glycine_linker: str):
     )
 
 
-def replace_glycine_linkers(sequences: List[str], glycine_linker: str) -> List[str]:
+def replace_glycine_linkers(sequences: list[str], glycine_linker: str) -> list[str]:
     return [multimer_seq.replace(":", glycine_linker) for multimer_seq in sequences]

@@ -40,3 +40,17 @@ Homepage = "https://github.com/softnanolab/boileroom"
 
 [tool.hatch.metadata]
 allow-direct-references = true
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+check_untyped_defs = true
+warn_unused_ignores = true

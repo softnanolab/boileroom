@@ -5,7 +5,6 @@ import os
 import tempfile
 import time
 from pathlib import Path
-from typing import Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -78,11 +77,11 @@ def safe_mkdir(path: Path, parents: bool = False) -> None:
             # Only create immediate parent, not ancestors (bind mount should handle that)
             try:
                 path.parent.mkdir(exist_ok=True)
-            except OSError:
+            except OSError as err:
                 raise OSError(
                     f"Cannot create {path}: parent directory {path.parent} does not exist "
                     f"and could not be created. Ensure the bind mount is set up correctly."
-                )
+                ) from err
         path.mkdir(exist_ok=True)
 
 
@@ -125,10 +124,7 @@ def get_model_dir() -> Path:
                 resolved = resolved.resolve()
         else:
             xdg_cache_home = os.getenv("XDG_CACHE_HOME")
-            if xdg_cache_home:
-                base_cache_dir = Path(xdg_cache_home).expanduser().resolve()
-            else:
-                base_cache_dir = Path.home() / ".cache"
+            base_cache_dir = Path(xdg_cache_home).expanduser().resolve() if xdg_cache_home else Path.home() / ".cache"
 
             resolved = (base_cache_dir / "boileroom" / "models").resolve()
 
@@ -207,7 +203,7 @@ def format_time(seconds: float) -> str:
     return " ".join(parts)
 
 
-def get_gpu_memory_info() -> Optional[Dict[str, int]]:
+def get_gpu_memory_info() -> dict[str, int] | None:
     """Get GPU memory information if available.
 
     Returns
@@ -237,7 +233,7 @@ class Timer:
 
     def __init__(self, description: str):
         self.description = description
-        self.duration = None
+        self.duration: float | None = None
 
     def __enter__(self):
         self.start_time = time.perf_counter()

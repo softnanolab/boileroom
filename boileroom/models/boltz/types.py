@@ -1,11 +1,11 @@
 """Type definitions for Boltz2 outputs without heavy dependencies."""
 
 from dataclasses import dataclass
-from typing import Optional, List, Dict, Any
+from typing import Any
 
 import numpy as np
 
-from ...base import StructurePrediction, PredictionMetadata
+from ...base import PredictionMetadata, StructurePrediction
 
 
 @dataclass
@@ -14,13 +14,13 @@ class Boltz2Output(StructurePrediction):
 
     # Required by StructurePrediction protocol
     metadata: PredictionMetadata
-    atom_array: Optional[List[Any]] = None  # Always generated, one AtomArray per sample
+    atom_array: list[Any] | None = None  # Always generated, one AtomArray per sample
 
     # Confidence-related outputs (one entry per sample)
-    confidence: Optional[List[Dict[str, Any]]] = None
-    plddt: Optional[List[np.ndarray]] = None
-    pae: Optional[List[np.ndarray]] = None
-    pde: Optional[List[np.ndarray]] = None
+    confidence: list[dict[str, Any]] | None = None
+    plddt: list[np.ndarray] | None = None
+    pae: list[np.ndarray] | None = None
+    pde: list[np.ndarray] | None = None
     # Optional serialized structures (one string per sample)
-    pdb: Optional[List[str]] = None
-    cif: Optional[List[str]] = None
+    pdb: list[str] | None = None
+    cif: list[str] | None = None

@@ -1,20 +1,16 @@
 import json
 import logging
-from typing import TYPE_CHECKING, Optional, Sequence, Union
+from collections.abc import Sequence
 
 import modal
 
 from ...backend import ModalBackend
 from ...backend.base import Backend
 from ...backend.modal import app
-from .image import boltz_image
 from ...base import ModelWrapper
 from ...images.volumes import model_weights
 from ...utils import MINUTES, MODAL_MODEL_DIR
-
-if TYPE_CHECKING:
-    pass
-
+from .image import boltz_image
 from .types import Boltz2Output
 
 logger = logging.getLogger(__name__)
@@ -43,7 +39,7 @@ class ModalBoltz2:
         self._core._initialize()
 
     @modal.method()
-    def fold(self, sequences: Union[str, Sequence[str]], options: Optional[dict] = None) -> "Boltz2Output":
+    def fold(self, sequences: str | Sequence[str], options: dict | None = None) -> "Boltz2Output":
         return self._core.fold(sequences, options=options)
 
 
@@ -64,7 +60,7 @@ class Boltz2(ModelWrapper):
     # TODO: rewrite the output to be a list of Boltz2Output objects, not a single object with many entries from a batch
     """
 
-    def __init__(self, backend: str = "modal", device: Optional[str] = None, config: Optional[dict] = None) -> None:
+    def __init__(self, backend: str = "modal", device: str | None = None, config: dict | None = None) -> None:
         """Create a Boltz-2 model wrapper that selects and starts a backend.
 
         Parameters
@@ -103,7 +99,7 @@ class Boltz2(ModelWrapper):
         self._backend = backend_instance
         self._backend.start()
 
-    def fold(self, sequences: Union[str, Sequence[str]], options: Optional[dict] = None) -> "Boltz2Output":
+    def fold(self, sequences: str | Sequence[str], options: dict | None = None) -> "Boltz2Output":
         """Run the Boltz-2 folding workflow for one or more protein sequences.
 
         Parameters

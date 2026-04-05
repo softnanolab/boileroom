@@ -1,6 +1,6 @@
 import pytest
 
-from boileroom.utils import validate_sequence, format_time
+from boileroom.utils import format_time, validate_sequence
 
 
 def test_validate_sequence(test_sequences: dict[str, str]):

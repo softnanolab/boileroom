@@ -1,7 +1,8 @@
 import json
+from collections.abc import Generator
 from io import StringIO
 from pathlib import Path
-from typing import Any, Generator, Optional
+from typing import Any
 
 import numpy as np
 import pytest
@@ -56,9 +57,9 @@ def _assert_ca_rmsd_within_tolerance(predicted: AtomArray, reference: AtomArray)
     )
     predicted_superimposed, _ = superimpose(reference_ca, predicted_ca)
     rmsd_value = rmsd(reference_ca, predicted_superimposed)
-    assert (
-        rmsd_value < RMSD_TOLERANCE_ANGSTROM
-    ), f"CA RMSD {rmsd_value:.3f} Å exceeds tolerance {RMSD_TOLERANCE_ANGSTROM} Å"
+    assert rmsd_value < RMSD_TOLERANCE_ANGSTROM, (
+        f"CA RMSD {rmsd_value:.3f} Å exceeds tolerance {RMSD_TOLERANCE_ANGSTROM} Å"
+    )
 
 
 def _assert_score_close(actual: float, expected: float, label: str) -> None:
@@ -69,7 +70,7 @@ def _assert_score_close(actual: float, expected: float, label: str) -> None:
 
 # Each test instantiates its own model; keeping function scope avoids long-lived Modal handles.
 @pytest.fixture
-def chai1_model(config: Optional[dict] = None, gpu_device: Optional[str] = None) -> Generator[Chai1, None, None]:
+def chai1_model(config: dict | None = None, gpu_device: str | None = None) -> Generator[Chai1, None, None]:
     """Provide a Chai1 model instance configured to run with the Modal backend.
 
     Parameters

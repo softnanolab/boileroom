@@ -2,7 +2,7 @@
 
 import json
 import logging
-from typing import TYPE_CHECKING, Optional, Sequence, Union
+from collections.abc import Sequence
 
 import modal
 
@@ -10,13 +10,9 @@ from ...backend import ModalBackend
 from ...backend.base import Backend
 from ...backend.modal import app
 from ...base import ModelWrapper
-from .image import esm_image
 from ...images.volumes import model_weights
 from ...utils import MINUTES, MODAL_MODEL_DIR
-
-if TYPE_CHECKING:
-    pass
-
+from .image import esm_image
 from .types import ESMFoldOutput
 
 logger = logging.getLogger(__name__)
@@ -55,7 +51,7 @@ class ModalESMFold:
         self._core._initialize()
 
     @modal.method()
-    def fold(self, sequences: Union[str, Sequence[str]], options: Optional[dict] = None) -> "ESMFoldOutput":
+    def fold(self, sequences: str | Sequence[str], options: dict | None = None) -> "ESMFoldOutput":
         """Run structure prediction for one or more protein sequences using the configured backend.
 
         Parameters
@@ -85,7 +81,7 @@ class ESMFold(ModelWrapper):
     # with proper documentation.
     """
 
-    def __init__(self, backend: str = "modal", device: Optional[str] = None, config: Optional[dict] = None) -> None:
+    def __init__(self, backend: str = "modal", device: str | None = None, config: dict | None = None) -> None:
         """Initialize the ESMFold high-level model wrapper and start the selected backend.
 
         Parameters
@@ -124,7 +120,7 @@ class ESMFold(ModelWrapper):
         self._backend = backend_instance
         self._backend.start()
 
-    def fold(self, sequences: Union[str, Sequence[str]], options: Optional[dict] = None) -> "ESMFoldOutput":
+    def fold(self, sequences: str | Sequence[str], options: dict | None = None) -> "ESMFoldOutput":
         """Predict protein structure(s) for the provided sequence or sequences using the configured backend.
 
         Parameters

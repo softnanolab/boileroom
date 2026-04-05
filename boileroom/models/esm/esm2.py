@@ -1,17 +1,17 @@
 import json
 import logging
-from typing import TYPE_CHECKING, Optional, Sequence, Union
+from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
 import modal
 
-from ...base import ModelWrapper
 from ...backend import ModalBackend
 from ...backend.base import Backend
 from ...backend.modal import app
-from ...utils import MINUTES, MODAL_MODEL_DIR
-
-from .image import esm_image
+from ...base import ModelWrapper
 from ...images.volumes import model_weights
+from ...utils import MINUTES, MODAL_MODEL_DIR
+from .image import esm_image
 
 if TYPE_CHECKING:
     from .types import ESM2Output
@@ -47,7 +47,7 @@ class ModalESM2:
         self._core._initialize()
 
     @modal.method()
-    def embed(self, sequences: Union[str, Sequence[str]], options: Optional[dict] = None) -> "ESM2Output":
+    def embed(self, sequences: str | Sequence[str], options: dict | None = None) -> "ESM2Output":
         """Compute embeddings for one or more protein sequences using the configured ESM-2 model.
 
         Parameters
@@ -75,8 +75,8 @@ class ESM2(ModelWrapper):
     def __init__(
         self,
         backend: str = "modal",
-        device: Optional[str] = None,
-        config: Optional[dict] = None,
+        device: str | None = None,
+        config: dict | None = None,
     ) -> None:
         """Initialize the ESM2 high-level interface and start the selected backend.
 
@@ -116,7 +116,7 @@ class ESM2(ModelWrapper):
         self._backend = backend_instance
         self._backend.start()
 
-    def embed(self, sequences: Union[str, Sequence[str]], options: Optional[dict] = None) -> "ESM2Output":
+    def embed(self, sequences: str | Sequence[str], options: dict | None = None) -> "ESM2Output":
         """Compute ESM-2 embeddings for one or more protein sequences using the configured backend.
 
         Parameters

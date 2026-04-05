@@ -15,7 +15,7 @@ import site
 import sys
 import sysconfig
 from pathlib import Path
-from typing import Any, Optional, Union
+from typing import Any
 
 # Ensure conda library paths are in LD_LIBRARY_PATH for cuequivariance_ops_torch
 # This is needed because libcue_ops.so and libcublas.so.12 are in conda site-packages
@@ -99,7 +99,7 @@ app = FastAPI()
 _model_instance: Any = None
 
 
-def _extract_device_number(device: str) -> Optional[str]:
+def _extract_device_number(device: str) -> str | None:
     """Extract device number from device string (e.g., 'cuda:0' -> '0').
 
     Parameters
@@ -177,15 +177,15 @@ async def health() -> dict[str, str]:
 class EmbedRequest(BaseModel):
     """Request model for embed endpoint."""
 
-    sequences: Union[str, list[str]]
-    options: Optional[dict[str, Any]] = None
+    sequences: str | list[str]
+    options: dict[str, Any] | None = None
 
 
 class FoldRequest(BaseModel):
     """Request model for fold endpoint."""
 
-    sequences: Union[str, list[str]]
-    options: Optional[dict[str, Any]] = None
+    sequences: str | list[str]
+    options: dict[str, Any] | None = None
 
 
 def _serialize_output(output: Any) -> dict[str, str]:

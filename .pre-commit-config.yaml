@@ -1,8 +1,9 @@
 repos:
   - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.5.1
+    rev: v1.15.0
     hooks:
       - id: mypy
+        additional_dependencies: [types-PyYAML, types-Deprecated]
         exclude: &exclude_patterns |
             (?x)^.*\.pdb$
             |^scripts/.*$
@@ -25,11 +26,10 @@ repos:
         exclude: *exclude_patterns
 
   - repo: https://github.com/charliermarsh/ruff-pre-commit
-    rev: v0.8.6
+    rev: v0.11.4
     hooks:
       - id: ruff
-        args: ["--fix", "--line-length", "120"]
+        args: ["--fix"]
         exclude: *exclude_patterns
       - id: ruff-format
-        args: ["--line-length", "120"]
         exclude: *exclude_patterns

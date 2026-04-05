@@ -8,7 +8,6 @@ from modal.exception import InvalidError
 
 from .base import Backend
 
-
 app = modal.App("boileroom")
 
 
@@ -27,7 +26,7 @@ class ModalAppManager:
     def __init__(self, modal_app: modal.App) -> None:
         self._app = modal_app
         self._lock = threading.Lock()
-        self._context = None
+        self._context: Any = None
         self._attached_external = False
         self._tokens: set[int] = set()
         self._next_token_id = 0

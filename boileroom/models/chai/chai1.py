@@ -1,20 +1,16 @@
 import json
 import logging
-from typing import TYPE_CHECKING, Optional, Sequence, Union
+from collections.abc import Sequence
 
 import modal
 
 from ...backend import ModalBackend
 from ...backend.base import Backend
 from ...backend.modal import app
-from .image import chai_image
 from ...base import ModelWrapper
 from ...images.volumes import model_weights
 from ...utils import MINUTES, MODAL_MODEL_DIR
-
-if TYPE_CHECKING:
-    pass
-
+from .image import chai_image
 from .types import Chai1Output
 
 logger = logging.getLogger(__name__)
@@ -49,7 +45,7 @@ class ModalChai1:
         self._core._initialize()
 
     @modal.method()
-    def fold(self, sequences: Union[str, Sequence[str]], options: Optional[dict] = None) -> "Chai1Output":
+    def fold(self, sequences: str | Sequence[str], options: dict | None = None) -> "Chai1Output":
         """Run structure prediction for the given sequence(s) and return the assembled prediction output.
 
         Parameters
@@ -79,7 +75,7 @@ class Chai1(ModelWrapper):
     # with proper documentation.
     """
 
-    def __init__(self, backend: str = "modal", device: Optional[str] = None, config: Optional[dict] = None) -> None:
+    def __init__(self, backend: str = "modal", device: str | None = None, config: dict | None = None) -> None:
         """Create a Chai1 model wrapper and start the selected backend.
 
         Parameters
@@ -118,7 +114,7 @@ class Chai1(ModelWrapper):
         self._backend = backend_instance
         self._backend.start()
 
-    def fold(self, sequences: Union[str, Sequence[str]], options: Optional[dict] = None) -> "Chai1Output":
+    def fold(self, sequences: str | Sequence[str], options: dict | None = None) -> "Chai1Output":
         """Run structure prediction for the given sequence(s) using the configured backend.
 
         Parameters

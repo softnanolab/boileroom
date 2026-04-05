@@ -10,13 +10,13 @@ import subprocess
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 from urllib.parse import urlparse
 
 import httpx
 
-from .base import Backend
 from ..utils import ensure_cache_dir
+from .base import Backend
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +62,7 @@ def _find_available_port(start_port: int = 8000, max_attempts: int = 100) -> int
     raise RuntimeError(f"Could not find available port in range {start_port}-{start_port + max_attempts - 1}")
 
 
-def _extract_device_number(device: str) -> Optional[str]:
+def _extract_device_number(device: str) -> str | None:
     """Extract device number from device string (e.g., 'cuda:0' -> '0').
 
     Parameters
@@ -375,10 +375,7 @@ class ApptainerBackend(Backend):
         # Set up cache directory
         if cache_dir is None:
             model_dir = os.environ.get("MODEL_DIR")
-            if model_dir:
-                cache_dir = Path(model_dir).expanduser().resolve()
-            else:
-                cache_dir = ensure_cache_dir()
+            cache_dir = Path(model_dir).expanduser().resolve() if model_dir else ensure_cache_dir()
         else:
             cache_dir = Path(cache_dir)
         self._cache_dir = cache_dir
@@ -405,10 +402,7 @@ class ApptainerBackend(Backend):
 
         # Set up log file path: MODEL_DIR/logs/apptainer_YYYY-MM-DD_HH-MM-SS.log
         model_dir = os.environ.get("MODEL_DIR")
-        if model_dir:
-            model_dir_path = Path(model_dir).expanduser().resolve()
-        else:
-            model_dir_path = self._cache_dir
+        model_dir_path = Path(model_dir).expanduser().resolve() if model_dir else self._cache_dir
 
         log_dir = model_dir_path / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
@@ -715,7 +709,7 @@ class _ApptainerModelProxy:
                     log_file_msg = f"\n\nServer log file: {self._log_file_path}"
                 # Raise RuntimeError with log file path, chaining from the original HTTPStatusError
                 raise RuntimeError(
-                    f"Internal server error (500) occurred.{log_file_msg}\n" f"HTTP request failed: {e}"
+                    f"Internal server error (500) occurred.{log_file_msg}\nHTTP request failed: {e}"
                 ) from e
             raise
         return _deserialize_output(response.json())
@@ -747,7 +741,7 @@ class _ApptainerModelProxy:
                     log_file_msg = f"\n\nServer log file: {self._log_file_path}"
                 # Raise RuntimeError with log file path, chaining from the original HTTPStatusError
                 raise RuntimeError(
-                    f"Internal server error (500) occurred.{log_file_msg}\n" f"HTTP request failed: {e}"
+                    f"Internal server error (500) occurred.{log_file_msg}\nHTTP request failed: {e}"
                 ) from e
             raise
         return _deserialize_output(response.json())

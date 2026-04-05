@@ -1,17 +1,18 @@
 """Core Chai1 algorithm implementation without modal dependencies."""
 
-import os
 import csv
 import logging
+import os
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any, Mapping, Optional, Sequence, Union, cast
+from typing import Any, cast
 
 import numpy as np
 import torch
 from biotite.structure import AtomArray
 from biotite.structure.io.pdbx import CIFFile, get_structure
-from chai_lab.chai1 import run_inference, StructureCandidates
+from chai_lab.chai1 import StructureCandidates, run_inference
 
 from ...base import FoldingAlgorithm
 from ...utils import MODAL_MODEL_DIR, Timer
@@ -54,7 +55,7 @@ class Chai1Core(FoldingAlgorithm):
             model_name="Chai-1",
             model_version="v0.6.1",
         )
-        self.model_dir: Optional[str] = os.environ.get("MODEL_DIR", MODAL_MODEL_DIR)
+        self.model_dir: str | None = os.environ.get("MODEL_DIR", MODAL_MODEL_DIR)
         self._device: torch.device | None = None
         self._trunk: Any | None = None
 
@@ -73,7 +74,7 @@ class Chai1Core(FoldingAlgorithm):
         self._device = self._resolve_device()
         self.ready = True
 
-    def fold(self, sequences: Union[str, Sequence[str]], options: Optional[dict] = None) -> Chai1Output:
+    def fold(self, sequences: str | Sequence[str], options: dict | None = None) -> Chai1Output:
         # TODO: ADD msa_directory: Path | None = None,
         # TODO: constraint path not tested properly
         # TODO: ADD template_hits_path: Path | None = None,
@@ -131,7 +132,7 @@ class Chai1Core(FoldingAlgorithm):
 
         return output
 
-    def _write_constraint(self, buffer_path: Path, config: dict) -> Optional[Path]:
+    def _write_constraint(self, buffer_path: Path, config: dict) -> Path | None:
         """Write a constraint CSV file into buffer_path when constraint definitions are present in config.
 
         If config["constraint_path"] is a path-like string or Path, the file is copied to buffer_path/constraint.csv.
@@ -247,7 +248,7 @@ class Chai1Core(FoldingAlgorithm):
         # Build full output with all attributes
         # cif_string_list is a list with one element; convert [None] to None, keep [string] as [string]
         # Filter out None values to match type list[str]
-        cif: Optional[list[str]] = None
+        cif: list[str] | None = None
         if cif_string_list and cif_string_list[0] is not None:
             cif = [s for s in cif_string_list if s is not None]
 
@@ -292,7 +293,7 @@ class Chai1Core(FoldingAlgorithm):
         fasta_path.write_text("\n".join(entries))
         return fasta_path
 
-    def _process_cif(self, cif_path: Path, config: dict) -> tuple[list[Optional[str]], list[AtomArray]]:
+    def _process_cif(self, cif_path: Path, config: dict) -> tuple[list[str | None], list[AtomArray]]:
         """Read a CIF file and produce its AtomArray representation, optionally including the CIF text.
 
         Parameters
@@ -320,7 +321,7 @@ class Chai1Core(FoldingAlgorithm):
         cif_string = None
         include_fields = config.get("include_fields")
         if include_fields and ("*" in include_fields or "cif" in include_fields):
-            with open(cif_path, "r") as f:
+            with open(cif_path) as f:
                 cif_string = f.read()
 
         return [cif_string], atom_array
@@ -332,9 +333,9 @@ class Chai1Core(FoldingAlgorithm):
         list[np.ndarray],
         list[np.ndarray],
         list[np.ndarray],
-        Optional[list[np.ndarray]],
-        Optional[list[np.ndarray]],
-        Optional[list[np.ndarray]],
+        list[np.ndarray] | None,
+        list[np.ndarray] | None,
+        list[np.ndarray] | None,
     ]:
         """Extract confidence metrics from a StructureCandidates object.
 

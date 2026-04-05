@@ -1,14 +1,15 @@
 """Base classes and interfaces for BoilerRoom protein structure prediction models."""
 
+import contextlib
 import dataclasses
 import logging
-import torch
-
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, Union, Sequence, Optional, Protocol, List, cast, Literal
+from typing import Any, Literal, Protocol, cast
 
 import numpy as np
+import torch
 
 from .utils import validate_sequence
 
@@ -21,19 +22,19 @@ class PredictionMetadata:
 
     model_name: str
     model_version: str
-    sequence_lengths: Optional[List[int]]
-    preprocessing_time: Optional[float] = None  # in seconds
-    inference_time: Optional[float] = None  # in seconds
-    postprocessing_time: Optional[float] = None  # in seconds
+    sequence_lengths: list[int] | None
+    preprocessing_time: float | None = None  # in seconds
+    inference_time: float | None = None  # in seconds
+    postprocessing_time: float | None = None  # in seconds
 
 
 class StructurePrediction(Protocol):
     """Protocol defining the minimum interface for structure prediction outputs."""
 
     metadata: PredictionMetadata
-    atom_array: Optional[List[Any]]  # Typically List[AtomArray]
-    pdb: Optional[list[str]] = None
-    cif: Optional[list[str]] = None
+    atom_array: list[Any] | None  # Typically List[AtomArray]
+    pdb: list[str] | None = None
+    cif: list[str] | None = None
 
 
 class EmbeddingPrediction(Protocol):
@@ -43,7 +44,7 @@ class EmbeddingPrediction(Protocol):
     embeddings: np.ndarray
     chain_index: np.ndarray
     residue_index: np.ndarray
-    hidden_states: Optional[np.ndarray] = None
+    hidden_states: np.ndarray | None = None
 
 
 class Algorithm(ABC):
@@ -53,7 +54,7 @@ class Algorithm(ABC):
     # Static config keys that can only be set at initialization and cannot be overridden per-call
     STATIC_CONFIG_KEYS: set[str] = set()
 
-    def __init__(self, config: dict = {}) -> None:
+    def __init__(self, config: dict | None = None) -> None:
         """Initialize the algorithm instance and set its default runtime attributes.
 
         Parameters
@@ -61,6 +62,8 @@ class Algorithm(ABC):
         config : dict
             Configuration overrides merged into the class DEFAULT_CONFIG; keys in this dict take precedence over defaults.
         """
+        if config is None:
+            config = {}
         self.config = {**self.DEFAULT_CONFIG, **config}
         self.name: str = self.__class__.__name__
         self.version: str = ""  # Should be overridden by implementations
@@ -114,7 +117,7 @@ class Algorithm(ABC):
             return torch.device("cuda:0")
         return torch.device("cpu")
 
-    def _merge_options(self, options: Optional[dict] = None) -> dict:
+    def _merge_options(self, options: dict | None = None) -> dict:
         """Merge per-call options into the instance configuration while preventing overrides of static configuration keys.
 
         Parameters
@@ -188,7 +191,7 @@ class FoldingAlgorithm(Algorithm):
     """
 
     @abstractmethod
-    def fold(self, sequences: Union[str, Sequence[str]], options: Optional[dict] = None) -> StructurePrediction:
+    def fold(self, sequences: str | Sequence[str], options: dict | None = None) -> StructurePrediction:
         """Predict the structure for one or more protein sequences.
 
         Parameters
@@ -214,7 +217,7 @@ class FoldingAlgorithm(Algorithm):
         """
         raise NotImplementedError
 
-    def _validate_sequences(self, sequences: Union[str, Sequence[str]]) -> list[str]:
+    def _validate_sequences(self, sequences: str | Sequence[str]) -> list[str]:
         """Validate input sequences and convert to list format.
 
         Parameters
@@ -239,7 +242,7 @@ class FoldingAlgorithm(Algorithm):
         # Validate each sequence and return as explicit list
         return [seq for seq in sequences if validate_sequence(seq)]
 
-    def _compute_sequence_lengths(self, sequences: List[str]) -> List[int]:
+    def _compute_sequence_lengths(self, sequences: list[str]) -> list[int]:
         """Compute residue counts for each multimer sequence.
 
         Parameters
@@ -257,7 +260,7 @@ class FoldingAlgorithm(Algorithm):
     @staticmethod
     def _filter_include_fields(
         output: StructurePrediction,
-        include_fields: Optional[List[str]],
+        include_fields: list[str] | None,
     ) -> StructurePrediction:
         """Filter fields of a StructurePrediction dataclass according to an inclusion list.
 
@@ -296,7 +299,7 @@ class FoldingAlgorithm(Algorithm):
         filtered = dataclasses.replace(dataclass_output, **updates)
         return cast(StructurePrediction, filtered)
 
-    def _prepare_multimer_sequences(self, sequences: List[str]) -> List[str]:
+    def _prepare_multimer_sequences(self, sequences: list[str]) -> list[str]:
         """Prepare multimer sequences for model-specific prediction.
 
         Implementations should transform the provided input sequences into the sequence format required by the model for multimer (multi-chain) prediction.
@@ -323,7 +326,7 @@ class EmbeddingAlgorithm(Algorithm):
     """Abstract base class for embedding algorithms."""
 
     @abstractmethod
-    def embed(self, sequences: Union[str, Sequence[str]], options: Optional[dict] = None) -> EmbeddingPrediction:
+    def embed(self, sequences: str | Sequence[str], options: dict | None = None) -> EmbeddingPrediction:
         """Generate embeddings for one or more protein sequences.
 
         Parameters
@@ -352,7 +355,7 @@ class EmbeddingAlgorithm(Algorithm):
     @staticmethod
     def _filter_include_fields(
         output: EmbeddingPrediction,
-        include_fields: Optional[List[str]],
+        include_fields: list[str] | None,
     ) -> EmbeddingPrediction:
         """Filter an EmbeddingPrediction dataclass to include only the requested fields.
 
@@ -412,7 +415,7 @@ class ModelWrapper:
         self.config = config or {}
 
     @staticmethod
-    def parse_backend(backend: str) -> tuple[str, Optional[str]]:
+    def parse_backend(backend: str) -> tuple[str, str | None]:
         """Parse backend identifier into backend type and optional tag.
 
         This helper allows backends to be specified with an optional tag suffix
@@ -455,12 +458,9 @@ class ModelWrapper:
         """
         backend = getattr(self, "_backend", None)
         if backend is not None:
-            try:
+            # __del__ must not raise; exceptions during GC are problematic
+            with contextlib.suppress(Exception):
                 backend.stop()
-            except Exception:
-                # Ignore errors in __del__ to avoid issues during garbage collection
-                # Exceptions in __del__ can cause problems and are typically ignored
-                pass
 
     def __enter__(self) -> "ModelWrapper":
         """Context manager entry.
