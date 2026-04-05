@@ -171,7 +171,6 @@ def test_esm2_embed_multimer(esm2_model_factory, test_sequences):
         # First chain should be 0, second chain should be 1, third chain should be 2
         first_chain_length = len(complex_sequence.split(":")[0])
         second_chain_length = len(complex_sequence.split(":")[1])
-        third_chain_length = len(complex_sequence.split(":")[2])
         assert np.all(result.chain_index[0, :first_chain_length] == 0), "First chain indices should be 0"
         assert np.all(result.chain_index[0, first_chain_length : first_chain_length + second_chain_length] == 1), (
             "Second chain indices should be 1"
@@ -179,9 +178,7 @@ def test_esm2_embed_multimer(esm2_model_factory, test_sequences):
         assert np.all(result.chain_index[0, first_chain_length + second_chain_length :] == 2), (
             "Third chain indices should be 2"
         )
-        assert np.all(result.chain_index[0, first_chain_length + second_chain_length + third_chain_length :] == 3), (
-            "Fourth chain indices should be 3"
-        )
+        assert not np.any(result.chain_index[0] == 3), "Unexpected fourth chain indices"
 
         # Last test for a batched multimer, each sequence has different number of chains and length
         sequences = [

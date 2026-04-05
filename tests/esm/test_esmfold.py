@@ -20,13 +20,11 @@ pytestmark = [pytest.mark.integration, pytest.mark.slow, pytest.mark.gpu]
 
 # Module scope keeps a single Modal container alive for the duration of the suite.
 @pytest.fixture(scope="module")
-def esmfold_model(config: dict | None = None, gpu_device: str | None = None) -> Generator[ESMFold, None, None]:
+def esmfold_model(gpu_device: str | None = None) -> Generator[ESMFold, None, None]:
     """Provide a configured ESMFold model instance for tests.
 
     Parameters
     ----------
-    config : Optional[dict]
-        Optional configuration overrides passed to the ESMFold constructor.
     gpu_device : Optional[str]
         Optional device identifier (e.g., "cuda:0" or "cpu") to initialize the model on.
 
@@ -35,7 +33,7 @@ def esmfold_model(config: dict | None = None, gpu_device: str | None = None) -> 
     ESMFold
         A configured ESMFold instance ready for use in tests.
     """
-    model_config = dict(config) if config is not None else {}
+    model_config: dict[str, object] = {}
     with enable_output():
         yield ESMFold(backend="modal", device=gpu_device, config=model_config)
 
