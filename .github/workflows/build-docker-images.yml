@@ -17,6 +17,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -31,26 +36,30 @@ jobs:
         id: project_version
         run: |
           VERSION=$(
-            python3 -c "import pathlib, tomllib; pyproject = pathlib.Path('pyproject.toml').read_text(); data = tomllib.loads(pyproject); print(data['project']['version'], end='')"
+            python3 -c "import pathlib, tomllib; pyproject = pathlib.Path('pyproject.toml').read_text(encoding='utf-8'); data = tomllib.loads(pyproject); print(data['project']['version'], end='')"
           )
           echo "value=$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Build and push :latest images
+      - name: Build and push latest images
         run: |
-          bash ./scripts/images/build_model_images.sh --tag=latest --push
+          python3 ./scripts/images/build_model_images.py --all-cuda --tag=latest --push
 
-      - name: Verify :latest image imports
+      - name: Verify canonical latest image imports
         run: |
-          bash ./scripts/images/check_model_imports.sh --tag=latest --pull
+          python3 ./scripts/images/check_model_imports.py --all-cuda --tag=latest --pull
 
-      - name: Tag :latest images with version and push
+      - name: Verify latest alias image imports
         run: |
-          VERSION="${{ steps.project_version.outputs.value }}"
-          for image in boileroom-base boileroom-boltz boileroom-chai1 boileroom-esm; do
-            docker tag docker.io/jakublala/${image}:latest docker.io/jakublala/${image}:${VERSION}
-            docker push docker.io/jakublala/${image}:${VERSION}
-          done
+          python3 ./scripts/images/check_model_imports.py --tag=latest --pull
 
-      - name: Verify :${{ steps.project_version.outputs.value }} image imports
+      - name: Build and push versioned images
         run: |
-          bash ./scripts/images/check_model_imports.sh --tag=${{ steps.project_version.outputs.value }} --pull
+          python3 ./scripts/images/build_model_images.py --all-cuda --tag=${{ steps.project_version.outputs.value }} --push
+
+      - name: Verify canonical versioned image imports
+        run: |
+          python3 ./scripts/images/check_model_imports.py --all-cuda --tag=${{ steps.project_version.outputs.value }} --pull
+
+      - name: Verify version alias image imports
+        run: |
+          python3 ./scripts/images/check_model_imports.py --tag=${{ steps.project_version.outputs.value }} --pull

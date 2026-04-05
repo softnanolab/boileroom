@@ -1,3 +1,5 @@
-from ...images.base import base_image
+"""Modal image definition for Boltz-2."""
 
-boltz_image = base_image.pip_install("boltz==2.1.1")
+from ...images.modal import get_modal_image
+
+boltz_image = get_modal_image("boltz")

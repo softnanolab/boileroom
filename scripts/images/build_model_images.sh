@@ -3,4 +3,4 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-uv run python "${SCRIPT_DIR}/check_model_imports.py" "$@"
+uv run python "${SCRIPT_DIR}/build_model_images.py" "$@"

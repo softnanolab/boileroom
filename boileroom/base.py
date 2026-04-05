@@ -11,6 +11,7 @@ from typing import Any, Literal, Protocol, cast
 import numpy as np
 import torch
 
+from .images.metadata import format_image_reference
 from .models.registry import ModelSpec, resolve_object
 from .utils import validate_sequence
 
@@ -463,7 +464,7 @@ class ModelWrapper:
         elif backend_type == "apptainer":
             if model_spec.apptainer_core_class_path is None or model_spec.apptainer_image_name is None:
                 raise ValueError(f"Apptainer backend is not configured for {model_spec.public_name}")
-            image_uri = f"docker://docker.io/jakublala/{model_spec.apptainer_image_name}:{backend_tag}"
+            image_uri = f"docker://{format_image_reference(model_spec.apptainer_image_name, backend_tag)}"
             backend_instance = ApptainerBackend(
                 model_spec.apptainer_core_class_path,
                 image_uri,

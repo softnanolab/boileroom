@@ -1,10 +1,7 @@
+"""Backward-compatible access to the published base image."""
+
 from modal import Image
 
-from ..utils import MODAL_MODEL_DIR
+from .metadata import BASE_IMAGE_SPEC, format_image_reference, get_modal_image_tag
 
-base_image = (
-    Image.debian_slim(python_version="3.12")
-    .apt_install("wget", "git")
-    .pip_install("biotite>=1.0.1")
-    .env({"MODEL_DIR": MODAL_MODEL_DIR})
-)
+base_image = Image.from_registry(format_image_reference(BASE_IMAGE_SPEC.image_name, get_modal_image_tag()))

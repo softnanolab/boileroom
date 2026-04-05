@@ -6,39 +6,43 @@
 - **chai1**: `boileroom/boileroom/models/chai/Dockerfile` → copies `environment.yml`, installs chai-specific deps, sets HF env vars. Tag: `docker.io/jakublala/boileroom-chai1`.
 - **esm**: `boileroom/boileroom/models/esm/Dockerfile` → copies `environment.yml` shared by esm2/esmfold. Tag: `docker.io/jakublala/boileroom-esm`.
 
-> 🚨 Warning
-> Modal and Docker/Apptainer currently use different images. This will be unified in a future pass. Until then, avoid mixing tags across runners and verify which image your runtime expects.
+Dockerfiles are the canonical image definition for all runtimes. Docker/Apptainer images are built from these Dockerfiles, and Modal pulls the corresponding published model image from Docker Hub instead of maintaining a separate handwritten dependency stack.
+
+### Tag scheme
+- Canonical published tags are CUDA-qualified, for example `cuda12.6-latest`, `cuda12.6-0.3.0`, and `cuda11.8-latest`.
+- The default CUDA line is `12.6`. That line also gets unqualified aliases such as `latest` and `0.3.0`.
+- Runtime shorthands such as `backend="apptainer"` or `backend="apptainer:0.3.0"` resolve through those default aliases.
 
 ### 🚀 Quick start (dev)
 Use the Python helper to build all images (base + models) with a single global worker limit.
 
 ```bash
-uv run python scripts/images/build_model_images.py --platform=linux/amd64 --all-cuda --tag=dev --push --max-workers=5
+uv run python scripts/images/build_model_images.py --cuda-version=12.6 --tag=latest --platform=linux/amd64 --max-workers=4
 
 # Optional flags
 uv run python scripts/images/build_model_images.py --no-cache ...
-uv run python scripts/images/build_model_images.py --tag=myfeature ...
-uv run python scripts/images/build_model_images.py --tag=latest --push ...
+uv run python scripts/images/build_model_images.py --all-cuda --tag=0.3.0 --push ...
+uv run python scripts/images/build_model_images.py --cuda-version=12.6 --tag=pr-39 --push ...
 ```
 
-You can still use the Bash helper as a simpler, serial alternative:
+Single-platform non-push builds auto-load into the local Docker daemon. Multi-platform builds should generally be paired with `--push`.
+
+You can still use the Bash wrapper if you prefer:
 ```bash
 chmod +x scripts/images/build_model_images.sh
-scripts/images/build_model_images.sh --platform=linux/amd64
+scripts/images/build_model_images.sh --cuda-version=12.6 --tag=latest --platform=linux/amd64
 ```
-
-Both helpers replace the older `build_all_*` helpers while preserving the same build order.
 
 ### ✅ Import smoke tests
 Run the lightweight smoke script to ensure each image can import its expected modules:
 
 ```bash
-chmod +x scripts/images/check_model_imports.sh
-scripts/images/check_model_imports.sh --tag=dev        # verify local dev builds
-scripts/images/check_model_imports.sh --tag=latest --pull  # verify tags published to Docker Hub
+uv run python scripts/images/check_model_imports.py --tag=latest
+uv run python scripts/images/check_model_imports.py --all-cuda --tag=latest --pull
+uv run python scripts/images/check_model_imports.py --all-cuda --tag=0.3.0 --pull
 ```
 
-The GitHub Actions workflow (`.github/workflows/build-docker-images.yml`) executes the same script after building and pushing `:latest` and versioned tags, so a missing dependency will fail CI before images are published.
+The GitHub Actions workflow (`.github/workflows/build-docker-images.yml`) runs the same checks after building both canonical CUDA-qualified tags and the default `12.6` aliases.
 
 ### 🛠️ Manual local builds
 - Build base:
@@ -84,15 +88,17 @@ docker build \
 Use the helper script with `--push` to push all images after building. Authenticate first:
 ```bash
 docker login
-scripts/images/build_model_images.sh --tag=dev --push
+uv run python scripts/images/build_model_images.py --all-cuda --tag=0.3.0 --push
 ```
-The script will push `boileroom-base`, `boileroom-boltz`, `boileroom-chai1`, and `boileroom-esm` using the selected tag.
+This publishes:
+- canonical tags such as `cuda11.8-0.3.0` and `cuda12.6-0.3.0`
+- default aliases such as `0.3.0` for the `12.6` line
 
 ### 📦 CI publishing (production)
 GitHub Actions at `.github/workflows/build-docker-images.yml` now drives the release pipeline:
 - Triggers automatically on pushes to `main` and can also be run manually via **Run workflow**.
-- Runs the same helper script twice with Docker Buildx: once tagging everything as `:latest`, once tagging with the current `project.version` from `pyproject.toml`.
-- Each invocation uses `--push`, so the base and per-model images land on Docker Hub at `docker.io/jakublala/<image>:latest` and `docker.io/jakublala/<image>:<version>`.
+- Runs the same Python helper twice with Docker Buildx: once for `latest`, once for the current `project.version` from `pyproject.toml`.
+- Each invocation uses `--all-cuda --push`, so the base and per-model images land on Docker Hub with canonical CUDA-qualified tags and default `12.6` aliases.
 - Future merges inherit the cache layers thanks to BuildKit, keeping CI times reasonable.
 
 ### 🧱 Convert Docker images to Apptainer (SIF)
@@ -100,9 +106,13 @@ If your cluster uses Apptainer/Singularity for job execution, you can convert th
 
 1) Directly from the registry (simplest):
 ```bash
-# Public images (CI publishes :latest)
+# Default CUDA aliases
 apptainer pull base.sif  docker://docker.io/jakublala/boileroom-base:latest
 apptainer pull chai1.sif docker://docker.io/jakublala/boileroom-chai1:latest
+
+# Explicit CUDA-qualified tags
+apptainer pull chai1-cu118.sif docker://docker.io/jakublala/boileroom-chai1:cuda11.8-latest
+apptainer pull chai1-cu126.sif docker://docker.io/jakublala/boileroom-chai1:cuda12.6-latest
 
 # If the repository is private, authenticate first to Docker Hub:
 # This will prompt for your Docker Hub credentials if needed.
@@ -114,8 +124,8 @@ apptainer pull chai1.sif docker://docker.io/jakublala/boileroom-chai1:latest
 2) From a local Docker image (no registry pull on the cluster) (🚨 **THIS HAS NOT BEEN TESTED, AND IS NOT RECOMMENDED** 🚨):
 ```bash
 # On a build machine (e.g., your workstation):
-docker pull docker.io/jakublala/boileroom-chai1:dev
-docker save --format oci-archive -o chai1-oci.tar docker.io/jakublala/boileroom-chai1:dev
+docker pull docker.io/jakublala/boileroom-chai1:cuda12.6-latest
+docker save --format oci-archive -o chai1-oci.tar docker.io/jakublala/boileroom-chai1:cuda12.6-latest
 
 # Transfer chai1-oci.tar to the cluster, then:
 apptainer build chai1.sif oci-archive://chai1-oci.tar
@@ -135,7 +145,7 @@ Docker example:
 docker run --rm \
   -e MODEL_DIR=/data/models \
   -v /data/models:/data/models \
-  docker.io/jakublala/boileroom-chai1:dev python -c "import os; print(os.getenv('MODEL_DIR'))"
+  docker.io/jakublala/boileroom-chai1:latest python -c "import os; print(os.getenv('MODEL_DIR'))"
 ```
 
 Apptainer examples:
@@ -151,22 +161,17 @@ apptainer exec --env MODEL_DIR=/scratch/weights -B /scratch/weights:/scratch/wei
 ### 🧩 Add your own image
 1) Create a `Dockerfile` under `boileroom/boileroom/models/<your_image>/Dockerfile` that starts FROM the dev base locally:
 ```Dockerfile
-ARG BASE_IMAGE=docker.io/jakublala/boileroom-base:dev
+ARG BASE_IMAGE=docker.io/jakublala/boileroom-base:latest
 FROM ${BASE_IMAGE}
 ```
 2) Build it locally (adjust path and tag):
 ```bash
-docker build \
-  --platform linux/amd64 \
-  --build-arg BASE_IMAGE=docker.io/jakublala/boileroom-base:dev \
-  -t docker.io/jakublala/<your_image>:dev \
-  -f boileroom/boileroom/models/<your_image>/Dockerfile \
-  boileroom/boileroom/models/<your_image>
+uv run python scripts/images/build_model_images.py --cuda-version=12.6 --tag=latest --platform=linux/amd64
 ```
-3) Optionally wire it into the dev helper script (`build_all_docker.sh`) after `base` in the correct order.
+3) Optionally wire it into the helper scripts after `base` in the correct order.
 4) For CI, extend `.github/workflows/build-docker-images.yml` or the helper script to include your image so it is built and tagged alongside the others.
 
 ### 💡 Tips
 - Keep network-heavy `pip install` steps in as few layers as possible to improve caching.
 - Use `--platform linux/amd64` locally to match CI.
-- Prefer digest pinning in CI; use dev tags locally.
+- Prefer canonical CUDA-qualified tags when you need exact reproducibility.

@@ -39,4 +39,9 @@ model = Boltz2(backend="modal")
 
 # Use Apptainer backend
 model = Boltz2(backend="apptainer")
+
+# Or pin an explicit published image tag
+model = Boltz2(backend="apptainer:cuda11.8-latest")
 ```
+
+`backend="apptainer"` resolves through the default published alias for the `12.6` image line.

@@ -4,8 +4,14 @@ from dataclasses import dataclass
 from importlib import import_module
 from typing import Any, Literal
 
+from ..images.metadata import get_model_image_spec
+
 TaskMethod = Literal["fold", "embed"]
 TaskKind = Literal["structure", "embedding"]
+
+ESM_IMAGE_NAME = get_model_image_spec("esm").image_name
+CHAI_IMAGE_NAME = get_model_image_spec("chai").image_name
+BOLTZ_IMAGE_NAME = get_model_image_spec("boltz").image_name
 
 
 @dataclass(frozen=True)
@@ -56,7 +62,7 @@ ESMFOLD_SPEC = ModelSpec(
     wrapper_class_path="boileroom.models.esm.esmfold.ESMFold",
     modal_class_path="boileroom.models.esm.esmfold.ModalESMFold",
     apptainer_core_class_path="boileroom.models.esm.core.ESMFoldCore",
-    apptainer_image_name="boileroom-esm",
+    apptainer_image_name=ESM_IMAGE_NAME,
     supported_backends=("modal", "apptainer"),
     contract=ModelContract(
         task_method="fold",
@@ -101,7 +107,7 @@ ESM2_SPEC = ModelSpec(
     wrapper_class_path="boileroom.models.esm.esm2.ESM2",
     modal_class_path="boileroom.models.esm.esm2.ModalESM2",
     apptainer_core_class_path="boileroom.models.esm.core.ESM2Core",
-    apptainer_image_name="boileroom-esm",
+    apptainer_image_name=ESM_IMAGE_NAME,
     supported_backends=("modal", "apptainer"),
     contract=ModelContract(
         task_method="embed",
@@ -120,7 +126,7 @@ CHAI1_SPEC = ModelSpec(
     wrapper_class_path="boileroom.models.chai.chai1.Chai1",
     modal_class_path="boileroom.models.chai.chai1.ModalChai1",
     apptainer_core_class_path="boileroom.models.chai.core.Chai1Core",
-    apptainer_image_name="boileroom-chai1",
+    apptainer_image_name=CHAI_IMAGE_NAME,
     supported_backends=("modal", "apptainer"),
     contract=ModelContract(
         task_method="fold",
@@ -138,7 +144,7 @@ BOLTZ2_SPEC = ModelSpec(
     wrapper_class_path="boileroom.models.boltz.boltz2.Boltz2",
     modal_class_path="boileroom.models.boltz.boltz2.ModalBoltz2",
     apptainer_core_class_path="boileroom.models.boltz.core.Boltz2Core",
-    apptainer_image_name="boileroom-boltz",
+    apptainer_image_name=BOLTZ_IMAGE_NAME,
     supported_backends=("modal", "apptainer"),
     contract=ModelContract(
         task_method="fold",
