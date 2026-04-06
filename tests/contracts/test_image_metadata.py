@@ -1,5 +1,6 @@
 """Fast contract tests for shared image metadata and tag behavior."""
 
+from boileroom.images.import_checks import compute_cuda_versions, package_name_to_import_name
 from boileroom.images.metadata import (
     DEFAULT_IMAGE_TAG,
     format_image_reference,
@@ -49,3 +50,16 @@ def test_modal_tag_uses_env_override(monkeypatch) -> None:
 def test_format_image_reference_uses_central_namespace() -> None:
     """All runtime image references should use the central Docker namespace."""
     assert format_image_reference("boileroom-boltz", "latest") == "docker.io/jakublala/boileroom-boltz:latest"
+
+
+def test_compute_cuda_versions_uses_metadata_defaults() -> None:
+    """Smoke checks should derive the all-CUDA list from shared metadata."""
+    assert compute_cuda_versions(None, True) == ["11.8", "12.6"]
+    assert compute_cuda_versions(["12.6"], False) == ["12.6"]
+
+
+def test_package_name_to_import_name_handles_overrides_and_hyphens() -> None:
+    """Import-name resolution should keep overrides centralized and predictable."""
+    assert package_name_to_import_name("pytorch-lightning") == "pytorch_lightning"
+    assert package_name_to_import_name("torch-tensorrt") is None
+    assert package_name_to_import_name("my-package") == "my_package"

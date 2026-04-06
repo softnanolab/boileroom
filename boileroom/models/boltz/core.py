@@ -11,7 +11,7 @@ from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any, cast
+from typing import Any, ClassVar, cast
 
 import numpy as np
 import torch
@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 class Boltz2Core(FoldingAlgorithm):
     """Boltz-2 protein structure prediction model."""
 
-    DEFAULT_CONFIG = {
+    DEFAULT_CONFIG: ClassVar[dict[str, Any]] = {
         "device": "cuda:0",
         "use_msa_server": True,  # setting to False automatically sets to no MSA mode
         "msa_server_url": "https://api.colabfold.com",
@@ -69,7 +69,7 @@ class Boltz2Core(FoldingAlgorithm):
         "cache_dir": None,  # defaults to Path(MODAL_MODEL_DIR)/"boltz"
     }
     # Static config keys that can only be set at initialization
-    STATIC_CONFIG_KEYS = {"device", "cache_dir", "no_kernels"}
+    STATIC_CONFIG_KEYS: ClassVar[frozenset[str]] = frozenset({"device", "cache_dir", "no_kernels"})
 
     def __init__(self, config: dict | None = None) -> None:
         """Create a Boltz-2 core instance configured for inference.
@@ -714,7 +714,9 @@ class Boltz2Core(FoldingAlgorithm):
             - pae (Optional[np.ndarray]): 2D pairwise alignment error (PAE) matrix or None.
             - pde (Optional[np.ndarray]): 2D pairwise distance error (PDE) matrix or None.
         """
-        coords_like = item.get("sample_atom_coords") or item.get("coords")
+        coords_like = item.get("sample_atom_coords")
+        if coords_like is None:
+            coords_like = item.get("coords")
         coords = (
             (coords_like.detach().cpu().numpy() if hasattr(coords_like, "detach") else np.array(coords_like))
             if coords_like is not None

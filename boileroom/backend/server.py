@@ -5,12 +5,10 @@ It runs in a separate conda environment with model-specific dependencies.
 """
 
 import argparse
-import base64
 import importlib
 import json
 import logging
 import os
-import pickle
 import site
 import sys
 import sysconfig
@@ -84,6 +82,11 @@ builtins.__import__ = _import_with_modal_fix
 from fastapi import FastAPI, HTTPException  # noqa: E402
 from fastapi.responses import JSONResponse  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
+
+from boileroom.backend.transport import (  # noqa: E402
+    TRANSPORT_HMAC_KEY_ENV,
+    serialize_transport_payload,
+)
 
 # Set up logging to stderr so it gets captured in the log file
 logging.basicConfig(
@@ -189,7 +192,7 @@ class FoldRequest(BaseModel):
 
 
 def _serialize_output(output: Any) -> dict[str, str]:
-    """Serialize output object using pickle and base64 encode for JSON transport.
+    """Serialize output object for signed JSON transport.
 
     Parameters
     ----------
@@ -199,11 +202,12 @@ def _serialize_output(output: Any) -> dict[str, str]:
     Returns
     -------
     dict[str, str]
-        Dictionary with base64-encoded pickled data.
+        Dictionary with base64-encoded pickled data and an HMAC signature.
     """
-    pickled_data = pickle.dumps(output)
-    base64_encoded = base64.b64encode(pickled_data).decode("utf-8")
-    return {"pickled": base64_encoded}
+    transport_secret = os.environ.get(TRANSPORT_HMAC_KEY_ENV)
+    if not transport_secret:
+        raise RuntimeError(f"{TRANSPORT_HMAC_KEY_ENV} environment variable must be set")
+    return serialize_transport_payload(output, transport_secret)
 
 
 @app.post("/embed")
@@ -218,7 +222,7 @@ async def embed(request: EmbedRequest) -> JSONResponse:
     Returns
     -------
     JSONResponse
-        Pickled and base64-encoded embedding output.
+        Signed embedding output payload.
     """
     if _model_instance is None:
         raise HTTPException(status_code=503, detail="Model not loaded")
@@ -244,7 +248,7 @@ async def fold(request: FoldRequest) -> JSONResponse:
     Returns
     -------
     JSONResponse
-        Pickled and base64-encoded folding output.
+        Signed folding output payload.
     """
     if _model_instance is None:
         raise HTTPException(status_code=503, detail="Model not loaded")

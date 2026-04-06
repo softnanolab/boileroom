@@ -483,3 +483,21 @@ def test_boltz2_msa_cache_integration(test_sequences: dict[str, str]):
         assert len(ca_atoms1) > 0, "First structure should have CA atoms"
         assert len(ca_atoms2) > 0, "Second structure should have CA atoms"
         assert len(ca_atoms1) == len(ca_atoms2), "Both structures should have same number of CA atoms"
+
+
+def test_boltz2_extract_sample_accepts_array_coords_without_truthiness_checks():
+    """Array-valued coordinates should bypass boolean fallback logic."""
+    pytest.importorskip("pytorch_lightning", reason="requires pytorch_lightning (backend dependency)")
+    pytest.importorskip("boltz", reason="requires boltz (backend dependency)")
+    from boileroom.models.boltz.core import Boltz2Core
+
+    core = Boltz2Core.__new__(Boltz2Core)
+    coords = np.array([[1.0, 2.0, 3.0]], dtype=np.float32)
+
+    extracted_coords, aggregated, plddt, pae, pde = core._extract_sample_from_pred({"sample_atom_coords": coords})
+
+    assert np.array_equal(extracted_coords, coords)
+    assert aggregated == {}
+    assert plddt is None
+    assert pae is None
+    assert pde is None

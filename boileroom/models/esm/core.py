@@ -3,7 +3,7 @@
 import logging
 import os
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 import numpy as np
 import torch
@@ -101,7 +101,7 @@ EsmFoldingTrunk.forward = always_no_grad_forward
 class ESM2Core(EmbeddingAlgorithm):
     """ESM2 protein language model."""
 
-    DEFAULT_CONFIG = {
+    DEFAULT_CONFIG: ClassVar[dict[str, Any]] = {
         "device": "cuda:0",
         "model_name": "esm2_t33_650M_UR50D",
         "include_fields": None,  # Optional[List[str]] - controls which fields to include in output
@@ -110,7 +110,7 @@ class ESM2Core(EmbeddingAlgorithm):
         "position_ids_skip": 512,
     }
     # Static config keys that can only be set at initialization
-    STATIC_CONFIG_KEYS = {"device", "model_name"}
+    STATIC_CONFIG_KEYS: ClassVar[frozenset[str]] = frozenset({"device", "model_name"})
 
     def __init__(self, config: dict | None = None) -> None:
         """Initialize the ESM2Core with the provided configuration and prepare internal state for model loading.
@@ -450,8 +450,8 @@ class ESM2Core(EmbeddingAlgorithm):
         # Stack embeddings along batch dimension (0)
         embeddings = pad_and_stack(embeddings_list, residue_dim=0, batch_dim=0)
         if hidden_states is not None:
-            hidden_states = pad_and_stack(hidden_states_list, residue_dim=0, batch_dim=0)
-            # Transpose to get correct dimension order (batch, layers, seq_len, hidden_dim)
+            hidden_states = pad_and_stack(hidden_states_list, residue_dim=1, batch_dim=0)
+            # Transpose to get the public output order (batch, seq_len, layers, hidden_dim)
             hidden_states = np.transpose(hidden_states, (0, 2, 1, 3))
         chain_index_out = pad_and_stack(chain_index_list, residue_dim=0, batch_dim=0, constant_value=-1)
         residue_index_out = pad_and_stack(residue_index_list, residue_dim=0, batch_dim=0, constant_value=-1)
@@ -467,7 +467,7 @@ class ESM2Core(EmbeddingAlgorithm):
 class ESMFoldCore(FoldingAlgorithm):
     """ESMFold protein structure prediction model."""
 
-    DEFAULT_CONFIG = {
+    DEFAULT_CONFIG: ClassVar[dict[str, Any]] = {
         "device": "cuda:0",
         # Chain linking and positioning config
         "glycine_linker": "",
@@ -475,7 +475,7 @@ class ESMFoldCore(FoldingAlgorithm):
         "include_fields": None,  # Optional[List[str]] - controls which fields to include in output
     }
     # Static config keys that can only be set at initialization
-    STATIC_CONFIG_KEYS = {"device"}
+    STATIC_CONFIG_KEYS: ClassVar[frozenset[str]] = frozenset({"device"})
 
     # We need to properly asses whether using this or the original ESMFold is better
     # based on speed, accuracy, bugs, etc.; as well as customizability

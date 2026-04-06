@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import platform
+import secrets
 import shutil
 import socket
 import subprocess
@@ -17,6 +18,7 @@ import httpx
 
 from ..utils import ensure_cache_dir
 from .base import Backend
+from .transport import TRANSPORT_HMAC_KEY_ENV, deserialize_transport_payload
 
 logger = logging.getLogger(__name__)
 
@@ -386,6 +388,7 @@ class ApptainerBackend(Backend):
         self._process: subprocess.Popen[str] | None = None
         self._client: httpx.Client | None = None
         self._log_file_path: Path | None = None
+        self._transport_secret = secrets.token_hex(32)
 
     def startup(self) -> None:
         """Start the Apptainer container server and wait for it to be ready.
@@ -474,6 +477,7 @@ class ApptainerBackend(Backend):
             "MODEL_CLASS": self._core_class_path,
             "MODEL_CONFIG": json.dumps(self._config),
             "DEVICE": self._device,
+            TRANSPORT_HMAC_KEY_ENV: self._transport_secret,
             "PYTHONPATH": container_boileroom,
             # Override temp directory variables to use container's /tmp
             # This prevents issues when host TMPDIR points to a path that doesn't exist in container
@@ -590,7 +594,11 @@ class ApptainerBackend(Backend):
         """
         if self._client is None:
             raise RuntimeError("Apptainer backend is not initialized. Call startup() before use.")
-        return _ApptainerModelProxy(self._client, log_file_path=self._log_file_path)
+        return _ApptainerModelProxy(
+            self._client,
+            transport_secret=self._transport_secret,
+            log_file_path=self._log_file_path,
+        )
 
     def _wait_for_health_check(self, timeout: float = 300.0, poll_interval: float = 1.0) -> None:
         """Wait for the server to become ready by polling the /health endpoint.
@@ -669,17 +677,20 @@ class ApptainerBackend(Backend):
 class _ApptainerModelProxy:
     """HTTP proxy for making requests to the Apptainer container server."""
 
-    def __init__(self, client: httpx.Client, log_file_path: Path | None = None) -> None:
+    def __init__(self, client: httpx.Client, transport_secret: str, log_file_path: Path | None = None) -> None:
         """Initialize the proxy with an HTTP client.
 
         Parameters
         ----------
         client : httpx.Client
             HTTP client configured with the server's base URL.
+        transport_secret : str
+            Shared HMAC secret used to verify server responses.
         log_file_path : Path | None
             Optional path to the server log file for error reporting.
         """
         self._client = client
+        self._transport_secret = transport_secret
         self._log_file_path = log_file_path
 
     def embed(self, sequences: str | list[str], options: dict | None = None) -> Any:
@@ -712,7 +723,7 @@ class _ApptainerModelProxy:
                     f"Internal server error (500) occurred.{log_file_msg}\nHTTP request failed: {e}"
                 ) from e
             raise
-        return _deserialize_output(response.json())
+        return _deserialize_output(response.json(), self._transport_secret)
 
     def fold(self, sequences: str | list[str], options: dict | None = None) -> Any:
         """Fold sequences by making a POST request to /fold.
@@ -744,28 +755,22 @@ class _ApptainerModelProxy:
                     f"Internal server error (500) occurred.{log_file_msg}\nHTTP request failed: {e}"
                 ) from e
             raise
-        return _deserialize_output(response.json())
+        return _deserialize_output(response.json(), self._transport_secret)
 
 
-def _deserialize_output(data: dict[str, Any]) -> Any:
-    """Deserialize pickled output object from base64-encoded JSON response.
+def _deserialize_output(data: dict[str, Any], transport_secret: str) -> Any:
+    """Deserialize and verify a signed JSON response payload.
 
     Parameters
     ----------
     data : dict[str, Any]
-        JSON response containing base64-encoded pickled data.
+        JSON response containing a signed payload.
+    transport_secret : str
+        Shared HMAC secret negotiated with the server process.
 
     Returns
     -------
     Any
         Deserialized output object (e.g., ESM2Output).
     """
-    import base64
-    import pickle
-
-    if "pickled" not in data:
-        raise ValueError("Response does not contain pickled data")
-
-    base64_encoded = data["pickled"]
-    pickled_data = base64.b64decode(base64_encoded.encode("utf-8"))
-    return pickle.loads(pickled_data)
+    return deserialize_transport_payload(data, transport_secret)

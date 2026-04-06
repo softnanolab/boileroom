@@ -12,11 +12,14 @@ REPO_ROOT = SCRIPT_PATH.parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from boileroom.images.import_checks import (  # noqa: E402
+    IMPORT_NAME_OVERRIDES,
+    compute_cuda_versions,
+)
 from boileroom.images.metadata import (  # noqa: E402
     MODEL_IMAGE_SPECS,
     format_image_reference,
     get_supported_cuda,
-    normalize_cuda_version,
     normalize_requested_tag,
     published_image_references,
 )
@@ -37,16 +40,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--all-cuda", action="store_true", help="Validate all supported CUDA variants canonically.")
     parser.add_argument("--pull", action="store_true", help="Pull images before running checks.")
     return parser.parse_args()
-
-
-def compute_cuda_versions(requested: list[str] | None, all_cuda: bool) -> list[str]:
-    """Resolve CUDA versions requested by the caller."""
-    if all_cuda:
-        return ["11.8", "12.6"]
-    if not requested:
-        return []
-    return [normalize_cuda_version(cuda_version) for cuda_version in requested]
-
 
 def iter_image_targets(tag: str, cuda_versions: list[str]) -> list[tuple[str, str, str, Path, Path]]:
     """Return image targets to validate.
@@ -128,6 +121,7 @@ from pathlib import Path
 
 env_yml = Path({str(env_path)!r})
 core_file = Path({str(core_path)!r})
+import_name_overrides = {IMPORT_NAME_OVERRIDES!r}
 
 deps = []
 in_pip_section = False
@@ -146,13 +140,7 @@ with env_yml.open(encoding="utf-8") as handle:
             if stripped.startswith('#'):
                 continue
             pkg_name = re.split(r'[>=<!=]', stripped.lstrip('- '))[0].strip()
-            import_map = {{
-                'pytorch-lightning': 'pytorch_lightning',
-                'torch-tensorrt': None,
-                'hf-transfer': None,
-                'hf_transfer': None,
-            }}
-            import_name = import_map.get(pkg_name, pkg_name.replace('-', '_'))
+            import_name = import_name_overrides.get(pkg_name, pkg_name.replace('-', '_'))
             if import_name:
                 deps.append(import_name)
 

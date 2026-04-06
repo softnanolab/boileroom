@@ -32,9 +32,12 @@ def esm2_model_factory(gpu_device: str | None):
         if gpu_device is not None:
             gpu_type = gpu_device
         else:
-            if "15B" in config["model_name"]:
+            model_name = config.get("model_name")
+            if model_name is None:
+                raise ValueError("model_name is required when gpu_device is not provided")
+            if "15B" in model_name:
                 gpu_type = "A100-80GB"
-            elif "3B" in config["model_name"]:
+            elif "3B" in model_name:
                 gpu_type = "A100-40GB"
             else:
                 gpu_type = "T4"
@@ -211,7 +214,10 @@ def test_esm2_embed_multimer(esm2_model_factory, test_sequences):
 
         for i, seq in enumerate(sequences):
             expected_length = len(seq.replace(":", ""))
-            assert np.all(result.embeddings[i, :expected_length] != 0), "No padding should be 0"
+            non_padding_embeddings = result.embeddings[i, :expected_length]
+            assert not np.any(np.all(non_padding_embeddings == 0, axis=-1)), (
+                "Non-padding embeddings should not contain fully zero vectors"
+            )
             assert np.all(result.embeddings[i, expected_length:] == 0), "Padding should be 0"
             assert np.all(result.chain_index[i, :expected_length] != -1), "No padding should be -1"
             assert np.all(result.chain_index[i, expected_length:] == -1), "Padding should be -1"
@@ -235,3 +241,33 @@ def test_esm2_static_config_enforcement():
         core.embed("MALWMRLLPLLALLALWGPDPAAA", options={"device": "cuda:0"})
     with pytest.raises(ValueError, match="model_name"):
         core.embed("MALWMRLLPLLALLALWGPDPAAA", options={"model_name": "esm2_t6_8M_UR50D"})
+
+
+def test_esm2_mask_linker_region_pads_hidden_states_on_sequence_axis():
+    """Hidden states should pad on sequence length before batch stacking."""
+    pytest.importorskip("transformers", reason="requires transformers (backend dependency)")
+    torch = pytest.importorskip("torch", reason="requires torch")
+    from boileroom.models.esm.core import ESM2Core
+
+    core = ESM2Core(config={"device": "cpu", "model_name": "esm2_t6_8M_UR50D"})
+    embeddings = np.arange(2 * 5 * 3, dtype=np.float32).reshape(2, 5, 3)
+    hidden_states = np.arange(2 * 4 * 5 * 3, dtype=np.float32).reshape(2, 4, 5, 3)
+    linker_map = torch.tensor([[1, 1, 1, -1, -1], [1, 1, 1, 1, -1]])
+    residue_index = torch.tensor([[0, 1, 2, -1, -1], [0, 1, 2, 3, -1]])
+    chain_index = torch.tensor([[0, 0, 1, -1, -1], [0, 0, 1, 1, -1]])
+
+    _, filtered_hidden_states, filtered_chain_index, filtered_residue_index = core._mask_linker_region(
+        embeddings,
+        hidden_states,
+        linker_map,
+        residue_index,
+        chain_index,
+    )
+
+    assert filtered_hidden_states is not None
+    assert filtered_hidden_states.shape == (2, 4, 4, 3)
+    assert np.all(filtered_hidden_states[0, 3] == 0)
+    assert filtered_chain_index.shape == (2, 4)
+    assert filtered_residue_index.shape == (2, 4)
+    assert filtered_chain_index[0, 3] == -1
+    assert filtered_residue_index[0, 3] == -1

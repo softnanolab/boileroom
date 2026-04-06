@@ -421,7 +421,8 @@ def main() -> None:
                 log_error(f"Failed to build {task.image_spec.image_name} for CUDA {task.cuda_version}: {exc}")
                 raise SystemExit(1) from exc
     else:
-        with ThreadPoolExecutor(max_workers=max(1, args.max_workers)) as executor:
+        executor = ThreadPoolExecutor(max_workers=max(1, args.max_workers))
+        try:
             future_map = {
                 executor.submit(
                     build_model,
@@ -439,7 +440,10 @@ def main() -> None:
                     built_references.extend(future.result())
                 except Exception as exc:
                     log_error(f"Failed to build {task.image_spec.image_name} for CUDA {task.cuda_version}: {exc}")
+                    executor.shutdown(wait=False, cancel_futures=True)
                     raise SystemExit(1) from exc
+        finally:
+            executor.shutdown(wait=True)
 
     log_success("")
     log_success("=== Build complete ===")

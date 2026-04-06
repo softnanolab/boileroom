@@ -6,7 +6,7 @@ import os
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any, cast
+from typing import Any, ClassVar, cast
 
 import numpy as np
 import torch
@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 class Chai1Core(FoldingAlgorithm):
     """Chai-1 protein structure prediction model."""
 
-    DEFAULT_CONFIG: dict[str, Any] = {
+    DEFAULT_CONFIG: ClassVar[dict[str, Any]] = {
         "device": "cuda:0",
         "num_trunk_recycles": 3,
         "num_diffn_timesteps": 200,
@@ -37,7 +37,7 @@ class Chai1Core(FoldingAlgorithm):
         "include_fields": None,  # Optional[List[str]] - controls which fields to include in output
     }
     # Static config keys that can only be set at initialization
-    STATIC_CONFIG_KEYS = {"device"}
+    STATIC_CONFIG_KEYS: ClassVar[frozenset[str]] = frozenset({"device"})
 
     def __init__(self, config: dict[str, Any] | None = None) -> None:
         """Initialize the Chai1Core folding algorithm with the given configuration.

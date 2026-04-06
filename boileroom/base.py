@@ -4,9 +4,10 @@ import contextlib
 import dataclasses
 import logging
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Literal, Protocol, cast
+from types import MappingProxyType
+from typing import Any, ClassVar, Literal, Protocol, cast
 
 import numpy as np
 import torch
@@ -16,6 +17,20 @@ from .models.registry import ModelSpec, resolve_object
 from .utils import validate_sequence
 
 logger = logging.getLogger(__name__)
+
+
+def _filter_dataclass_fields(output: Any, include_fields: list[str] | None, always_include: set[str]) -> Any:
+    """Return a filtered dataclass copy when include_fields constrains output."""
+    if not dataclasses.is_dataclass(output) or (include_fields and "*" in include_fields):
+        return output
+
+    dataclass_output: Any = output
+    available_fields = {field.name for field in dataclasses.fields(dataclass_output)}
+    fields_to_keep = always_include | (set(include_fields or []) & available_fields)
+    updates = {field.name: None for field in dataclasses.fields(dataclass_output) if field.name not in fields_to_keep}
+    if not updates:
+        return output
+    return dataclasses.replace(dataclass_output, **updates)
 
 
 @dataclass
@@ -52,9 +67,9 @@ class EmbeddingPrediction(Protocol):
 class Algorithm(ABC):
     """Abstract base class for algorithms."""
 
-    DEFAULT_CONFIG: dict = {}
+    DEFAULT_CONFIG: ClassVar[Mapping[str, Any]] = MappingProxyType({})
     # Static config keys that can only be set at initialization and cannot be overridden per-call
-    STATIC_CONFIG_KEYS: set[str] = set()
+    STATIC_CONFIG_KEYS: ClassVar[frozenset[str]] = frozenset()
 
     def __init__(self, config: dict | None = None) -> None:
         """Initialize the algorithm instance and set its default runtime attributes.
@@ -264,42 +279,8 @@ class FoldingAlgorithm(Algorithm):
         output: StructurePrediction,
         include_fields: list[str] | None,
     ) -> StructurePrediction:
-        """Filter fields of a StructurePrediction dataclass according to an inclusion list.
-
-        When `output` is a dataclass instance, returns a copy where any dataclass fields not listed in `include_fields`
-        are set to `None`, while always preserving `metadata` and `atom_array`. If `include_fields` is `None`,
-        empty, or contains `"*"`, or if `output` is not a dataclass, the original `output` is returned unchanged.
-
-        Parameters
-        ----------
-        output : StructurePrediction
-            The prediction dataclass to filter.
-        include_fields : Optional[List[str]]
-            Names of fields to retain in addition to the always-included fields.
-
-        Returns
-        -------
-        StructurePrediction
-            A dataclass instance with non-kept fields set to `None`, or the original `output`
-            unchanged when filtering is not applicable.
-        """
-        if not dataclasses.is_dataclass(output) or (include_fields and "*" in include_fields):
-            return output
-
-        # Cast to Any to help mypy understand this is a dataclass instance
-        dataclass_output: Any = output
-        always_include = {"metadata", "atom_array"}
-        available_fields = {field.name for field in dataclasses.fields(dataclass_output)}
-        fields_to_keep = always_include | (set(include_fields or []) & available_fields)
-
-        updates = {
-            field.name: None for field in dataclasses.fields(dataclass_output) if field.name not in fields_to_keep
-        }
-        if not updates:
-            return cast(StructurePrediction, output)
-
-        filtered = dataclasses.replace(dataclass_output, **updates)
-        return cast(StructurePrediction, filtered)
+        """Filter fields of a StructurePrediction dataclass according to an inclusion list."""
+        return cast(StructurePrediction, _filter_dataclass_fields(output, include_fields, {"metadata", "atom_array"}))
 
     def _prepare_multimer_sequences(self, sequences: list[str]) -> list[str]:
         """Prepare multimer sequences for model-specific prediction.
@@ -359,44 +340,13 @@ class EmbeddingAlgorithm(Algorithm):
         output: EmbeddingPrediction,
         include_fields: list[str] | None,
     ) -> EmbeddingPrediction:
-        """Filter an EmbeddingPrediction dataclass to include only the requested fields.
-
-        If `output` is not a dataclass or `include_fields` contains `"*"`, the original
-        `output` is returned unchanged. Otherwise, the returned dataclass keeps the
-        always-included fields `metadata`, `embeddings`, `chain_index`, and
-        `residue_index`, plus any names present in `include_fields`. All other fields
-        are set to `None`.
-
-        Parameters
-        ----------
-        output : EmbeddingPrediction
-            The EmbeddingPrediction dataclass to filter.
-        include_fields : Optional[List[str]]
-            Optional list of field names to include in addition to the
-            always-included fields. If `None`, only the always-included fields are kept.
-
-        Returns
-        -------
-        EmbeddingPrediction
-            An EmbeddingPrediction with non-kept fields set to `None`, or the original
-            `output` if no filtering is performed.
-        """
-        if not dataclasses.is_dataclass(output) or (include_fields and "*" in include_fields):
-            return output
-
-        # Cast to Any to help mypy understand this is a dataclass instance
-        dataclass_output: Any = output
-        always_include = {"metadata", "embeddings", "chain_index", "residue_index"}
-        available_fields = {field.name for field in dataclasses.fields(dataclass_output)}
-        fields_to_keep = always_include | (set(include_fields or []) & available_fields)
-
-        updates = {
-            field.name: None for field in dataclasses.fields(dataclass_output) if field.name not in fields_to_keep
-        }
-        if not updates:
-            return cast(EmbeddingPrediction, output)
-
-        return cast(EmbeddingPrediction, dataclasses.replace(dataclass_output, **updates))
+        """Filter an EmbeddingPrediction dataclass to include only the requested fields."""
+        return cast(
+            EmbeddingPrediction,
+            _filter_dataclass_fields(
+                output, include_fields, {"metadata", "embeddings", "chain_index", "residue_index"}
+            ),
+        )
 
 
 class ModelWrapper:

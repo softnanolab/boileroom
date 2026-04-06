@@ -9,6 +9,8 @@ from functools import cache
 from pathlib import Path
 from typing import Final
 
+import yaml
+
 DOCKER_REGISTRY: Final = "docker.io/jakublala"
 DEFAULT_IMAGE_TAG: Final = "latest"
 DEFAULT_CUDA_VERSION: Final = "12.6"
@@ -178,20 +180,14 @@ def get_supported_cuda(spec: RuntimeImageSpec) -> tuple[str, ...]:
     if not config_path.exists():
         return tuple(sorted(CUDA_MICROMAMBA_BASE))
 
-    supported_cuda: list[str] = []
-    in_supported_cuda = False
-    for line in config_path.read_text(encoding="utf-8").splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        if stripped == "supported_cuda:":
-            in_supported_cuda = True
-            continue
-        if in_supported_cuda:
-            if not stripped.startswith("-"):
-                break
-            value = stripped[1:].strip().strip("'").strip('"')
-            supported_cuda.append(normalize_cuda_version(value))
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    raw_supported_cuda = config.get("supported_cuda", [])
+    if isinstance(raw_supported_cuda, list):
+        supported_cuda = [normalize_cuda_version(str(value)) for value in raw_supported_cuda]
+    elif raw_supported_cuda:
+        supported_cuda = [normalize_cuda_version(str(raw_supported_cuda))]
+    else:
+        supported_cuda = []
 
     if not supported_cuda:
         return tuple(sorted(CUDA_MICROMAMBA_BASE))
