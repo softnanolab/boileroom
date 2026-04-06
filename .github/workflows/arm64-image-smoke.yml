@@ -1,0 +1,56 @@
+name: ARM64 Image Smoke
+
+on:
+  pull_request:
+    branches: [ main ]
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency: arm64-image-smoke-${{ github.ref }}
+
+jobs:
+  arm64-image-smoke:
+    name: ARM64 Image Smoke (informational)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 180
+    continue-on-error: true
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Build ARM64 image set
+        run: |
+          uv run python scripts/images/build_model_images.py \
+            --cuda-version=12.6 \
+            --tag=arm64-ci \
+            --platform=linux/arm64 \
+            --max-workers=1
+
+      - name: Run ARM64 import smoke
+        run: |
+          uv run python scripts/images/check_model_imports.py \
+            --cuda-version=12.6 \
+            --tag=arm64-ci
+
+      - name: Run ARM64 server health smoke
+        run: |
+          uv run python scripts/images/check_model_server_health.py \
+            --cuda-version=12.6 \
+            --tag=arm64-ci

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import re
 import subprocess
 import sys
 from pathlib import Path
@@ -15,16 +14,11 @@ if str(REPO_ROOT) not in sys.path:
 from boileroom.images.import_checks import (  # noqa: E402
     IMPORT_NAME_OVERRIDES,
     compute_cuda_versions,
+    iter_image_targets,
 )
 from boileroom.images.metadata import (  # noqa: E402
-    MODEL_IMAGE_SPECS,
-    format_image_reference,
-    get_supported_cuda,
     normalize_requested_tag,
-    published_image_references,
 )
-
-_CUDA_TAG_PATTERN = re.compile(r"^cuda\d+\.\d+(?:-.+)?$")
 
 
 def parse_args() -> argparse.Namespace:
@@ -40,33 +34,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--all-cuda", action="store_true", help="Validate all supported CUDA variants canonically.")
     parser.add_argument("--pull", action="store_true", help="Pull images before running checks.")
     return parser.parse_args()
-
-def iter_image_targets(tag: str, cuda_versions: list[str]) -> list[tuple[str, str, str, Path, Path]]:
-    """Return image targets to validate.
-
-    Returns tuples of ``(image_key, image_reference, display_tag, env_path, core_path)``.
-    """
-    normalized_tag = normalize_requested_tag(tag)
-    if cuda_versions and _CUDA_TAG_PATTERN.fullmatch(normalized_tag):
-        raise ValueError("Do not combine --all-cuda/--cuda-version with an already CUDA-qualified --tag.")
-
-    targets: list[tuple[str, str, str, Path, Path]] = []
-    for spec in MODEL_IMAGE_SPECS:
-        env_path = spec.context_path / "environment.yml"
-        core_path = spec.context_path / "core.py"
-        if cuda_versions:
-            for cuda_version in cuda_versions:
-                if cuda_version not in get_supported_cuda(spec):
-                    continue
-                canonical_ref = published_image_references(spec.image_name, cuda_version, normalized_tag)[0]
-                display_tag = canonical_ref.rsplit(":", 1)[1]
-                targets.append((spec.key, canonical_ref, display_tag, env_path, core_path))
-            continue
-
-        image_reference = format_image_reference(spec.image_name, normalized_tag)
-        targets.append((spec.key, image_reference, normalized_tag, env_path, core_path))
-    return targets
-
 
 def ensure_docker() -> None:
     """Ensure Docker is available."""

@@ -1,6 +1,6 @@
 """Fast contract tests for shared image metadata and tag behavior."""
 
-from boileroom.images.import_checks import compute_cuda_versions, package_name_to_import_name
+from boileroom.images.import_checks import compute_cuda_versions, iter_image_targets, package_name_to_import_name
 from boileroom.images.metadata import (
     DEFAULT_IMAGE_TAG,
     format_image_reference,
@@ -63,3 +63,12 @@ def test_package_name_to_import_name_handles_overrides_and_hyphens() -> None:
     assert package_name_to_import_name("pytorch-lightning") == "pytorch_lightning"
     assert package_name_to_import_name("torch-tensorrt") is None
     assert package_name_to_import_name("my-package") == "my_package"
+
+
+def test_iter_image_targets_uses_canonical_cuda_tags() -> None:
+    """Image smoke targets should honor CUDA-qualified tag selection."""
+    targets = iter_image_targets("latest", ["12.6"])
+    references = {image_key: image_reference for image_key, image_reference, *_ in targets}
+    assert references["boltz"].endswith(":cuda12.6-latest")
+    assert references["chai"].endswith(":cuda12.6-latest")
+    assert references["esm"].endswith(":cuda12.6-latest")
