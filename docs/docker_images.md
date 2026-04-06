@@ -115,10 +115,12 @@ This publishes:
 ### 📦 CI publishing (production)
 GitHub Actions at `.github/workflows/build-docker-images.yml` now drives the release pipeline:
 - Triggers automatically on pushes to `main` and can also be run manually via **Run workflow**.
-- Runs the same Python helper twice with Docker Buildx: once for `latest`, once for the current `project.version` from `pyproject.toml`.
-- Each invocation uses `--all-cuda --platform=linux/amd64 --push`, so the base and per-model images land on Docker Hub with canonical CUDA-qualified tags and default `12.6` aliases.
+- Builds a temporary `sha-<commit>` validation tag, verifies that exact pushed artifact, and only then promotes it to `latest` and the current `project.version` from `pyproject.toml`.
+- The promoted Docker tags therefore track the Python package version declared in `pyproject.toml`, even though PyPI publication is handled separately.
+- Each successful run publishes canonical CUDA-qualified tags and default `12.6` aliases for the base and per-model images.
 - The official release path currently publishes `linux/amd64` only. If you want to experiment with additional architectures, pass an explicit multi-platform `--platform` value and validate it separately before treating it as supported.
 - Future merges inherit the cache layers thanks to BuildKit, keeping CI times reasonable.
+- PyPI is not published by this workflow. Python package publication happens later from the GitHub release workflow, so Docker Hub can be used as the earlier staged release channel.
 
 ### 🧱 Convert Docker images to Apptainer (SIF)
 If your cluster uses Apptainer/Singularity for job execution, you can convert the Docker images to a `.sif` image in two common ways:

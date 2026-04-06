@@ -35,6 +35,14 @@ This runs **ruff** and **mypy**.
 - Update documentation when applicable.
 - Version bump if required.
 
+## Release and versioning
+
+- Docker image version tags follow `project.version` in `pyproject.toml`.
+- Merging to `main` triggers `.github/workflows/build-docker-images.yml`, which publishes Docker Hub tags for the current package version as well as `latest`.
+- PyPI publication is a separate step and only happens when a GitHub release is published.
+- In practice, Docker Hub can act as the earlier staging/public channel while PyPI remains the later package release step.
+- If you change `project.version`, you are also changing the versioned Docker tags that will be published from `main`.
+
 ## Further reading
 
 - [Architecture overview](https://bagel.softnanolab.com/boileroom-api/development/architecture)
