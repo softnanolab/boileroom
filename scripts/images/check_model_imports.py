@@ -24,7 +24,11 @@ from boileroom.images.metadata import (  # noqa: E402
 def parse_args() -> argparse.Namespace:
     """Parse CLI arguments."""
     parser = argparse.ArgumentParser(description="Run import smoke checks inside boileroom model images.")
-    parser.add_argument("--tag", default="latest", help="Tag to check, for example latest, 0.3.0, or cuda12.6-latest.")
+    parser.add_argument(
+        "--tag",
+        default=None,
+        help="Tag to check. Defaults to the installed boileroom version; explicit examples include 0.3.0 or cuda12.6-0.3.0.",
+    )
     parser.add_argument(
         "--cuda-version",
         action="append",

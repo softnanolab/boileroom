@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from boileroom.base import ModelWrapper, PredictionMetadata
+from boileroom.images.metadata import get_default_image_tag
 from boileroom.models.boltz.types import Boltz2Output
 from boileroom.models.chai.types import Chai1Output
 from boileroom.models.esm.types import ESM2Output, ESMFoldOutput
@@ -158,8 +159,8 @@ def test_public_wrapper_dispatch_uses_shared_initializer(monkeypatch: pytest.Mon
 
 
 def test_parse_backend_apptainer_tag_handling() -> None:
-    """Apptainer backend tags should keep the explicit tag or default to latest."""
+    """Apptainer backend tags should keep the explicit tag or default to the package version."""
     assert ModelWrapper.parse_backend("modal") == ("modal", None)
     assert ModelWrapper.parse_backend("modal:dev") == ("modal", None)
-    assert ModelWrapper.parse_backend("apptainer") == ("apptainer", "latest")
+    assert ModelWrapper.parse_backend("apptainer") == ("apptainer", get_default_image_tag())
     assert ModelWrapper.parse_backend("apptainer:dev") == ("apptainer", "dev")

@@ -14,7 +14,7 @@ uv python install 3.12 && uv python pin 3.12 && uv sync
 ## Running tests
 
 ```bash
-uv run pytest -n auto
+uv run pytest
 ```
 
 Tests use **Modal** by default. You need `MODAL_TOKEN_ID` and
@@ -23,7 +23,7 @@ Tests use **Modal** by default. You need `MODAL_TOKEN_ID` and
 ## Linting
 
 ```bash
-pre-commit run --all-files
+uv run pre-commit run --all-files
 ```
 
 This runs **ruff** and **mypy**.
@@ -38,7 +38,8 @@ This runs **ruff** and **mypy**.
 ## Release and versioning
 
 - Docker image version tags follow `project.version` in `pyproject.toml`.
-- Merging to `main` triggers `.github/workflows/build-docker-images.yml`, which publishes Docker Hub tags for the current package version as well as `latest`.
+- Runtime defaults also follow the installed boileroom package version unless you explicitly override the image tag.
+- Merging to `main` triggers `.github/workflows/build-docker-images.yml`, which publishes Docker Hub tags for the current package version.
 - PyPI publication is a separate step and only happens when a GitHub release is published.
 - In practice, Docker Hub can act as the earlier staging/public channel while PyPI remains the later package release step.
 - If you change `project.version`, you are also changing the versioned Docker tags that will be published from `main`.

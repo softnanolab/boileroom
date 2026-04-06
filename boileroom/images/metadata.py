@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import importlib.metadata
 import os
 import re
+import tomllib
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
@@ -12,7 +14,7 @@ from typing import Final
 import yaml
 
 DOCKER_REGISTRY: Final = "docker.io/jakublala"
-DEFAULT_IMAGE_TAG: Final = "latest"
+PACKAGE_NAME: Final = "boileroom"
 DEFAULT_CUDA_VERSION: Final = "12.6"
 MODAL_IMAGE_TAG_ENV: Final = "BOILEROOM_MODAL_IMAGE_TAG"
 
@@ -92,10 +94,32 @@ def get_repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
+@cache
+def get_default_image_tag() -> str:
+    """Return the default runtime image tag for this installed package."""
+    pyproject_path = get_repo_root() / "pyproject.toml"
+    if pyproject_path.exists():
+        return tomllib.loads(pyproject_path.read_text(encoding="utf-8"))["project"]["version"].strip()
+    try:
+        return importlib.metadata.version(PACKAGE_NAME).strip()
+    except importlib.metadata.PackageNotFoundError:
+        raise RuntimeError(
+            "Unable to determine the default boileroom image tag. "
+            f"Install {PACKAGE_NAME} or set {MODAL_IMAGE_TAG_ENV} explicitly."
+        ) from None
+
+
 def normalize_requested_tag(tag: str | None) -> str:
     """Return a normalized non-empty tag string."""
-    normalized = (tag or DEFAULT_IMAGE_TAG).strip()
-    return normalized or DEFAULT_IMAGE_TAG
+    normalized = (tag or get_default_image_tag()).strip()
+    if not normalized:
+        normalized = get_default_image_tag()
+    if normalized == "latest":
+        raise ValueError(
+            "The 'latest' image tag is no longer published. "
+            "Use a concrete package version such as '0.3.0' or a temporary validation tag such as 'sha-<commit>'."
+        )
+    return normalized
 
 
 def normalize_cuda_version(cuda_version: str) -> str:
@@ -117,14 +141,14 @@ def canonical_image_tag(cuda_version: str, tag: str | None) -> str:
 def resolve_registry_tag(tag: str | None) -> str:
     """Resolve a tag for runtime image lookup.
 
-    Unqualified tags like ``latest`` or ``0.3.0`` are preserved so they resolve
-    through the published default-CUDA aliases. Explicit CUDA-qualified tags are
-    normalized to the canonical ``cuda<version>-<tag>`` form.
+    Unqualified tags such as ``0.3.0`` or ``sha-<commit>`` are preserved so they resolve
+    through the published default-CUDA aliases. Explicit CUDA-qualified tags are normalized
+    to the canonical ``cuda<version>-<tag>`` form.
     """
     normalized_tag = normalize_requested_tag(tag)
     if match := _CUDA_TAG_PATTERN.fullmatch(normalized_tag):
         cuda_version = normalize_cuda_version(match.group("cuda"))
-        tag_suffix = match.group("tag") or DEFAULT_IMAGE_TAG
+        tag_suffix = match.group("tag") or get_default_image_tag()
         return canonical_image_tag(cuda_version, tag_suffix)
     return normalized_tag
 
@@ -132,8 +156,8 @@ def resolve_registry_tag(tag: str | None) -> str:
 def published_tags(cuda_version: str, tag: str | None) -> tuple[str, ...]:
     """Return the canonical published tags for a build output.
 
-    The default CUDA line also gets an unqualified alias such as ``latest`` or
-    ``0.3.0`` for convenience.
+    The default CUDA line also gets an unqualified alias such as ``0.3.0`` or
+    ``sha-<commit>`` for convenience.
     """
     normalized_cuda = normalize_cuda_version(cuda_version)
     normalized_tag = normalize_requested_tag(tag)

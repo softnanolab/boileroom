@@ -1,9 +1,13 @@
 """Fast contract tests for shared image metadata and tag behavior."""
 
+import importlib.metadata
+
+import pytest
+
 from boileroom.images.import_checks import compute_cuda_versions, iter_image_targets, package_name_to_import_name
 from boileroom.images.metadata import (
-    DEFAULT_IMAGE_TAG,
     format_image_reference,
+    get_default_image_tag,
     get_modal_image_tag,
     get_model_image_spec,
     get_supported_cuda,
@@ -14,18 +18,24 @@ from boileroom.images.metadata import (
 
 def test_published_tags_include_default_cuda_aliases() -> None:
     """Default CUDA images should publish both canonical and alias tags."""
-    assert published_tags("12.6", "latest") == ("cuda12.6-latest", "latest")
     assert published_tags("12.6", "0.3.0") == ("cuda12.6-0.3.0", "0.3.0")
-    assert published_tags("11.8", "latest") == ("cuda11.8-latest",)
+    assert published_tags("12.6", "sha-abcd1234") == ("cuda12.6-sha-abcd1234", "sha-abcd1234")
+    assert published_tags("11.8", "0.3.0") == ("cuda11.8-0.3.0",)
 
 
 def test_registry_tag_resolution_preserves_aliases_and_normalizes_explicit_cuda() -> None:
     """Runtime tag resolution should preserve aliases while normalizing explicit CUDA tags."""
-    assert resolve_registry_tag(None) == DEFAULT_IMAGE_TAG
-    assert resolve_registry_tag("latest") == "latest"
+    assert resolve_registry_tag(None) == get_default_image_tag()
     assert resolve_registry_tag("0.3.0") == "0.3.0"
-    assert resolve_registry_tag("cuda12.6") == "cuda12.6-latest"
+    assert resolve_registry_tag("cuda12.6") == f"cuda12.6-{get_default_image_tag()}"
     assert resolve_registry_tag("cuda11.8-0.3.0") == "cuda11.8-0.3.0"
+    with pytest.raises(ValueError, match="latest"):
+        resolve_registry_tag("latest")
+
+
+def test_default_image_tag_matches_installed_package_version() -> None:
+    """The runtime default image tag should track the installed package version."""
+    assert get_default_image_tag() == importlib.metadata.version("boileroom")
 
 
 def test_model_specs_report_supported_cuda_from_config() -> None:
@@ -38,18 +48,20 @@ def test_model_specs_report_supported_cuda_from_config() -> None:
 def test_modal_tag_uses_env_override(monkeypatch) -> None:
     """Modal image lookups should respect an optional tag override."""
     monkeypatch.delenv("BOILEROOM_MODAL_IMAGE_TAG", raising=False)
-    assert get_modal_image_tag() == "latest"
+    assert get_modal_image_tag() == get_default_image_tag()
 
     monkeypatch.setenv("BOILEROOM_MODAL_IMAGE_TAG", "0.3.0")
     assert get_modal_image_tag() == "0.3.0"
 
     monkeypatch.setenv("BOILEROOM_MODAL_IMAGE_TAG", "cuda12.6")
-    assert get_modal_image_tag() == "cuda12.6-latest"
+    assert get_modal_image_tag() == f"cuda12.6-{get_default_image_tag()}"
 
 
 def test_format_image_reference_uses_central_namespace() -> None:
     """All runtime image references should use the central Docker namespace."""
-    assert format_image_reference("boileroom-boltz", "latest") == "docker.io/jakublala/boileroom-boltz:latest"
+    assert format_image_reference("boileroom-boltz", None) == (
+        f"docker.io/jakublala/boileroom-boltz:{get_default_image_tag()}"
+    )
 
 
 def test_compute_cuda_versions_uses_metadata_defaults() -> None:
@@ -67,8 +79,8 @@ def test_package_name_to_import_name_handles_overrides_and_hyphens() -> None:
 
 def test_iter_image_targets_uses_canonical_cuda_tags() -> None:
     """Image smoke targets should honor CUDA-qualified tag selection."""
-    targets = iter_image_targets("latest", ["12.6"])
+    targets = iter_image_targets("0.3.0", ["12.6"])
     references = {image_key: image_reference for image_key, image_reference, *_ in targets}
-    assert references["boltz"].endswith(":cuda12.6-latest")
-    assert references["chai"].endswith(":cuda12.6-latest")
-    assert references["esm"].endswith(":cuda12.6-latest")
+    assert references["boltz"].endswith(":cuda12.6-0.3.0")
+    assert references["chai"].endswith(":cuda12.6-0.3.0")
+    assert references["esm"].endswith(":cuda12.6-0.3.0")

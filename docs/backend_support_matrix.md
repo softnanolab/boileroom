@@ -41,7 +41,7 @@ model = Boltz2(backend="modal")
 model = Boltz2(backend="apptainer")
 
 # Or pin an explicit published image tag
-model = Boltz2(backend="apptainer:cuda11.8-latest")
+model = Boltz2(backend="apptainer:cuda11.8-0.3.0")
 ```
 
-`backend="apptainer"` resolves through the default published alias for the `12.6` image line.
+`backend="apptainer"` resolves through the installed boileroom package version on the default `12.6` image line.

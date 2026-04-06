@@ -179,7 +179,11 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Build base and per-model Docker images using shared boileroom image metadata."
     )
-    parser.add_argument("--tag", default="latest", help="Unqualified tag to publish, for example latest or 0.3.0.")
+    parser.add_argument(
+        "--tag",
+        default=None,
+        help="Unqualified tag to publish. Defaults to the current boileroom package version; explicit examples include 0.3.0 or sha-<commit>.",
+    )
     parser.add_argument(
         "--cuda-version",
         action="append",
@@ -203,13 +207,13 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def resolve_publish_tag(tag: str) -> str:
+def resolve_publish_tag(tag: str | None) -> str:
     """Validate and normalize an unqualified publish tag."""
     normalized = normalize_requested_tag(tag)
     if _CUDA_TAG_PATTERN.fullmatch(normalized):
         raise ValueError(
             f"Publish tag {tag!r} is already CUDA-qualified. "
-            "Pass an unqualified tag such as latest, 0.3.0, or pr-39 and select CUDA variants with --cuda-version."
+            "Pass an unqualified tag such as 0.3.0 or sha-<commit> and select CUDA variants with --cuda-version."
         )
     return normalized
 

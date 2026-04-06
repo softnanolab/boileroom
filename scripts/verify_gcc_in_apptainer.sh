@@ -3,7 +3,14 @@
 
 set -e
 
-IMAGE_TAG="${BOILEROOM_IMAGE_TAG:-cuda12.6-latest}"
+DEFAULT_VERSION="$(uv run python - <<'PY'
+import tomllib
+from pathlib import Path
+
+print(tomllib.loads(Path('pyproject.toml').read_text(encoding='utf-8'))['project']['version'])
+PY
+)"
+IMAGE_TAG="${BOILEROOM_IMAGE_TAG:-cuda12.6-${DEFAULT_VERSION}}"
 IMAGE_URI="docker://docker.io/jakublala/boileroom-boltz:${IMAGE_TAG}"
 CACHE_DIR="${HOME}/.cache/boileroom/images"
 SIF_NAME="boltz_${IMAGE_TAG}.sif"

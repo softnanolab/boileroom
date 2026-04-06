@@ -26,7 +26,7 @@ def parse_args() -> argparse.Namespace:
     """Parse CLI arguments."""
     parser = argparse.ArgumentParser(description="Promote validated boileroom image tags without rebuilding.")
     parser.add_argument("--source-tag", required=True, help="Validated source tag, for example sha-abcd1234.")
-    parser.add_argument("--target-tag", required=True, help="Public target tag, for example latest or 0.3.0.")
+    parser.add_argument("--target-tag", required=True, help="Public target tag, for example 0.3.0.")
     parser.add_argument(
         "--cuda-version",
         action="append",
