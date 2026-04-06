@@ -17,10 +17,10 @@ class Boltz2Output(StructurePrediction):
     atom_array: list[Any] | None = None  # Always generated, one AtomArray per sample
 
     # Confidence-related outputs (one entry per sample)
-    confidence: list[dict[str, Any]] | None = None
-    plddt: list[np.ndarray] | None = None
-    pae: list[np.ndarray] | None = None
-    pde: list[np.ndarray] | None = None
+    confidence: list[dict[str, Any] | None] | None = None
+    plddt: list[np.ndarray | None] | None = None
+    pae: list[np.ndarray | None] | None = None
+    pde: list[np.ndarray | None] | None = None
     # Optional serialized structures (one string per sample)
     pdb: list[str] | None = None
     cif: list[str] | None = None

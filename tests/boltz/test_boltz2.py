@@ -2,6 +2,7 @@ import json
 import pathlib
 import tempfile
 from collections.abc import Generator
+from typing import Any
 
 import numpy as np
 import pytest
@@ -501,3 +502,114 @@ def test_boltz2_extract_sample_accepts_array_coords_without_truthiness_checks():
     assert plddt is None
     assert pae is None
     assert pde is None
+
+
+def _make_stubbed_boltz_core(monkeypatch: pytest.MonkeyPatch, preds: list[dict[str, Any]]):
+    """Create a Boltz2Core whose fold path can run without backend inference."""
+    pytest.importorskip("pytorch_lightning", reason="requires pytorch_lightning (backend dependency)")
+    pytest.importorskip("boltz", reason="requires boltz (backend dependency)")
+    from boileroom.models.boltz.core import Boltz2Core
+
+    core = Boltz2Core(config={"device": "cpu", "cache_dir": tempfile.mkdtemp(), "msa_cache_enabled": True})
+    records: dict[str, Any] = {"cache_calls": [], "save_calls": [], "convert_plddt": None}
+
+    monkeypatch.setattr(
+        core,
+        "_check_msa_cache",
+        lambda sequences, *, cache_enabled: records["cache_calls"].append((list(sequences), cache_enabled)) or {},
+    )
+    monkeypatch.setattr(
+        core,
+        "_save_msas_to_cache",
+        lambda processed, individual_chains, out_dir, cached_sequences=None, *, cache_enabled: records[
+            "save_calls"
+        ].append((list(individual_chains), cache_enabled)),
+    )
+    monkeypatch.setattr(
+        core,
+        "_prepare_inputs",
+        lambda fasta_text, work_dir, cache_dir, config: {
+            "manifest": object(),
+            "targets_dir": work_dir / "processed" / "structures",
+        },
+    )
+    monkeypatch.setattr(core, "_build_datamodule", lambda processed, num_workers, cache_dir: object())
+    monkeypatch.setattr(core, "_predict_with_trainer", lambda datamodule: preds)
+
+    def fake_convert(coords, processed, plddt=None):
+        records["convert_plddt"] = plddt
+        return [f"atom-{idx}" for idx in range(len(coords))], [f"cif-{idx}" for idx in range(len(coords))]
+
+    monkeypatch.setattr(core, "_convert_outputs_using_boltz_structure", fake_convert)
+    monkeypatch.setattr(core, "_filter_include_fields", lambda output, include_fields: output)
+    return core, records
+
+
+def test_boltz2_default_config_omits_unsupported_msa_auth_keys():
+    """Unsupported MSA auth keys should not be advertised in the public config."""
+    pytest.importorskip("pytorch_lightning", reason="requires pytorch_lightning (backend dependency)")
+    pytest.importorskip("boltz", reason="requires boltz (backend dependency)")
+    from boileroom.models.boltz.core import Boltz2Core
+
+    for key in ("msa_server_username", "msa_server_password", "api_key_header", "api_key_value"):
+        assert key not in Boltz2Core.DEFAULT_CONFIG
+
+
+def test_boltz2_rejects_load_bound_options_per_call():
+    """Per-call overrides should reject load-bound settings that require model reconfiguration."""
+    pytest.importorskip("pytorch_lightning", reason="requires pytorch_lightning (backend dependency)")
+    pytest.importorskip("boltz", reason="requires boltz (backend dependency)")
+    from boileroom.models.boltz.core import Boltz2Core
+
+    core = Boltz2Core(config={"device": "cpu"})
+
+    with pytest.raises(ValueError, match="sampling_steps"):
+        core.fold("ACDE", options={"sampling_steps": 50})
+
+
+def test_boltz2_fold_uses_fresh_metadata_and_runtime_cache_toggle(monkeypatch: pytest.MonkeyPatch):
+    """Each fold() call should get fresh metadata and honor runtime cache toggles."""
+    preds = [{"sample_atom_coords": np.array([[1.0, 2.0, 3.0]], dtype=np.float32)}]
+    core, records = _make_stubbed_boltz_core(monkeypatch, preds)
+
+    out1 = core.fold("ACDE", options={"msa_cache_enabled": False})
+    out2 = core.fold("ACDE:FG", options={"msa_cache_enabled": True})
+
+    assert records["cache_calls"] == [(["ACDE", "FG"], True)]
+    assert records["save_calls"] == [(["ACDE", "FG"], True)]
+    assert out1.metadata is not out2.metadata
+    assert out1.metadata.sequence_lengths == [4]
+    assert out2.metadata.sequence_lengths == [6]
+    assert out1.metadata.preprocessing_time is not None
+    assert out2.metadata.preprocessing_time is not None
+
+
+def test_boltz2_fold_preserves_per_sample_alignment_for_optional_outputs(monkeypatch: pytest.MonkeyPatch):
+    """Optional per-sample outputs should stay aligned with the generated structures."""
+    sample_plddt = np.array([0.1, 0.2], dtype=np.float32)
+    sample_pae = np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32)
+    preds = [
+        {"sample_atom_coords": np.array([[1.0, 2.0, 3.0]], dtype=np.float32)},
+        {
+            "sample_atom_coords": np.array([[4.0, 5.0, 6.0]], dtype=np.float32),
+            "confidence_score": 0.9,
+            "plddt": sample_plddt,
+            "pae": sample_pae,
+        },
+    ]
+    core, records = _make_stubbed_boltz_core(monkeypatch, preds)
+
+    out = core.fold("ACDE", options={"include_fields": ["*"]})
+
+    assert out.atom_array == ["atom-0", "atom-1"]
+    assert out.confidence == [None, {"confidence_score": 0.9}]
+    assert out.plddt is not None
+    assert out.plddt[0] is None
+    assert np.array_equal(out.plddt[1], sample_plddt)
+    assert out.pae is not None
+    assert out.pae[0] is None
+    assert np.array_equal(out.pae[1], sample_pae)
+    assert out.pde is None
+    assert records["convert_plddt"] is not None
+    assert records["convert_plddt"][0] is None
+    assert np.array_equal(records["convert_plddt"][1], sample_plddt)

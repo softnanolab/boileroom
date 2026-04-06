@@ -91,7 +91,7 @@ class Boltz2(ModelWrapper):
         sequences : str | Sequence[str]
             A single amino-acid sequence or an iterable of sequences representing one or more chains/targets.
         options : dict, optional
-            Per-call configuration overrides for the run (e.g., sampling/recycling settings, device selection, include_fields). Keys mirror those in the core configuration.
+            Per-call configuration overrides for the run, such as `seed`, `msa_cache_enabled`, MSA server options, `num_workers`, or `include_fields`. Load-bound settings such as sampling, diffusion, and MSA module parameters must be configured when the model is constructed.
 
         Returns
         -------

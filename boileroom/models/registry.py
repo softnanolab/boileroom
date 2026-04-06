@@ -149,7 +149,22 @@ BOLTZ2_SPEC = ModelSpec(
     contract=ModelContract(
         task_method="fold",
         task_kind="structure",
-        static_config_keys=frozenset({"device", "cache_dir", "no_kernels"}),
+        static_config_keys=frozenset(
+            {
+                "device",
+                "cache_dir",
+                "no_kernels",
+                "recycling_steps",
+                "sampling_steps",
+                "diffusion_samples",
+                "max_parallel_samples",
+                "step_scale",
+                "subsample_msa",
+                "num_subsampled_msa",
+                "write_full_pae",
+                "write_full_pde",
+            }
+        ),
         minimal_output_fields=("metadata", "atom_array"),
         optional_output_fields=("confidence", "plddt", "pae", "pde", "pdb", "cif"),
         supports_multimer=True,
