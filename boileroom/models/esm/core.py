@@ -1,5 +1,6 @@
 """Core ESM2 and ESMFold algorithm implementations without modal dependencies."""
 
+import dataclasses
 import logging
 import os
 from collections.abc import Sequence
@@ -11,8 +12,8 @@ from biotite.structure import AtomArray
 from transformers import AutoTokenizer, EsmForProteinFolding, EsmModel
 from transformers.models.esm.modeling_esmfold import EsmFoldingTrunk
 
-from ...base import EmbeddingAlgorithm, FoldingAlgorithm
-from ...utils import MODAL_MODEL_DIR, Timer, get_model_dir
+from ...base import EmbeddingAlgorithm, FoldingAlgorithm, PredictionMetadata
+from ...utils import MODAL_MODEL_DIR, Timer, get_model_dir, validate_sequence
 
 if TYPE_CHECKING:
     from transformers.modeling_outputs import BaseModelOutputWithPoolingAndCrossAttentions
@@ -123,7 +124,7 @@ class ESM2Core(EmbeddingAlgorithm):
             Configuration overrides for the model (merged with defaults). Recognized keys include at least `model_name` and `device`.
         """
         super().__init__(config)
-        self.metadata = self._initialize_metadata(
+        self._metadata_template = self._initialize_metadata(
             model_name="ESM-2",
             model_version="v4.49.0",  # HuggingFace transformers version
         )
@@ -200,31 +201,35 @@ class ESM2Core(EmbeddingAlgorithm):
             self._load()
         assert self.tokenizer is not None and self.model is not None, "Model not loaded"
 
-        normalized_sequences: list[str]
         normalized_sequences = [sequences] if isinstance(sequences, str) else list(sequences)
+        validated_sequences = [sequence for sequence in normalized_sequences if validate_sequence(sequence)]
+        metadata = dataclasses.replace(
+            self._metadata_template,
+            sequence_lengths=[len(sequence) - sequence.count(":") for sequence in validated_sequences],
+        )
 
-        logger.debug(f"Embedding {len(normalized_sequences)} sequences using {effective_config['model_name']}")
+        logger.debug(f"Embedding {len(validated_sequences)} sequences using {effective_config['model_name']}")
 
         with Timer("ESM2 preprocessing") as preprocess_timer:
-            if any(":" in seq for seq in normalized_sequences):
+            if any(":" in seq for seq in validated_sequences):
                 # Multimer logic
                 glycine_linker = effective_config["glycine_linker"]
-                multimer_properties = self._store_multimer_properties(normalized_sequences, glycine_linker)
+                multimer_properties = self._store_multimer_properties(validated_sequences, glycine_linker)
                 tokenized = self.tokenizer(
-                    replace_glycine_linkers(normalized_sequences, glycine_linker),
+                    replace_glycine_linkers(validated_sequences, glycine_linker),
                     return_tensors="pt",
                     padding=True,
                     truncation=True,
                 )
                 # Add position_ids and attention_mask
                 tokenized["position_ids"] = compute_position_ids(
-                    normalized_sequences, glycine_linker, effective_config["position_ids_skip"]
+                    validated_sequences, glycine_linker, effective_config["position_ids_skip"]
                 )
                 tokenized["attention_mask"] = (multimer_properties["linker_map"] == 1).to(torch.int32)
             else:
                 # Monomer logic
                 tokenized = self.tokenizer(
-                    normalized_sequences,
+                    validated_sequences,
                     return_tensors="pt",
                     padding=True,
                     truncation=True,
@@ -242,6 +247,7 @@ class ESM2Core(EmbeddingAlgorithm):
             outputs = self._convert_outputs(
                 outputs,
                 multimer_properties,
+                metadata=metadata,
                 preprocessing_time=preprocess_timer.duration,
                 inference_time=inference_timer.duration,
                 postprocessing_time=postprocess_timer.duration,
@@ -296,6 +302,7 @@ class ESM2Core(EmbeddingAlgorithm):
         self,
         outputs: "BaseModelOutputWithPoolingAndCrossAttentions",
         multimer_properties: dict[str, torch.Tensor] | None,
+        metadata: PredictionMetadata,
         preprocessing_time: float,
         inference_time: float,
         postprocessing_time: float,
@@ -347,13 +354,13 @@ class ESM2Core(EmbeddingAlgorithm):
             chain_index_output = np.zeros((batch_size, seq_len), dtype=np.int32)
             residue_index_output = np.tile(np.arange(seq_len, dtype=np.int32), (batch_size, 1))
 
-        self.metadata.preprocessing_time = preprocessing_time
-        self.metadata.inference_time = inference_time
-        self.metadata.postprocessing_time = postprocessing_time
+        metadata.preprocessing_time = preprocessing_time
+        metadata.inference_time = inference_time
+        metadata.postprocessing_time = postprocessing_time
 
         # Build full output with all fields
         full_output = ESM2Output(
-            metadata=self.metadata,
+            metadata=metadata,
             embeddings=embeddings,
             hidden_states=hidden_states,
             chain_index=chain_index_output,
@@ -493,7 +500,7 @@ class ESMFoldCore(FoldingAlgorithm):
             Configuration overrides for the predictor (merged with DEFAULT_CONFIG at runtime).
         """
         super().__init__(config)
-        self.metadata = self._initialize_metadata(
+        self._metadata_template = self._initialize_metadata(
             model_name="ESMFold",
             model_version="v4.49.0",  # HuggingFace transformers version
         )
@@ -526,7 +533,7 @@ class ESMFoldCore(FoldingAlgorithm):
     def fold(self, sequences: str | Sequence[str], options: dict | None = None) -> ESMFoldOutput:
         """Predict protein structure(s) from one or more amino acid sequence(s) using the ESMFold model.
 
-        If the model is not loaded, this method will load it lazily before running inference. Updates self.metadata.sequence_lengths with the processed sequence lengths.
+        If the model is not loaded, this method will load it lazily before running inference. Each call records its own sequence-length metadata.
 
         Parameters
         ----------
@@ -549,7 +556,10 @@ class ESMFoldCore(FoldingAlgorithm):
         assert self.tokenizer is not None and self.model is not None, "Model not loaded"
 
         validated_sequences = self._validate_sequences(sequences)
-        self.metadata.sequence_lengths = self._compute_sequence_lengths(validated_sequences)
+        metadata = dataclasses.replace(
+            self._metadata_template,
+            sequence_lengths=self._compute_sequence_lengths(validated_sequences),
+        )
 
         with Timer("ESMFold preprocessing") as preprocess_timer:
             tokenized_input, multimer_properties = self._tokenize_sequences(validated_sequences, effective_config)
@@ -561,6 +571,7 @@ class ESMFoldCore(FoldingAlgorithm):
             outputs = self._convert_outputs(
                 outputs,
                 multimer_properties,
+                metadata=metadata,
                 preprocessing_time=preprocess_timer.duration,
                 inference_time=inference_timer.duration,
                 postprocessing_time=postprocess_timer.duration,
@@ -818,6 +829,7 @@ class ESMFoldCore(FoldingAlgorithm):
         self,
         outputs: dict,
         multimer_properties: dict[str, torch.Tensor] | None,
+        metadata: PredictionMetadata,
         preprocessing_time: float,
         inference_time: float,
         postprocessing_time: float,
@@ -853,9 +865,9 @@ class ESMFoldCore(FoldingAlgorithm):
         else:  # only MONOMERs
             outputs["chain_index"] = np.zeros(outputs["residue_index"].shape, dtype=np.int32)
 
-        self.metadata.preprocessing_time = preprocessing_time
-        self.metadata.inference_time = inference_time
-        self.metadata.postprocessing_time = postprocessing_time
+        metadata.preprocessing_time = preprocessing_time
+        metadata.inference_time = inference_time
+        metadata.postprocessing_time = postprocessing_time
 
         # Always generate atom_array
         atom_array = self._convert_outputs_to_atomarray(outputs)
@@ -874,7 +886,7 @@ class ESMFoldCore(FoldingAlgorithm):
 
         # Build full output with all fields (exclude positions as it's only used internally)
         outputs_without_positions = {k: v for k, v in outputs.items() if k != "positions"}
-        full_output = ESMFoldOutput(metadata=self.metadata, **outputs_without_positions)
+        full_output = ESMFoldOutput(metadata=metadata, **outputs_without_positions)
 
         # Apply filtering based on include_fields
         filtered = self._filter_include_fields(full_output, include_fields)

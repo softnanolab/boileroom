@@ -1,6 +1,7 @@
 """Core Chai1 algorithm implementation without modal dependencies."""
 
 import csv
+import dataclasses
 import logging
 import os
 from collections.abc import Mapping, Sequence
@@ -14,7 +15,7 @@ from biotite.structure import AtomArray
 from biotite.structure.io.pdbx import CIFFile, get_structure
 from chai_lab.chai1 import StructureCandidates, run_inference
 
-from ...base import FoldingAlgorithm
+from ...base import FoldingAlgorithm, PredictionMetadata
 from ...utils import MODAL_MODEL_DIR, Timer
 from .types import Chai1Output
 
@@ -52,7 +53,7 @@ class Chai1Core(FoldingAlgorithm):
             Configuration overrides for the algorithm; keys merge with defaults and control runtime behavior (e.g., device, sampling, and output options).
         """
         super().__init__(config or {})
-        self.metadata = self._initialize_metadata(
+        self._metadata_template = self._initialize_metadata(
             model_name="Chai-1",
             model_version="v0.6.1",
         )
@@ -98,7 +99,10 @@ class Chai1Core(FoldingAlgorithm):
         effective_config = self._merge_options(options)
 
         validated_sequences = self._validate_sequences(sequences)
-        self.metadata.sequence_lengths = self._compute_sequence_lengths(validated_sequences)
+        metadata = dataclasses.replace(
+            self._metadata_template,
+            sequence_lengths=self._compute_sequence_lengths(validated_sequences),
+        )
 
         with TemporaryDirectory() as buffer_dir:
             buffer_path = Path(buffer_dir)
@@ -126,6 +130,7 @@ class Chai1Core(FoldingAlgorithm):
             with Timer("Chai-1 postprocessing") as postprocess_timer:
                 output = self._convert_outputs(
                     candidate,
+                    metadata=metadata,
                     preprocessing_time=preprocess_timer.duration,
                     inference_time=inference_timer.duration,
                     postprocessing_time=postprocess_timer.duration,
@@ -213,6 +218,7 @@ class Chai1Core(FoldingAlgorithm):
     def _convert_outputs(
         self,
         candidate: "StructureCandidates",
+        metadata: PredictionMetadata,
         preprocessing_time: float,
         inference_time: float,
         postprocessing_time: float,
@@ -243,9 +249,9 @@ class Chai1Core(FoldingAlgorithm):
         if not candidate.cif_paths:
             raise RuntimeError("Inference produced no CIF output files")
         cif_string_list, atom_array = self._process_cif(candidate.cif_paths[0], effective_config)
-        self.metadata.preprocessing_time = preprocessing_time
-        self.metadata.inference_time = inference_time
-        self.metadata.postprocessing_time = postprocessing_time
+        metadata.preprocessing_time = preprocessing_time
+        metadata.inference_time = inference_time
+        metadata.postprocessing_time = postprocessing_time
 
         # Build full output with all attributes
         # cif_string_list is a list with one element; convert [None] to None, keep [string] as [string]
@@ -255,7 +261,7 @@ class Chai1Core(FoldingAlgorithm):
             cif = [s for s in cif_string_list if s is not None]
 
         full_output = Chai1Output(
-            metadata=self.metadata,
+            metadata=metadata,
             pae=pae if pae else None,
             pde=pde if pde else None,
             plddt=plddt if plddt else None,
