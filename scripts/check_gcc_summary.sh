@@ -3,15 +3,19 @@
 
 set -e
 
+IMAGE_TAG="${BOILEROOM_IMAGE_TAG:-cuda12.6-latest}"
+MODEL_IMAGE="docker.io/jakublala/boileroom-boltz:${IMAGE_TAG}"
+BASE_IMAGE="docker.io/jakublala/boileroom-base:${IMAGE_TAG}"
+
 echo "=========================================="
 echo "GCC Verification Summary for Boltz-2"
-echo "Image: docker.io/jakublala/boileroom-boltz:cuda12.6-dev"
+echo "Image: ${MODEL_IMAGE}"
 echo "=========================================="
 echo ""
 
 echo "1. DOCKER IMAGE VERIFICATION:"
 echo "   Checking GCC in Docker image..."
-docker run --rm docker.io/jakublala/boileroom-boltz:cuda12.6-dev bash -c "
+docker run --rm "$MODEL_IMAGE" bash -c "
     echo '   GCC location: \$(which gcc)'
     echo '   G++ location: \$(which g++)'
     echo '   GCC version:'
@@ -27,7 +31,7 @@ docker run --rm docker.io/jakublala/boileroom-boltz:cuda12.6-dev bash -c "
 echo ""
 echo "2. BASE IMAGE VERIFICATION:"
 echo "   Checking GCC in base image..."
-docker run --rm docker.io/jakublala/boileroom-base:cuda12.6-dev bash -c "
+docker run --rm "$BASE_IMAGE" bash -c "
     echo '   GCC location: \$(which gcc)'
     gcc --version | head -1 | sed 's/^/     /'
 "
@@ -60,4 +64,3 @@ echo "  - Large image size causing timeouts"
 echo ""
 echo "The GCC compiler itself is present and functional in the Docker image."
 echo "=========================================="
-

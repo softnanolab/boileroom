@@ -46,7 +46,7 @@
 - Output types (e.g., `ESM2Output`, `Boltz2Output`) from `types.py` are serialized via pickle+base64 for JSON transport between the main process and the container server.
 - The `_ApptainerModelProxy` in `apptainer.py` provides the client-side interface that forwards method calls (`embed()` or `fold()`) to the HTTP server via POST requests.
 - Models in the same family (e.g., ESM2 and ESMFold) can share the same Docker image.
-- `ApptainerBackend` expects a Docker image URI (e.g., `docker://docker.io/jakublala/boileroom-boltz:cuda12.6-dev`), pulls it as a `.sif` into a cache directory (default `~/.cache/boileroom/images` or `MODEL_DIR`), and starts `server.py` inside the container using `apptainer exec`. It:
+- `ApptainerBackend` expects a Docker image URI (e.g., `docker://docker.io/jakublala/boileroom-boltz:cuda12.6-latest`), pulls it as a `.sif` into a cache directory (default `~/.cache/boileroom/images` or `MODEL_DIR`), and starts `server.py` inside the container using `apptainer exec`. It:
 - Binds the repo source tree read-only and `MODEL_DIR` into the container. Model-specific subdirectories (e.g., `MODEL_DIR/chai`, `MODEL_DIR/boltz`) are automatically accessible as subdirectories of the mounted `MODEL_DIR`.
 - Sets `MODEL_CLASS`, `MODEL_CONFIG`, `DEVICE`, and CUDA-related env vars (`CUDA_VISIBLE_DEVICES`, `LD_LIBRARY_PATH`) before starting. Model-specific environment variables (e.g., `CHAI_DOWNLOADS_DIR`) are automatically derived from `MODEL_DIR` when present.
 - Uses `/health` polling to wait for readiness and exposes a thin HTTP client proxy for `embed()`/`fold()`.
@@ -150,7 +150,7 @@ The `types.py` file contains output dataclasses (e.g., `MyFoldOutput`) that can 
   - Optionally add `config.yaml` under `boileroom/models/<family>/` with `supported_cuda: ["11.8", "12.6"]` to advertise supported CUDA versions to the build scripts.
   - Wire the high-level wrapper to `ApptainerBackend` with:
     - `core_class_path="boileroom.models.<family>.core.MyFoldCore"`.
-    - `image_uri=f"docker://docker.io/jakublala/boileroom-<model>:{backend_tag}"`, where `backend_tag` encodes CUDA and version (e.g., `cuda12.6-dev` or `cuda12.6-latest`).
+    - `image_uri=f"docker://docker.io/jakublala/boileroom-<model>:{backend_tag}"`, where `backend_tag` encodes CUDA and version (e.g., `cuda12.6-latest`, `cuda12.6-0.3.0`, or a temporary `cuda12.6-sha-<shortsha>` validation tag).
   - The backend:
     - Caches `.sif` images under `~/.cache/boileroom/images` or `MODEL_DIR`.
     - Binds the repo source tree and `MODEL_DIR` into the container. Model-specific subdirectories are automatically accessible.
@@ -173,7 +173,7 @@ The `types.py` file contains output dataclasses (e.g., `MyFoldOutput`) that can 
 - **Base and per-model images**
   - `boileroom/images/Dockerfile` defines a CUDA + micromamba base image (`boileroom-base:cuda<version>-<tag>`).
   - Model images are built on top of that base via `BASE_IMAGE` and `TORCH_WHEEL_INDEX` build args and tagged as:
-    - `docker.io/jakublala/boileroom-<model>:cuda<version>-<tag>` (e.g., `boileroom-boltz:cuda12.6-dev`).
+    - `docker.io/jakublala/boileroom-<model>:cuda<version>-<tag>` (e.g., `boileroom-boltz:cuda12.6-latest`).
 
 - **Build scripts**
   - `scripts/images/build_model_images.py`:

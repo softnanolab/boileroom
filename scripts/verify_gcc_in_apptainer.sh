@@ -3,9 +3,10 @@
 
 set -e
 
-IMAGE_URI="docker://docker.io/jakublala/boileroom-boltz:cuda12.6-dev"
+IMAGE_TAG="${BOILEROOM_IMAGE_TAG:-cuda12.6-latest}"
+IMAGE_URI="docker://docker.io/jakublala/boileroom-boltz:${IMAGE_TAG}"
 CACHE_DIR="${HOME}/.cache/boileroom/images"
-SIF_NAME="boltz_cuda12.6-dev.sif"
+SIF_NAME="boltz_${IMAGE_TAG}.sif"
 SIF_PATH="${CACHE_DIR}/${SIF_NAME}"
 
 echo "=========================================="
@@ -69,4 +70,3 @@ echo ""
 echo "=========================================="
 echo "Summary: GCC is properly available in the Apptainer container"
 echo "=========================================="
-

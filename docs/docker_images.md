@@ -13,7 +13,7 @@ Dockerfiles are the canonical image definition for all runtimes. Docker/Apptaine
 - The default CUDA line is `12.6`. That line also gets unqualified aliases such as `latest` and `0.3.0`.
 - Runtime shorthands such as `backend="apptainer"` or `backend="apptainer:0.3.0"` resolve through those default aliases.
 
-### 🚀 Quick start (dev)
+### 🚀 Quick start
 Use the Python helper to build all images (base + models) with a single global worker limit.
 
 ```bash
@@ -22,10 +22,28 @@ uv run python scripts/images/build_model_images.py --cuda-version=12.6 --tag=lat
 # Optional flags
 uv run python scripts/images/build_model_images.py --no-cache ...
 uv run python scripts/images/build_model_images.py --all-cuda --tag=0.3.0 --push ...
-uv run python scripts/images/build_model_images.py --cuda-version=12.6 --tag=pr-39 --push ...
+uv run python scripts/images/build_model_images.py --cuda-version=12.6 --tag=sha-$(git rev-parse --short HEAD) --push ...
 ```
 
 Single-platform non-push builds auto-load into the local Docker daemon. Multi-platform builds should generally be paired with `--push`.
+
+### 🔖 Tag policy
+- Docker Hub is kept clean for users. The long-lived public tags are `latest`, version tags such as `0.3.0`, and the corresponding CUDA-qualified tags such as `cuda12.6-latest` and `cuda11.8-0.3.0`.
+- Short-lived validation tags such as `sha-<shortsha>` are fine when you need to test a branch through Docker Hub or Modal before promoting `latest` or a version tag.
+- Validation tags should be deleted once the validation pass is complete.
+
+For example, a temporary validation push on the default CUDA line:
+```bash
+TAG=sha-$(git rev-parse --short HEAD)
+uv run python scripts/images/build_model_images.py --cuda-version=12.6 --tag="$TAG" --platform=linux/amd64 --push
+```
+
+Modal can then be pointed at that published validation tag with:
+```bash
+export BOILEROOM_MODAL_IMAGE_TAG="$TAG"
+```
+
+Because `12.6` is the default CUDA line, publishing `--tag="$TAG"` also creates the explicit `cuda12.6-$TAG` tag alongside the unqualified alias.
 
 You can still use the Bash wrapper if you prefer:
 ```bash

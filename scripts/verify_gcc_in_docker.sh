@@ -3,7 +3,8 @@
 
 set -e
 
-IMAGE_NAME="docker.io/jakublala/boileroom-boltz:cuda12.6-dev"
+IMAGE_TAG="${BOILEROOM_IMAGE_TAG:-cuda12.6-latest}"
+IMAGE_NAME="docker.io/jakublala/boileroom-boltz:${IMAGE_TAG}"
 
 echo "=========================================="
 echo "Verifying GCC in Boltz-2 Docker Image"
@@ -49,8 +50,8 @@ EOF
 "
 
 echo ""
-echo "6. Checking base image (boileroom-base:cuda12.6-dev)..."
-BASE_IMAGE="docker.io/jakublala/boileroom-base:cuda12.6-dev"
+echo "6. Checking base image (boileroom-base:${IMAGE_TAG})..."
+BASE_IMAGE="docker.io/jakublala/boileroom-base:${IMAGE_TAG}"
 if docker run --rm "$BASE_IMAGE" which gcc > /dev/null 2>&1; then
     echo "   ✓ Base image also has GCC"
     docker run --rm "$BASE_IMAGE" gcc --version | head -1
@@ -62,4 +63,3 @@ echo ""
 echo "=========================================="
 echo "Summary: GCC is properly installed in the Docker image"
 echo "=========================================="
-

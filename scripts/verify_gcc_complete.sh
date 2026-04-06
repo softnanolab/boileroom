@@ -3,7 +3,8 @@
 
 set -e
 
-IMAGE_DOCKER="docker.io/jakublala/boileroom-boltz:cuda12.6-dev"
+IMAGE_TAG="${BOILEROOM_IMAGE_TAG:-cuda12.6-latest}"
+IMAGE_DOCKER="docker.io/jakublala/boileroom-boltz:${IMAGE_TAG}"
 IMAGE_URI="docker://${IMAGE_DOCKER}"
 SIF_PATH="/tmp/boltz-verify.sif"
 
@@ -96,8 +97,7 @@ else
 fi
 echo ""
 echo "CONCLUSION:"
-echo "The Docker image docker.io/jakublala/boileroom-boltz:cuda12.6-dev"
+echo "The Docker image ${IMAGE_DOCKER}"
 echo "includes GCC compiler (version 11.4.0) and it is properly accessible"
 echo "in both Docker and Apptainer containers."
 echo "=========================================="
-
