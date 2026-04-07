@@ -134,6 +134,7 @@ CHAI1_SPEC = ModelSpec(
         static_config_keys=frozenset({"device"}),
         minimal_output_fields=("metadata", "atom_array"),
         optional_output_fields=("pae", "pde", "plddt", "ptm", "iptm", "per_chain_iptm", "cif"),
+        supports_batch=False,
     ),
 )
 

@@ -13,7 +13,7 @@ from transformers import AutoTokenizer, EsmForProteinFolding, EsmModel
 from transformers.models.esm.modeling_esmfold import EsmFoldingTrunk
 
 from ...base import EmbeddingAlgorithm, FoldingAlgorithm, PredictionMetadata
-from ...utils import MODAL_MODEL_DIR, Timer, get_model_dir, validate_sequence
+from ...utils import MODAL_MODEL_DIR, Timer, get_model_dir
 
 if TYPE_CHECKING:
     from transformers.modeling_outputs import BaseModelOutputWithPoolingAndCrossAttentions
@@ -201,8 +201,7 @@ class ESM2Core(EmbeddingAlgorithm):
             self._load()
         assert self.tokenizer is not None and self.model is not None, "Model not loaded"
 
-        normalized_sequences = [sequences] if isinstance(sequences, str) else list(sequences)
-        validated_sequences = [sequence for sequence in normalized_sequences if validate_sequence(sequence)]
+        validated_sequences = self._validate_sequences(sequences)
         metadata = dataclasses.replace(
             self._metadata_template,
             sequence_lengths=[len(sequence) - sequence.count(":") for sequence in validated_sequences],

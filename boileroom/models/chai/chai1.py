@@ -45,19 +45,19 @@ class ModalChai1:
 
     @modal.method()
     def fold(self, sequences: str | Sequence[str], options: dict | None = None) -> "Chai1Output":
-        """Run structure prediction for the given sequence(s) and return the assembled prediction output.
+        """Run structure prediction for a single top-level sequence entry.
 
         Parameters
         ----------
         sequences : str | Sequence[str]
-            One sequence string or a sequence of sequence strings. Individual entries may contain multiple chains separated by ":"; when provided as a single string that contains ":" the string will be split into chains.
+            One sequence string or a one-item sequence containing a single sequence string. Use ":" inside that sequence to join multiple chains for multimer prediction.
         options : dict, optional
             Per-call configuration overrides merged with the model's default configuration to control sampling, device, and which result fields to include.
 
         Returns
         -------
         Chai1Output
-            Prediction results and associated metadata for the provided sequence(s).
+            Prediction results and associated metadata for the provided sequence.
         """
         return self._core.fold(sequences, options=options)
 
@@ -99,12 +99,12 @@ class Chai1(ModelWrapper):
         self._initialize_backend_from_spec(self.MODEL_SPEC, backend=backend, device=device, config=config)
 
     def fold(self, sequences: str | Sequence[str], options: dict | None = None) -> "Chai1Output":
-        """Run structure prediction for the given sequence(s) using the configured backend.
+        """Run structure prediction for a single top-level sequence entry using the configured backend.
 
         Parameters
         ----------
         sequences : str | Sequence[str]
-            A single sequence or a sequence of sequences to predict. Each sequence may contain multiple chains separated by ":"; currently the implementation expects a single batch.
+            A single sequence string or a one-item sequence containing a single sequence string. Use ":" inside that sequence to join multiple chains for multimer prediction.
         options : dict | None, optional
             Per-call configuration overrides merged with the model's default config (e.g., include_fields, constraint_path, device-specific options).
 
@@ -112,5 +112,14 @@ class Chai1(ModelWrapper):
         -------
         Chai1Output
             Prediction results including metadata, generated atom arrays, and any requested confidence metrics or CIF output.
+
+        Raises
+        ------
+        ValueError
+            If more than one top-level sequence entry is provided. Chai-1 currently supports a single input per call; use ":" to join chains for multimers.
         """
+        if not isinstance(sequences, str) and len(sequences) != 1:
+            raise ValueError(
+                "Chai-1 currently supports exactly one top-level sequence per call; use ':' to join chains."
+            )
         return self._call_backend_method("fold", sequences, options=options)

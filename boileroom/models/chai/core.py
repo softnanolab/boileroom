@@ -82,12 +82,12 @@ class Chai1Core(FoldingAlgorithm):
         # TODO: ADD template_hits_path: Path | None = None,
 
         # Merge static config with per-call options
-        """Run structure prediction for the given sequence(s) and return the assembled Chai1Output.
+        """Run structure prediction for a single top-level sequence entry and return the assembled Chai1Output.
 
         Parameters
         ----------
         sequences : str | Sequence[str]
-            A single amino-acid sequence or a sequence of sequences. A single sequence may contain multiple chains separated by ':'; otherwise provide one entry per sample.
+            A single amino-acid sequence or a one-item sequence containing a single amino-acid sequence. Use ":" inside that sequence to join multiple chains for multimer prediction.
         options : dict | None, optional
             Per-call configuration overrides merged with the algorithm's defaults (e.g., sampling, recycling, include_fields). Only keys recognized by the algorithm are applied.
 
@@ -95,10 +95,19 @@ class Chai1Core(FoldingAlgorithm):
         -------
         Chai1Output
             Prediction result including metadata (with prediction time), a list of AtomArray structures, and any requested confidence metrics and CIF representations as dictated by `options` / include_fields.
+
+        Raises
+        ------
+        ValueError
+            If more than one top-level sequence entry is provided. Chai-1 currently supports exactly one input per call; use ":" to join chains for multimers.
         """
         effective_config = self._merge_options(options)
 
         validated_sequences = self._validate_sequences(sequences)
+        if len(validated_sequences) != 1:
+            raise ValueError(
+                "Chai-1 currently supports exactly one top-level sequence per call; use ':' to join chains."
+            )
         metadata = dataclasses.replace(
             self._metadata_template,
             sequence_lengths=self._compute_sequence_lengths(validated_sequences),
@@ -279,12 +288,12 @@ class Chai1Core(FoldingAlgorithm):
 
     def _write_fasta(self, sequences: list[str], buffer_dir: Path) -> Path:
         # assert that a single batch only
-        """Write a FASTA file for a single-batch sequence input, splitting multiple chains in the batch by ':'.
+        """Write a FASTA file for a single top-level sequence input, splitting multiple chains by ':'.
 
         Parameters
         ----------
         sequences : list[str]
-            A single-item list containing the sequence batch; if that string contains ':' it is split into multiple chain sequences.
+            A single-item list containing the input sequence; if that string contains ':' it is split into multiple chain sequences.
         buffer_dir : Path
             Directory where the file named "input.fasta" will be written.
 
@@ -293,7 +302,10 @@ class Chai1Core(FoldingAlgorithm):
         Path
             The path to the created FASTA file ("input.fasta" in buffer_dir).
         """
-        assert len(sequences) == 1, "Chai-1 only supports a single batch for now."
+        if len(sequences) != 1:
+            raise ValueError(
+                "Chai-1 currently supports exactly one top-level sequence per call; use ':' to join chains."
+            )
         seqs = sequences[0].split(":") if ":" in sequences[0] else [sequences[0]]
         fasta_path = buffer_dir / "input.fasta"
         # TODO: naming of the chains should be synchronized with how ESMFold did that

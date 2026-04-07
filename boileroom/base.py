@@ -194,6 +194,29 @@ class Algorithm(ABC):
             postprocessing_time=None,
         )
 
+    def _validate_sequences(self, sequences: str | Sequence[str]) -> list[str]:
+        """Validate input sequences and convert them to list format.
+
+        Parameters
+        ----------
+        sequences : str | Sequence[str]
+            Single sequence or list of sequences.
+
+        Returns
+        -------
+        list[str]
+            List of validated sequences.
+
+        Raises
+        ------
+        ValueError
+            If any sequence contains invalid amino acids.
+        """
+        if isinstance(sequences, str):
+            sequences = [sequences]
+
+        return [seq for seq in sequences if validate_sequence(seq)]
+
 
 class FoldingAlgorithm(Algorithm):
     """Abstract base class for protein structure prediction algorithms.
@@ -233,31 +256,6 @@ class FoldingAlgorithm(Algorithm):
             If prediction fails.
         """
         raise NotImplementedError
-
-    def _validate_sequences(self, sequences: str | Sequence[str]) -> list[str]:
-        """Validate input sequences and convert to list format.
-
-        Parameters
-        ----------
-        sequences : Union[str, Sequence[str]]
-            Single sequence or list of sequences
-
-        Returns
-        -------
-        list[str]
-            List of validated sequences
-
-        Raises
-        ------
-        ValueError
-            If any sequence contains invalid amino acids.
-        """
-        # Convert single sequence to list
-        if isinstance(sequences, str):
-            sequences = [sequences]
-
-        # Validate each sequence and return as explicit list
-        return [seq for seq in sequences if validate_sequence(seq)]
 
     def _compute_sequence_lengths(self, sequences: list[str]) -> list[int]:
         """Compute residue counts for each multimer sequence.

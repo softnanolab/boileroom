@@ -1,4 +1,4 @@
-# boileroom: serverless protein prediction models
+# boileroom: protein prediction models across Modal and Apptainer
 
 [![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -6,7 +6,7 @@
 [![GitHub last commit](https://img.shields.io/github/last-commit/jakublala/boileroom.svg)](https://github.com/jakublala/boileroom/commits/main)
 [![GitHub issues](https://img.shields.io/github/issues/jakublala/boileroom.svg)](https://github.com/jakublala/boileroom/issues)
 
-`boileroom` is a Python package that provides a unified interface to various protein prediction models, running them efficiently on Modal's serverless infrastructure.
+`boileroom` is a Python package that provides a unified interface to protein prediction models across Modal's serverless GPUs and Apptainer-based local or HPC execution.
 
 > 🚨🚨🚨 **v0.3.0** introduced major changes, including new models and inference backends. If you're upgrading from v0.2, please see the [Migration Guide](docs/migration_v0.2_to_v0.3.md) for details on breaking changes and how to update your code. 🚨🚨🚨
 
@@ -14,8 +14,8 @@
 
 ## Features
 
-- 🚀 Serverless execution of protein models
-- 🔄 Unified API across different models
+- 🚀 Modal and Apptainer execution backends
+- 🔄 Unified API across different models and runtimes
 - 🎯 Production-ready with GPU acceleration
 - 📦 Easy installation and deployment
 
@@ -27,30 +27,31 @@
 pip install boileroom
 ```
 
-2. Set up Modal credentials (if you haven't already):
+2. If you plan to use Modal, set up Modal credentials:
 
 ```bash
 modal token new
 ```
+
+For local containerized execution instead, install Apptainer and use `backend="apptainer"`.
 
 ## Quick Start
 
 ```python
 from boileroom import ESMFold
 
-# Initialize the model
-model = ESMFold(backend="modal")
+# Use Modal by default; pass backend="apptainer" for local containerized execution
+model = ESMFold()
 
 # Predict structure for a protein sequence
 sequence = "MLKNVHVLVLGAGDVGSVVVRLLEK"
 
-result = model.fold([sequence])
+result = model.fold(sequence, options={"include_fields": ["plddt"]})
 
 # Access prediction results
-# Extract coordinates from atom_array (which contains full metadata)
-atom_array = result.atom_array[0]  # Get first structure
-coordinates = atom_array.coord  # Get coordinates
-confidence = result.plddt
+atom_array = result.atom_array[0]
+coordinates = atom_array.coord
+confidence = result.plddt[0]  # Requested explicitly via include_fields above
 ```
 
 ## Available Models

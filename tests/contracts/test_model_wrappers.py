@@ -10,7 +10,7 @@ from boileroom.images.metadata import get_default_image_tag
 from boileroom.models.boltz.types import Boltz2Output
 from boileroom.models.chai.types import Chai1Output
 from boileroom.models.esm.types import ESM2Output, ESMFoldOutput
-from boileroom.models.registry import MODEL_SPECS, ModelSpec, get_model_spec, resolve_object
+from boileroom.models.registry import CHAI1_SPEC, MODEL_SPECS, ModelSpec, get_model_spec, resolve_object
 
 pytestmark = pytest.mark.contract
 
@@ -164,3 +164,22 @@ def test_parse_backend_apptainer_tag_handling() -> None:
     assert ModelWrapper.parse_backend("modal:dev") == ("modal", None)
     assert ModelWrapper.parse_backend("apptainer") == ("apptainer", get_default_image_tag())
     assert ModelWrapper.parse_backend("apptainer:dev") == ("apptainer", "dev")
+
+
+def test_chai1_contract_declares_single_input_only() -> None:
+    """Chai1 should advertise that it does not support top-level batching."""
+    assert CHAI1_SPEC.contract.supports_batch is False
+
+
+def test_chai1_wrapper_rejects_multiple_top_level_sequences(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Chai1 should fail early with a clear error when multiple top-level sequences are provided."""
+    records: dict[str, Any] = {}
+    _install_fake_initializer(monkeypatch, records, _make_output(CHAI1_SPEC))
+
+    wrapper_cls = resolve_object(CHAI1_SPEC.wrapper_class_path)
+    wrapper = wrapper_cls(backend="apptainer:dev")
+
+    with pytest.raises(ValueError, match="exactly one top-level sequence"):
+        wrapper.fold(["AAAA", "BBBB"])
+
+    assert "method" not in records
