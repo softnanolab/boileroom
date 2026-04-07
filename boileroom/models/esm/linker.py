@@ -1,15 +1,10 @@
 import numpy as np
-from typing import List
-
-from ...images import esm_image
-
-with esm_image.imports():
-    import torch
-    import torch.nn.functional as F
+import torch
+import torch.nn.functional as F
 
 
 # --- Glycine linker and positional skip utilities ---
-def compute_position_ids(sequences: List[str], glycine_linker: str, position_ids_skip: int) -> torch.Tensor:
+def compute_position_ids(sequences: list[str], glycine_linker: str, position_ids_skip: int) -> torch.Tensor:
     """
     Compute the position ids for the sequences.
     Parameters
@@ -43,19 +38,26 @@ def compute_position_ids(sequences: List[str], glycine_linker: str, position_ids
     return torch.stack(position_ids)
 
 
-def store_multimer_properties(_sequences: List[str], glycine_linker: str):
+def store_multimer_properties(_sequences: list[str], glycine_linker: str):
     """Store properties needed for multimer processing.
-    Args:
-        _sequences: List of sequences, each containing chains separated by ":"
-        glycine_linker: The glycine linker string used between chains
-    Returns:
-        tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-            - linker_map: tensor of shape (batch_size, sequence_length) where 0 indicates
-            linker positions and 1 indicates chain positions
-            - residue_index: tensor of shape (batch_size, sequence_length) containing
-            residue indices that restart at 1 for each chain
-            - chain_index: tensor of shape (batch_size, sequence_length) containing
-            chain indices (0, 1, 2, etc.)
+
+    Parameters
+    ----------
+    _sequences : List[str]
+        List of sequences, each containing chains separated by ":".
+    glycine_linker : str
+        The glycine linker string used between chains.
+
+    Returns
+    -------
+    tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+        A tuple containing:
+        - linker_map: tensor of shape (batch_size, sequence_length) where 0 indicates
+          linker positions and 1 indicates chain positions.
+        - residue_index: tensor of shape (batch_size, sequence_length) containing
+          residue indices that restart at 1 for each chain.
+        - chain_index: tensor of shape (batch_size, sequence_length) containing
+          chain indices (0, 1, 2, etc.).
     """
     linker_map = []
     residue_index = []
@@ -96,5 +98,5 @@ def store_multimer_properties(_sequences: List[str], glycine_linker: str):
     )
 
 
-def replace_glycine_linkers(sequences: List[str], glycine_linker: str) -> List[str]:
+def replace_glycine_linkers(sequences: list[str], glycine_linker: str) -> list[str]:
     return [multimer_seq.replace(":", glycine_linker) for multimer_seq in sequences]

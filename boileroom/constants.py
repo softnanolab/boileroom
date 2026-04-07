@@ -1,6 +1,4 @@
-from typing import Dict
-
-restype_1to3: Dict[str, str] = {
+restype_1to3: dict[str, str] = {
     "A": "ALA",
     "R": "ARG",
     "N": "ASN",
@@ -28,4 +26,4 @@ restype_1to3: Dict[str, str] = {
 # 1-to-1 mapping of 3 letter names to one letter names. The latter contains
 # many more, and less common, three letter names as keys and maps many of these
 # to the same one letter name (including 'X' and 'U' which we don't use here).
-restype_3to1: Dict[str, str] = {v: k for k, v in restype_1to3.items()}
+restype_3to1: dict[str, str] = {v: k for k, v in restype_1to3.items()}

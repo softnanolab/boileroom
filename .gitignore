@@ -8,3 +8,9 @@ __pycache__/
 .model_cache/
 .venv/
 dist/
+.cursor/
+.claude/
+script.py
+
+
+docker.io*.log
