@@ -38,6 +38,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--all-cuda", action="store_true", help="Validate all supported CUDA variants canonically.")
     parser.add_argument("--pull", action="store_true", help="Pull images before running checks.")
+    parser.add_argument("--cleanup", action="store_true", help="Remove each image after checking to free disk space.")
     parser.add_argument("--timeout", type=float, default=30.0, help="Seconds to wait for each container health check.")
     return parser.parse_args()
 
@@ -80,7 +81,27 @@ def _wait_for_health(port: int, timeout: float) -> None:
     raise RuntimeError(f"Timed out waiting for {url}: {last_error}")
 
 
-def check_server_health(image_key: str, image_reference: str, pull: bool, timeout: float) -> None:
+def _remove_image(image_reference: str) -> None:
+    """Remove a Docker image to free disk space."""
+    result = subprocess.run(
+        ["docker", "rmi", "--force", image_reference],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if result.returncode != 0:
+        err = (result.stderr or "").strip()
+        print(f"WARNING: failed to remove image {image_reference}: {err}", file=sys.stderr)
+
+
+def check_server_health(
+    image_key: str,
+    image_reference: str,
+    pull: bool,
+    timeout: float,
+    cleanup: bool = False,
+) -> None:
     """Run the server /health smoke test for one image."""
     print(f"Checking server health for {image_key} ({image_reference})")
 
@@ -146,6 +167,9 @@ def check_server_health(image_key: str, image_reference: str, pull: bool, timeou
             stderr=subprocess.DEVNULL,
         )
 
+    if cleanup:
+        _remove_image(image_reference)
+
 
 def main() -> None:
     """Run the server health-smoke workflow."""
@@ -157,7 +181,7 @@ def main() -> None:
         raise SystemExit("No image targets matched the requested CUDA selection.")
 
     for image_key, image_reference, _display_tag, _env_path, _core_path in targets:
-        check_server_health(image_key, image_reference, args.pull, args.timeout)
+        check_server_health(image_key, image_reference, args.pull, args.timeout, args.cleanup)
 
     print(f"All server health checks succeeded for tag selection: {normalize_requested_tag(args.tag)}")
 

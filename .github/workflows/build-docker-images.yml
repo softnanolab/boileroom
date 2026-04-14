@@ -56,21 +56,25 @@ jobs:
         run: |
           uv run python ./scripts/images/build_model_images.py --all-cuda --tag=${{ steps.validation_tag.outputs.value }} --platform=linux/amd64 --push
 
+      - name: Free disk space after build
+        run: |
+          docker builder prune --all --force
+
       - name: Verify canonical validation image imports
         run: |
-          uv run python ./scripts/images/check_model_imports.py --all-cuda --tag=${{ steps.validation_tag.outputs.value }} --pull
+          uv run python ./scripts/images/check_model_imports.py --all-cuda --tag=${{ steps.validation_tag.outputs.value }} --pull --cleanup
 
       - name: Verify canonical validation image server health
         run: |
-          uv run python ./scripts/images/check_model_server_health.py --all-cuda --tag=${{ steps.validation_tag.outputs.value }} --pull
+          uv run python ./scripts/images/check_model_server_health.py --all-cuda --tag=${{ steps.validation_tag.outputs.value }} --pull --cleanup
 
       - name: Verify validation alias image imports
         run: |
-          uv run python ./scripts/images/check_model_imports.py --tag=${{ steps.validation_tag.outputs.value }} --pull
+          uv run python ./scripts/images/check_model_imports.py --tag=${{ steps.validation_tag.outputs.value }} --pull --cleanup
 
       - name: Verify validation alias image server health
         run: |
-          uv run python ./scripts/images/check_model_server_health.py --tag=${{ steps.validation_tag.outputs.value }} --pull
+          uv run python ./scripts/images/check_model_server_health.py --tag=${{ steps.validation_tag.outputs.value }} --pull --cleanup
 
       - name: Promote validated images to version tag
         run: |
