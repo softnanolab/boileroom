@@ -61,9 +61,11 @@ def _remove_image(image_reference: str) -> None:
         check=False,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
+        text=True,
     )
     if result.returncode != 0:
-        print(f"WARNING: failed to remove image {image_reference}: {result.stderr.decode().strip()}", file=sys.stderr)
+        err = (result.stderr or "").strip()
+        print(f"WARNING: failed to remove image {image_reference}: {err}", file=sys.stderr)
 
 
 def check_image(
