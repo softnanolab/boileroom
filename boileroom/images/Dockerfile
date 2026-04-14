@@ -18,7 +18,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 USER ${MAMBA_USER}
 
-RUN micromamba install -y -c conda-forge python=3.12 pip pyyaml \
+RUN micromamba install -y -c conda-forge python=3.12 pip \
     && python -m pip install --upgrade pip
 
 ENV MODEL_DIR=/mnt/models
