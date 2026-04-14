@@ -37,7 +37,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--all-cuda", action="store_true", help="Validate all supported CUDA variants canonically.")
     parser.add_argument("--pull", action="store_true", help="Pull images before running checks.")
+    parser.add_argument("--cleanup", action="store_true", help="Remove each image after checking to free disk space.")
     return parser.parse_args()
+
 
 def ensure_docker() -> None:
     """Ensure Docker is available."""
@@ -52,12 +54,25 @@ def ensure_docker() -> None:
         raise RuntimeError("Docker is required but was not found on PATH.") from exc
 
 
+def _remove_image(image_reference: str) -> None:
+    """Remove a Docker image to free disk space."""
+    result = subprocess.run(
+        ["docker", "rmi", "--force", image_reference],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+    )
+    if result.returncode != 0:
+        print(f"WARNING: failed to remove image {image_reference}: {result.stderr.decode().strip()}", file=sys.stderr)
+
+
 def check_image(
     image_key: str,
     image_reference: str,
     env_path: Path,
     core_path: Path,
     pull: bool,
+    cleanup: bool = False,
 ) -> None:
     """Run the import smoke test for one image."""
     print(f"Checking imports for {image_key} ({image_reference})")
@@ -154,6 +169,9 @@ for dep in deps:
         check=True,
     )
 
+    if cleanup:
+        _remove_image(image_reference)
+
 
 def main() -> None:
     """Run the import smoke workflow."""
@@ -165,7 +183,7 @@ def main() -> None:
         raise SystemExit("No image targets matched the requested CUDA selection.")
 
     for image_key, image_reference, _display_tag, env_path, core_path in targets:
-        check_image(image_key, image_reference, env_path, core_path, args.pull)
+        check_image(image_key, image_reference, env_path, core_path, args.pull, args.cleanup)
 
     print(f"All module imports succeeded for tag selection: {normalize_requested_tag(args.tag)}")
 
