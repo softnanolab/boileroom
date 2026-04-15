@@ -11,6 +11,5 @@ from .metadata import format_image_reference, get_modal_image_tag, get_model_ima
 def get_modal_image(identifier: str) -> Image:
     """Return a Modal image sourced from the published Docker image for a model."""
     spec = get_model_image_spec(identifier)
-    image_tag = get_modal_image_tag()
-    image = Image.from_registry(format_image_reference(spec.image_name, image_tag))
-    return image.env(render_modal_runtime_env(spec, MODAL_MODEL_DIR, image_tag=image_tag))
+    image = Image.from_registry(format_image_reference(spec.image_name, get_modal_image_tag()))
+    return image.env(render_modal_runtime_env(spec, MODAL_MODEL_DIR))
