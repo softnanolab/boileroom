@@ -1,12 +1,14 @@
 ## Boileroom Docker images
 
 ### What exists today
-- **base**: `boileroom/images/Dockerfile` → CUDA-enabled micromamba base with Python 3.12. Tag: `docker.io/jakublala/boileroom-base`.
-- **boltz**: `boileroom/models/boltz/Dockerfile` → copies `environment.yml` and installs the Boltz env. Tag: `docker.io/jakublala/boileroom-boltz`.
-- **chai1**: `boileroom/models/chai/Dockerfile` → copies `environment.yml`, installs chai-specific deps, sets HF env vars. Tag: `docker.io/jakublala/boileroom-chai1`.
-- **esm**: `boileroom/models/esm/Dockerfile` → copies `environment.yml` shared by esm2/esmfold. Tag: `docker.io/jakublala/boileroom-esm`.
+- **base**: `boileroom/images/Dockerfile` → CUDA-enabled micromamba base with Python 3.12. Tag: `${BOILEROOM_DOCKER_REGISTRY}/boileroom-base`.
+  - The shared entrypoint uses Tini with `TINI_SUBREAPER=1` so child processes are re-parented correctly when Tini is not PID 1.
+- **boltz**: `boileroom/models/boltz/Dockerfile` → copies `environment.yml` and installs the Boltz env. Tag: `${BOILEROOM_DOCKER_REGISTRY}/boileroom-boltz`.
+- **chai1**: `boileroom/models/chai/Dockerfile` → copies `environment.yml`, installs chai-specific deps, sets HF env vars. Tag: `${BOILEROOM_DOCKER_REGISTRY}/boileroom-chai1`.
+- **esm**: `boileroom/models/esm/Dockerfile` → copies `environment.yml` shared by esm2/esmfold. Tag: `${BOILEROOM_DOCKER_REGISTRY}/boileroom-esm`.
 
 Dockerfiles are the canonical image definition for all runtimes. Docker/Apptainer images are built from these Dockerfiles, and Modal pulls the corresponding published model image from Docker Hub instead of maintaining a separate handwritten dependency stack.
+The default registry namespace is compiled into `boileroom.images.metadata` and can be overridden with `BOILEROOM_DOCKER_REGISTRY`.
 
 ### Tag scheme
 - Canonical published tags are CUDA-qualified, for example `cuda12.6-0.3.0`, `cuda11.8-0.3.0`, or `cuda12.6-sha-abc1234`.
@@ -24,9 +26,12 @@ uv run python scripts/images/build_model_images.py --cuda-version=12.6 --platfor
 uv run python scripts/images/build_model_images.py --no-cache ...
 uv run python scripts/images/build_model_images.py --all-cuda --tag=0.3.0 --push ...
 uv run python scripts/images/build_model_images.py --cuda-version=12.6 --tag=sha-$(git rev-parse --short HEAD) --push ...
+uv run python scripts/images/build_model_images.py --cuda-version=12.6 --tag=0.3.0 --push --skip-existing ...
+uv run python scripts/images/build_model_images.py --cuda-version=12.6 --tag=0.3.0 --push --plain-progress ...
 ```
 
 Single-platform non-push builds auto-load into the local Docker daemon. Multi-platform builds should generally be paired with `--push`.
+When pushing, plain buildx logs are available only when `--plain-progress` is set; otherwise the script keeps the terminal quiet and writes per-image log files.
 
 ### 🔖 Tag policy
 - Docker Hub is kept clean for users. The long-lived public tags are version tags such as `0.3.0` and the corresponding CUDA-qualified tags such as `cuda12.6-0.3.0` and `cuda11.8-0.3.0`.
@@ -67,7 +72,7 @@ The GitHub Actions workflow (`.github/workflows/build-docker-images.yml`) runs t
 ```bash
 docker build \
   --platform linux/amd64 \
-  -t docker.io/jakublala/boileroom-base:local \
+  -t "${BOILEROOM_DOCKER_REGISTRY}/boileroom-base:local" \
   -f boileroom/images/Dockerfile \
   boileroom/images
 ```
@@ -76,8 +81,8 @@ docker build \
 ```bash
 docker build \
   --platform linux/amd64 \
-  --build-arg BASE_IMAGE=docker.io/jakublala/boileroom-base:local \
-  -t docker.io/jakublala/boileroom-boltz:local \
+  --build-arg BASE_IMAGE="${BOILEROOM_DOCKER_REGISTRY}/boileroom-base:local" \
+  -t "${BOILEROOM_DOCKER_REGISTRY}/boileroom-boltz:local" \
   -f boileroom/models/boltz/Dockerfile \
   boileroom/models/boltz
 ```
@@ -86,8 +91,8 @@ docker build \
 ```bash
 docker build \
   --platform linux/amd64 \
-  --build-arg BASE_IMAGE=docker.io/jakublala/boileroom-base:local \
-  -t docker.io/jakublala/boileroom-chai1:local \
+  --build-arg BASE_IMAGE="${BOILEROOM_DOCKER_REGISTRY}/boileroom-base:local" \
+  -t "${BOILEROOM_DOCKER_REGISTRY}/boileroom-chai1:local" \
   -f boileroom/models/chai/Dockerfile \
   boileroom/models/chai
 ```
@@ -96,8 +101,8 @@ docker build \
 ```bash
 docker build \
   --platform linux/amd64 \
-  --build-arg BASE_IMAGE=docker.io/jakublala/boileroom-base:local \
-  -t docker.io/jakublala/boileroom-esm:local \
+  --build-arg BASE_IMAGE="${BOILEROOM_DOCKER_REGISTRY}/boileroom-base:local" \
+  -t "${BOILEROOM_DOCKER_REGISTRY}/boileroom-esm:local" \
   -f boileroom/models/esm/Dockerfile \
   boileroom/models/esm
 ```
@@ -128,25 +133,25 @@ If your cluster uses Apptainer/Singularity for job execution, you can convert th
 1) Directly from the registry (simplest):
 ```bash
 # Version-matched aliases on the default CUDA line
-apptainer pull base.sif  docker://docker.io/jakublala/boileroom-base:0.3.0
-apptainer pull chai1.sif docker://docker.io/jakublala/boileroom-chai1:0.3.0
+apptainer pull base.sif  "docker://${BOILEROOM_DOCKER_REGISTRY}/boileroom-base:0.3.0"
+apptainer pull chai1.sif "docker://${BOILEROOM_DOCKER_REGISTRY}/boileroom-chai1:0.3.0"
 
 # Explicit CUDA-qualified tags
-apptainer pull chai1-cu118.sif docker://docker.io/jakublala/boileroom-chai1:cuda11.8-0.3.0
-apptainer pull chai1-cu126.sif docker://docker.io/jakublala/boileroom-chai1:cuda12.6-0.3.0
+apptainer pull chai1-cu118.sif "docker://${BOILEROOM_DOCKER_REGISTRY}/boileroom-chai1:cuda11.8-0.3.0"
+apptainer pull chai1-cu126.sif "docker://${BOILEROOM_DOCKER_REGISTRY}/boileroom-chai1:cuda12.6-0.3.0"
 
 # If the repository is private, authenticate first to Docker Hub:
 # This will prompt for your Docker Hub credentials if needed.
 apptainer remote login docker://docker.io
-apptainer pull base.sif  docker://docker.io/jakublala/boileroom-base:0.3.0
-apptainer pull chai1.sif docker://docker.io/jakublala/boileroom-chai1:0.3.0
+apptainer pull base.sif  "docker://${BOILEROOM_DOCKER_REGISTRY}/boileroom-base:0.3.0"
+apptainer pull chai1.sif "docker://${BOILEROOM_DOCKER_REGISTRY}/boileroom-chai1:0.3.0"
 ```
 
 2) From a local Docker image (no registry pull on the cluster) (🚨 **THIS HAS NOT BEEN TESTED, AND IS NOT RECOMMENDED** 🚨):
 ```bash
 # On a build machine (e.g., your workstation):
-docker pull docker.io/jakublala/boileroom-chai1:cuda12.6-0.3.0
-docker save --format oci-archive -o chai1-oci.tar docker.io/jakublala/boileroom-chai1:cuda12.6-0.3.0
+docker pull "${BOILEROOM_DOCKER_REGISTRY}/boileroom-chai1:cuda12.6-0.3.0"
+docker save --format oci-archive -o chai1-oci.tar "${BOILEROOM_DOCKER_REGISTRY}/boileroom-chai1:cuda12.6-0.3.0"
 
 # Transfer chai1-oci.tar to the cluster, then:
 apptainer build chai1.sif oci-archive://chai1-oci.tar
@@ -166,7 +171,7 @@ Docker example:
 docker run --rm \
   -e MODEL_DIR=/data/models \
   -v /data/models:/data/models \
-  docker.io/jakublala/boileroom-chai1:0.3.0 python -c "import os; print(os.getenv('MODEL_DIR'))"
+  "${BOILEROOM_DOCKER_REGISTRY}/boileroom-chai1:0.3.0" python -c "import os; print(os.getenv('MODEL_DIR'))"
 ```
 
 Apptainer examples:
@@ -182,7 +187,7 @@ apptainer exec --env MODEL_DIR=/scratch/weights -B /scratch/weights:/scratch/wei
 ### 🧩 Add your own image
 1) Create a `Dockerfile` under `boileroom/models/<your_image>/Dockerfile` that starts FROM the local base image:
 ```Dockerfile
-ARG BASE_IMAGE=docker.io/jakublala/boileroom-base:local
+ARG BASE_IMAGE=boileroom-base:local
 FROM ${BASE_IMAGE}
 ```
 2) Build it locally (adjust path and tag):
