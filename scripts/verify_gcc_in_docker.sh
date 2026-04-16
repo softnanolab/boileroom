@@ -10,8 +10,9 @@ from pathlib import Path
 print(tomllib.loads(Path('pyproject.toml').read_text(encoding='utf-8'))['project']['version'])
 PY
 )"
+DOCKER_REGISTRY="$(uv run python -c 'from boileroom.images.metadata import get_docker_registry; print(get_docker_registry())')"
 IMAGE_TAG="${BOILEROOM_IMAGE_TAG:-cuda12.6-${DEFAULT_VERSION}}"
-IMAGE_NAME="docker.io/jakublala/boileroom-boltz:${IMAGE_TAG}"
+IMAGE_NAME="${DOCKER_REGISTRY}/boileroom-boltz:${IMAGE_TAG}"
 
 echo "=========================================="
 echo "Verifying GCC in Boltz-2 Docker Image"
@@ -58,7 +59,7 @@ EOF
 
 echo ""
 echo "6. Checking base image (boileroom-base:${IMAGE_TAG})..."
-BASE_IMAGE="docker.io/jakublala/boileroom-base:${IMAGE_TAG}"
+BASE_IMAGE="${DOCKER_REGISTRY}/boileroom-base:${IMAGE_TAG}"
 if docker run --rm "$BASE_IMAGE" which gcc > /dev/null 2>&1; then
     echo "   ✓ Base image also has GCC"
     docker run --rm "$BASE_IMAGE" gcc --version | head -1

@@ -10,8 +10,9 @@ from pathlib import Path
 print(tomllib.loads(Path('pyproject.toml').read_text(encoding='utf-8'))['project']['version'])
 PY
 )"
+DOCKER_REGISTRY="$(uv run python -c 'from boileroom.images.metadata import get_docker_registry; print(get_docker_registry())')"
 IMAGE_TAG="${BOILEROOM_IMAGE_TAG:-cuda12.6-${DEFAULT_VERSION}}"
-IMAGE_URI="docker://docker.io/jakublala/boileroom-boltz:${IMAGE_TAG}"
+IMAGE_URI="docker://${DOCKER_REGISTRY}/boileroom-boltz:${IMAGE_TAG}"
 CACHE_DIR="${HOME}/.cache/boileroom/images"
 SIF_NAME="boltz_${IMAGE_TAG}.sif"
 SIF_PATH="${CACHE_DIR}/${SIF_NAME}"

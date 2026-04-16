@@ -10,9 +10,10 @@ from pathlib import Path
 print(tomllib.loads(Path('pyproject.toml').read_text(encoding='utf-8'))['project']['version'])
 PY
 )"
+DOCKER_REGISTRY="$(uv run python -c 'from boileroom.images.metadata import get_docker_registry; print(get_docker_registry())')"
 IMAGE_TAG="${BOILEROOM_IMAGE_TAG:-cuda12.6-${DEFAULT_VERSION}}"
-MODEL_IMAGE="docker.io/jakublala/boileroom-boltz:${IMAGE_TAG}"
-BASE_IMAGE="docker.io/jakublala/boileroom-base:${IMAGE_TAG}"
+MODEL_IMAGE="${DOCKER_REGISTRY}/boileroom-boltz:${IMAGE_TAG}"
+BASE_IMAGE="${DOCKER_REGISTRY}/boileroom-base:${IMAGE_TAG}"
 
 echo "=========================================="
 echo "GCC Verification Summary for Boltz-2"
