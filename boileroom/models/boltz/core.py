@@ -8,7 +8,7 @@ import logging
 import os
 import shutil
 from collections.abc import Iterator, Sequence
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, ClassVar, cast
@@ -351,7 +351,7 @@ class Boltz2Core(FoldingAlgorithm):
                 index = cast(dict[str, dict[str, Any]], index)
                 cached_paths: dict[str, Path] = {}
                 index_updated = False
-                now = datetime.utcnow().isoformat()
+                now = datetime.now(timezone.utc).isoformat()
 
                 for sequence in sequences:
                     seq_hash = self._get_sequence_hash(sequence)
@@ -434,7 +434,7 @@ class Boltz2Core(FoldingAlgorithm):
             # Update index under lock so concurrent writers cannot clobber entries.
             with self._locked_msa_cache_index() as index:
                 index = cast(dict[str, dict[str, Any]], index)
-                now = datetime.utcnow().isoformat()
+                now = datetime.now(timezone.utc).isoformat()
                 relative_path = f"{seq_hash[:2]}/{seq_hash[2:4]}/{seq_hash}.csv"
                 index[seq_hash] = {
                     "msa_path": relative_path,

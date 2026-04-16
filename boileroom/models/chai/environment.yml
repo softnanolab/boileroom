@@ -15,3 +15,5 @@ dependencies:
     - fastapi
     - uvicorn
     - pydantic
+    # pydantic imports typing_extensions.Sentinel, which is missing from older releases.
+    - typing_extensions>=4.15.0

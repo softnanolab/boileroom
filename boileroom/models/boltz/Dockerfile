@@ -4,7 +4,7 @@ ARG TARGETARCH
 ARG TARGETOS
 ARG BUILDPLATFORM
 
-ARG BASE_IMAGE=docker.io/jakublala/boileroom-base:local
+ARG BASE_IMAGE=boileroom-base:local
 FROM ${BASE_IMAGE}
 
 ARG ENV_FILE=environment.yml

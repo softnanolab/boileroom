@@ -104,7 +104,7 @@ def _get_cached_sif_path(image_uri: str, cache_dir: Path) -> Path:
     Parameters
     ----------
     image_uri : str
-        Docker URI (e.g., 'docker://docker.io/jakublala/boileroom-chai:0.3.0').
+        Docker URI (e.g., 'docker://docker.io/example/boileroom-chai:0.3.0').
     cache_dir : Path
         Base cache directory.
 
@@ -114,7 +114,7 @@ def _get_cached_sif_path(image_uri: str, cache_dir: Path) -> Path:
         Path to cached .sif file.
     """
     # Extract image name from URI
-    # docker://docker.io/jakublala/boileroom-chai:0.3.0 -> boileroom-chai_0.3.0.sif
+    # docker://docker.io/example/boileroom-chai:0.3.0 -> boileroom-chai_0.3.0.sif
     parsed = urlparse(image_uri.replace("docker://", "https://"))
     image_name = parsed.path.lstrip("/").replace("/", "-").replace(":", "_")
     if not image_name.endswith(".sif"):
@@ -261,7 +261,7 @@ def _pull_image(image_uri: str, sif_path: Path, log_file: Path | None = None) ->
     Parameters
     ----------
     image_uri : str
-        Docker URI to pull (e.g., 'docker://docker.io/jakublala/boileroom-chai:0.3.0').
+        Docker URI to pull (e.g., 'docker://docker.io/example/boileroom-chai:0.3.0').
     sif_path : Path
         Path where .sif file should be saved.
     log_file : Path | None
@@ -348,7 +348,7 @@ class ApptainerBackend(Backend):
             Full module path to the Core class (e.g., 'boileroom.models.esm.esm2.ESM2Core').
             This is passed as a string to avoid importing the class in the main process.
         image_uri : str
-            Docker URI for the container image (e.g., 'docker://docker.io/jakublala/boileroom-chai:0.3.0').
+            Docker URI for the container image (e.g., 'docker://docker.io/example/boileroom-chai:0.3.0').
         config : dict | None
             Optional configuration mapping for the model.
         device : str | None

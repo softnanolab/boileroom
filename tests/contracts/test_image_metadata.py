@@ -6,12 +6,19 @@ import pytest
 
 from boileroom.images.import_checks import compute_cuda_versions, iter_image_targets, package_name_to_import_name
 from boileroom.images.metadata import (
+    DEFAULT_DOCKER_REGISTRY,
+    DOCKER_REGISTRY_ENV,
+    MODAL_BASE_IMAGE_REF_ENV,
+    MODAL_IMAGE_TAG_ENV,
     format_image_reference,
     get_default_image_tag,
+    get_docker_registry,
+    get_modal_base_image_reference,
     get_modal_image_tag,
     get_model_image_spec,
     get_supported_cuda,
     published_tags,
+    render_modal_runtime_env,
     resolve_registry_tag,
 )
 
@@ -45,16 +52,52 @@ def test_model_specs_report_supported_cuda_from_config() -> None:
     assert get_supported_cuda(get_model_image_spec("esm")) == ("11.8", "12.6")
 
 
+def test_docker_registry_uses_compiled_default(monkeypatch) -> None:
+    """Registry lookup should fall back to the canonical compiled default."""
+    monkeypatch.delenv(DOCKER_REGISTRY_ENV, raising=False)
+    assert get_docker_registry() == "docker.io/jakublala"
+    assert DEFAULT_DOCKER_REGISTRY == "docker.io/jakublala"
+
+
+def test_docker_registry_uses_env_override(monkeypatch) -> None:
+    """Registry lookup should respect and normalize the environment override."""
+    monkeypatch.setenv(DOCKER_REGISTRY_ENV, " docker.io/example/ ")
+    assert get_docker_registry() == "docker.io/example"
+
+
 def test_modal_tag_uses_env_override(monkeypatch) -> None:
     """Modal image lookups should respect an optional tag override."""
-    monkeypatch.delenv("BOILEROOM_MODAL_IMAGE_TAG", raising=False)
+    monkeypatch.delenv(MODAL_IMAGE_TAG_ENV, raising=False)
     assert get_modal_image_tag() == get_default_image_tag()
 
-    monkeypatch.setenv("BOILEROOM_MODAL_IMAGE_TAG", "0.3.0")
+    monkeypatch.setenv(MODAL_IMAGE_TAG_ENV, "0.3.0")
     assert get_modal_image_tag() == "0.3.0"
 
-    monkeypatch.setenv("BOILEROOM_MODAL_IMAGE_TAG", "cuda12.6")
+    monkeypatch.setenv(MODAL_IMAGE_TAG_ENV, "cuda12.6")
     assert get_modal_image_tag() == f"cuda12.6-{get_default_image_tag()}"
+
+
+def test_modal_base_image_reference_uses_env_override(monkeypatch) -> None:
+    """Modal base image lookups should respect an optional image reference override."""
+    monkeypatch.setenv(MODAL_BASE_IMAGE_REF_ENV, "docker.io/example/custom-base:1.2.3")
+    assert get_modal_base_image_reference() == "docker.io/example/custom-base:1.2.3"
+
+
+def test_modal_base_image_reference_uses_default_registry(monkeypatch) -> None:
+    """Modal base image lookup should default through the shared image reference formatter."""
+    monkeypatch.delenv(MODAL_BASE_IMAGE_REF_ENV, raising=False)
+    monkeypatch.setenv(MODAL_IMAGE_TAG_ENV, "0.3.0")
+    assert get_modal_base_image_reference() == "docker.io/jakublala/boileroom-base:0.3.0"
+
+
+def test_modal_runtime_env_includes_image_tag(monkeypatch) -> None:
+    """Model Modal images should receive the tag override inside their container env."""
+    monkeypatch.setenv(MODAL_IMAGE_TAG_ENV, "sha-test")
+    assert render_modal_runtime_env(get_model_image_spec("chai"), "/models") == {
+        "MODEL_DIR": "/models",
+        MODAL_IMAGE_TAG_ENV: "sha-test",
+        "CHAI_DOWNLOADS_DIR": "/models/chai",
+    }
 
 
 def test_format_image_reference_uses_central_namespace() -> None:
