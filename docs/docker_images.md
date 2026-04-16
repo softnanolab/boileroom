@@ -27,6 +27,7 @@ uv run python scripts/images/build_model_images.py --cuda-version=12.6 --tag=sha
 ```
 
 Single-platform non-push builds auto-load into the local Docker daemon. Multi-platform builds should generally be paired with `--push`.
+Pushed buildx builds import and export stable per-image registry caches such as `boileroom-chai1:buildcache-cuda12.6`, so GitHub Actions runners can reuse dependency layers across validation tags and releases. Pass `--no-cache` to bypass those caches.
 
 ### 🔖 Tag policy
 - Docker Hub is kept clean for users. The long-lived public tags are version tags such as `0.3.0` and the corresponding CUDA-qualified tags such as `cuda12.6-0.3.0` and `cuda11.8-0.3.0`.
@@ -119,7 +120,7 @@ GitHub Actions at `.github/workflows/build-docker-images.yml` now drives the rel
 - The promoted Docker tags therefore track the Python package version declared in `pyproject.toml`, even though PyPI publication is handled separately.
 - Each successful run publishes canonical CUDA-qualified tags and the unqualified version alias for the default `12.6` line.
 - The official release path currently publishes `linux/amd64` only. If you want to experiment with additional architectures, pass an explicit multi-platform `--platform` value and validate it separately before treating it as supported.
-- Future merges inherit the cache layers thanks to BuildKit, keeping CI times reasonable.
+- Future merges inherit dependency cache layers through BuildKit registry caches, keeping CI times reasonable even on fresh GitHub-hosted runners.
 - PyPI is not published by this workflow. Python package publication happens later from the GitHub release workflow, so Docker Hub can be used as the earlier staged release channel.
 
 ### 🧱 Convert Docker images to Apptainer (SIF)
