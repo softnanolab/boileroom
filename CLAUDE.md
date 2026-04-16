@@ -47,10 +47,11 @@
 - Temporary validation tags such as `sha-<commit>` are allowed and should be deleted after use.
 
 ## Release Flow
-- Merging to `main` publishes Docker Hub images for the current `project.version`.
-- The workflow first publishes a temporary `sha-<commit>` tag, verifies it, then promotes it to the package version tag.
-- PyPI publication is separate and happens from the GitHub release workflow.
-- Changing `project.version` changes both package release semantics and the public Docker tags.
+- Merging to `main` publishes Docker Hub images for an automatically derived `0.3.x` version.
+- The workflow first publishes a temporary `sha-<commit>` tag, verifies it, then promotes it to `0.3.x` tags.
+- The `0.3.x` patch component is derived from commits after the configured CI baseline and grows with each main-branch commit.
+- PyPI publication is separate and happens from the GitHub release workflow, which injects the `0.3.x` release tag into `pyproject.toml` before building.
+- Changing `project.version` changes package release semantics, but Docker image tags are derived by CI.
 
 ## Apptainer Notes
 - Apptainer images are pulled from Docker Hub and cached as `.sif` files.

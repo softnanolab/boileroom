@@ -20,6 +20,10 @@ jobs:
           curl -LsSf https://astral.sh/uv/install.sh | sh
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
 
+      - name: Apply release version
+        run: |
+          uv run python ./scripts/ci/derive_version.py --release-tag "${GITHUB_REF_NAME}" --write-pyproject pyproject.toml
+
       - name: Build and publish to PyPI
         run: |
           uv build --no-sources

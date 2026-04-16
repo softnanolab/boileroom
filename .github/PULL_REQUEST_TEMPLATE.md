@@ -15,4 +15,3 @@ Describe how you tested these changes.
 - [ ] Tests pass (`uv run pytest -n 4`)
 - [ ] Linting passes (`pre-commit run --all-files`)
 - [ ] Documentation updated (if needed)
-- [ ] Version bumped (if needed)
