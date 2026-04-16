@@ -19,6 +19,7 @@ from boileroom.images.metadata import (  # noqa: E402
     BASE_IMAGE_SPEC,
     CUDA_MICROMAMBA_BASE,
     CUDA_TORCH_WHEEL_INDEX,
+    DOCKER_REGISTRY,
     MODEL_IMAGE_SPECS,
     RuntimeImageSpec,
     get_supported_cuda,
@@ -71,6 +72,34 @@ def log_warn(message: str) -> None:
 
 def log_error(message: str) -> None:
     print(Colors.wrap(message, Colors.red), file=sys.stderr)
+
+
+def build_cache_reference(image_name: str, cuda_version: str) -> str:
+    """Return the stable registry cache reference for a build output."""
+    return f"{DOCKER_REGISTRY}/{image_name}:buildcache-cuda{cuda_version}"
+
+
+def append_registry_cache_args(
+    cmd: list[str],
+    image_name: str,
+    cuda_version: str,
+    *,
+    push: bool,
+    no_cache: bool,
+) -> None:
+    """Add BuildKit registry cache flags for pushed buildx builds."""
+    if not push or no_cache:
+        return
+
+    cache_reference = build_cache_reference(image_name, cuda_version)
+    cmd.extend(
+        [
+            "--cache-from",
+            f"type=registry,ref={cache_reference}",
+            "--cache-to",
+            f"type=registry,ref={cache_reference},mode=max",
+        ]
+    )
 
 
 def run(cmd: list[str], log_file: Path | None = None, echo: bool = True) -> None:
@@ -286,6 +315,13 @@ def build_base(
             "--build-arg",
             f"MICROMAMBA_BASE={micromamba_base}",
         ]
+        append_registry_cache_args(
+            cmd,
+            BASE_IMAGE_SPEC.image_name,
+            cuda_version,
+            push=output_flag == "--push",
+            no_cache=no_cache,
+        )
     for image_reference in image_references:
         cmd.extend(["-t", image_reference])
     cmd.extend(["-f", str(BASE_IMAGE_SPEC.dockerfile_path), str(BASE_IMAGE_SPEC.context_path)])
@@ -336,6 +372,13 @@ def build_model(
             "--build-arg",
             f"TORCH_WHEEL_INDEX={CUDA_TORCH_WHEEL_INDEX[task.cuda_version]}",
         ]
+        append_registry_cache_args(
+            cmd,
+            task.image_spec.image_name,
+            task.cuda_version,
+            push=output_flag == "--push",
+            no_cache=no_cache,
+        )
     for image_reference in image_references:
         cmd.extend(["-t", image_reference])
     cmd.extend(["-f", str(task.image_spec.dockerfile_path), str(task.image_spec.context_path)])
