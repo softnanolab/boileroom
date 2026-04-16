@@ -41,7 +41,7 @@ jobs:
             --cuda-version=12.6 \
             --tag=arm64-ci \
             --platform=linux/arm64 \
-            --max-workers=1
+            --max-workers=3
 
       - name: Run ARM64 import smoke
         run: |
