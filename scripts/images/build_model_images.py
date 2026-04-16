@@ -198,6 +198,16 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--push", action="store_true", help="Push built images to Docker Hub.")
     parser.add_argument(
+        "--skip-existing",
+        action="store_true",
+        help="Skip build and push steps when all published tags for an image already exist on Docker Hub.",
+    )
+    parser.add_argument(
+        "--plain-progress",
+        action="store_true",
+        help="Stream plain buildx progress output to the terminal while building and pushing.",
+    )
+    parser.add_argument(
         "--load",
         action="store_true",
         help="Load single-platform builds into the local Docker daemon. Incompatible with --push and multi-platform builds.",
@@ -248,6 +258,27 @@ def should_use_local_docker_build(push: bool, platform: str) -> bool:
     return not push and "," not in platform
 
 
+def docker_manifest_exists(image_reference: str) -> bool:
+    """Return whether a Docker image reference is already published."""
+    result = subprocess.run(
+        ["docker", "manifest", "inspect", image_reference],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode == 0:
+        return True
+    detail = (result.stderr or result.stdout).strip()
+    suffix = f": {detail}" if detail else "."
+    log_warn(f"Could not confirm Docker manifest exists for {image_reference}{suffix}")
+    return False
+
+
+def all_image_references_exist(image_references: tuple[str, ...]) -> bool:
+    """Return whether every published tag for an image already exists remotely."""
+    return all(docker_manifest_exists(reference) for reference in image_references)
+
+
 def build_base(
     cuda_version: str,
     tag: str,
@@ -255,6 +286,8 @@ def build_base(
     output_flag: str | None,
     no_cache: bool,
     use_local_docker_build: bool,
+    skip_existing: bool,
+    plain_progress: bool,
 ) -> str:
     """Build the shared base image and return its canonical reference."""
     image_references = published_image_references(BASE_IMAGE_SPEC.image_name, cuda_version, tag)
@@ -266,6 +299,10 @@ def build_base(
     log_info(f"Using micromamba base: {micromamba_base}")
     log_info(f"Publishing tags: {', '.join(image_references)}")
 
+    if skip_existing and not use_local_docker_build and all_image_references_exist(image_references):
+        log_info("Skipping base build; all published tags already exist on Docker Hub.")
+        return canonical_reference
+
     log_file = Path.cwd() / f"{canonical_reference.replace('/', '_').replace(':', '_')}.log"
     if use_local_docker_build:
         cmd = [
@@ -286,6 +323,8 @@ def build_base(
             "--build-arg",
             f"MICROMAMBA_BASE={micromamba_base}",
         ]
+        if plain_progress:
+            cmd.insert(5, "--progress=plain")
     for image_reference in image_references:
         cmd.extend(["-t", image_reference])
     cmd.extend(["-f", str(BASE_IMAGE_SPEC.dockerfile_path), str(BASE_IMAGE_SPEC.context_path)])
@@ -294,7 +333,7 @@ def build_base(
     if not use_local_docker_build and output_flag is not None:
         cmd.append(output_flag)
 
-    run(cmd, log_file=log_file, echo=False)
+    run(cmd, log_file=log_file, echo=plain_progress)
     return canonical_reference
 
 
@@ -304,6 +343,8 @@ def build_model(
     output_flag: str | None,
     no_cache: bool,
     use_local_docker_build: bool,
+    skip_existing: bool,
+    plain_progress: bool,
 ) -> tuple[str, ...]:
     """Build a single model image and return all published references."""
     image_references = published_image_references(task.image_spec.image_name, task.cuda_version, task.tag)
@@ -311,6 +352,10 @@ def build_model(
 
     log_info(Colors.wrap(f"--- Building {task.image_spec.key} for CUDA {task.cuda_version}: {canonical_reference}", Colors.bold))
     log_info(f"Publishing tags: {', '.join(image_references)}")
+
+    if skip_existing and not use_local_docker_build and all_image_references_exist(image_references):
+        log_info("Skipping model build; all published tags already exist on Docker Hub.")
+        return image_references
 
     log_file = Path.cwd() / f"{canonical_reference.replace('/', '_').replace(':', '_')}.log"
     if use_local_docker_build:
@@ -336,6 +381,8 @@ def build_model(
             "--build-arg",
             f"TORCH_WHEEL_INDEX={CUDA_TORCH_WHEEL_INDEX[task.cuda_version]}",
         ]
+        if plain_progress:
+            cmd.insert(5, "--progress=plain")
     for image_reference in image_references:
         cmd.extend(["-t", image_reference])
     cmd.extend(["-f", str(task.image_spec.dockerfile_path), str(task.image_spec.context_path)])
@@ -344,7 +391,7 @@ def build_model(
     if not use_local_docker_build and output_flag is not None:
         cmd.append(output_flag)
 
-    run(cmd, log_file=log_file, echo=False)
+    run(cmd, log_file=log_file, echo=plain_progress)
     return image_references
 
 
@@ -389,6 +436,8 @@ def main() -> None:
                 output_flag,
                 args.no_cache,
                 use_local_docker_build,
+                args.skip_existing,
+                args.plain_progress,
             )
         except Exception as exc:
             log_error(f"Failed to build base image for CUDA {cuda_version}: {exc}")
@@ -419,7 +468,15 @@ def main() -> None:
         for task in tasks:
             try:
                 built_references.extend(
-                    build_model(task, args.platform, output_flag, args.no_cache, use_local_docker_build)
+                    build_model(
+                        task,
+                        args.platform,
+                        output_flag,
+                        args.no_cache,
+                        use_local_docker_build,
+                        args.skip_existing,
+                        args.plain_progress,
+                    )
                 )
             except Exception as exc:
                 log_error(f"Failed to build {task.image_spec.image_name} for CUDA {task.cuda_version}: {exc}")
@@ -435,6 +492,8 @@ def main() -> None:
                     output_flag,
                     args.no_cache,
                     use_local_docker_build,
+                    args.skip_existing,
+                    args.plain_progress,
                 ): task
                 for task in tasks
             }
