@@ -16,6 +16,15 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate release ref
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "This publishing workflow only derives release versions from main."
+            exit 1
+          fi
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -40,13 +49,10 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Determine Boileroom version
-        id: project_version
+      - name: Determine Boileroom release version
+        id: release_version
         run: |
-          VERSION=$(
-            uv run python -c "import pathlib, tomllib; pyproject = pathlib.Path('pyproject.toml').read_text(encoding='utf-8'); data = tomllib.loads(pyproject); print(data['project']['version'], end='')"
-          )
-          echo "value=$VERSION" >> "$GITHUB_OUTPUT"
+          uv run python ./scripts/ci/derive_version.py --github-output "$GITHUB_OUTPUT"
 
       - name: Determine validation tag
         id: validation_tag
@@ -78,4 +84,4 @@ jobs:
 
       - name: Promote validated images to version tag
         run: |
-          uv run python ./scripts/images/promote_image_tags.py --all-cuda --source-tag=${{ steps.validation_tag.outputs.value }} --target-tag=${{ steps.project_version.outputs.value }}
+          uv run python ./scripts/images/promote_image_tags.py --all-cuda --source-tag=${{ steps.validation_tag.outputs.value }} --target-tag=${{ steps.release_version.outputs.pep440 }}

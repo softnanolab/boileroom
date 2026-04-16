@@ -114,13 +114,13 @@ This publishes:
 
 ### 📦 CI publishing (production)
 GitHub Actions at `.github/workflows/build-docker-images.yml` now drives the release pipeline:
-- Triggers automatically on pushes to `main` and can also be run manually via **Run workflow**.
-- Builds a temporary `sha-<commit>` validation tag, verifies that exact pushed artifact, and only then promotes it to the current `project.version` from `pyproject.toml`.
-- The promoted Docker tags therefore track the Python package version declared in `pyproject.toml`, even though PyPI publication is handled separately.
+- Triggers automatically on pushes to `main` and can also be run manually via **Run workflow** from `main`.
+- Builds a temporary `sha-<commit>` validation tag, verifies that exact pushed artifact, and only then promotes it to an automatically derived `0.3.x` version from `scripts/ci/derive_version.py`.
+- The `0.3.x` patch component is the number of commits after the configured main-line baseline, so it increases with every new commit on `main`.
 - Each successful run publishes canonical CUDA-qualified tags and the unqualified version alias for the default `12.6` line.
 - The official release path currently publishes `linux/amd64` only. If you want to experiment with additional architectures, pass an explicit multi-platform `--platform` value and validate it separately before treating it as supported.
-- Future merges inherit the cache layers thanks to BuildKit, keeping CI times reasonable.
-- PyPI is not published by this workflow. Python package publication happens later from the GitHub release workflow, so Docker Hub can be used as the earlier staged release channel.
+- Future merges inherit dependency cache layers through BuildKit registry caches, keeping CI times reasonable even on fresh GitHub-hosted runners.
+- PyPI is not published by this workflow. Python package publication happens later from the GitHub release workflow, which injects the `0.3.x` release tag into `pyproject.toml` before building.
 
 ### 🧱 Convert Docker images to Apptainer (SIF)
 If your cluster uses Apptainer/Singularity for job execution, you can convert the Docker images to a `.sif` image in two common ways:
