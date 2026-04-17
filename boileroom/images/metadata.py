@@ -175,7 +175,13 @@ def get_docker_repository() -> str:
         return DEFAULT_DOCKER_REPOSITORY
 
     repository = override.strip()
-    if not repository.startswith("docker.io/") or repository.endswith("/"):
+    if (
+        re.fullmatch(
+            r"docker\.io/(?:[a-z0-9]+(?:[._-][a-z0-9]+)*)(?:/(?:[a-z0-9]+(?:[._-][a-z0-9]+)*))*",
+            repository,
+        )
+        is None
+    ):
         raise ValueError(f"{DOCKER_REPOSITORY_ENV} must use the form 'docker.io/<repository>'.")
     return repository
 

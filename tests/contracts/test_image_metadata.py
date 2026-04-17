@@ -97,6 +97,22 @@ def test_docker_repository_rejects_partial_or_non_docker_io_override(monkeypatch
         get_docker_repository()
 
 
+@pytest.mark.parametrize(
+    ("override", "label"),
+    [
+        ("docker.io/Example", "uppercase"),
+        ("docker.io/example repo", "spaces"),
+        ("docker.io/example//repo", "double slash"),
+        ("docker.io/example/", "trailing slash"),
+    ],
+)
+def test_docker_repository_rejects_malformed_docker_io_override(monkeypatch, override: str, label: str) -> None:
+    """Repository overrides should reject malformed Docker Hub namespaces."""
+    monkeypatch.setenv("BOILEROOM_DOCKER_REPOSITORY", override)
+    with pytest.raises(ValueError, match="BOILEROOM_DOCKER_REPOSITORY"):
+        get_docker_repository()
+
+
 def test_format_image_reference_uses_central_namespace() -> None:
     """All runtime image references should use the central Docker namespace."""
     assert format_image_reference("boileroom-boltz", None) == (
