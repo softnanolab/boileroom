@@ -22,6 +22,7 @@ RUN micromamba install -y -c conda-forge python=3.12 pip \
     && python -m pip install --upgrade pip
 
 ENV MODEL_DIR=/mnt/models
+ENV TINI_SUBREAPER=1
 ENV PATH=/opt/conda/bin:${PATH}
 
 ENTRYPOINT ["/usr/bin/tini", "--"]
