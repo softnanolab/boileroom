@@ -18,4 +18,5 @@ ENV PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 RUN micromamba env update -n base -f /tmp/environment.yml \
     && micromamba clean --all --yes \
+    && rm -rf "${HOME}/.cache/pip" \
     && rm /tmp/environment.yml

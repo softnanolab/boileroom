@@ -9,7 +9,7 @@ dependencies:
   - pip:
     - torch>=2.5.1,<2.7.0
     - pytorch-lightning
-    - boltz==2.1.1
+    - boltz==2.2.1
     - biotite>=1.0.1
     - fastapi
     - uvicorn

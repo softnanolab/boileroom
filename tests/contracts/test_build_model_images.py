@@ -75,12 +75,40 @@ def test_parse_args_exposes_skip_controls(monkeypatch) -> None:
             "build_model_images.py",
             "--skip-existing",
             "--force-rebuild",
+            "--verbose",
         ],
     )
 
     args = build_model_images.parse_args()
     assert args.skip_existing is True
     assert args.force_rebuild is True
+    assert args.verbose is True
+
+
+def test_build_base_verbose_echoes_plain_progress(monkeypatch, tmp_path) -> None:
+    """Verbose builds should print command output and request plain BuildKit progress."""
+    calls: list[tuple[list[str], Path | None, bool]] = []
+
+    def fake_run(cmd: list[str], log_file: Path | None = None, echo: bool = True) -> None:
+        calls.append((cmd, log_file, echo))
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(build_model_images, "run", fake_run)
+
+    build_model_images.build_base(
+        "12.6",
+        "sha-test",
+        "linux/amd64",
+        "--load",
+        no_cache=False,
+        use_local_docker_build=False,
+        verbose=True,
+    )
+
+    cmd, log_file, echo = calls[0]
+    assert cmd[cmd.index("--progress") : cmd.index("--progress") + 2] == ["--progress", "plain"]
+    assert log_file is not None
+    assert echo is True
 
 
 def test_main_skips_existing_base_and_model_tags(monkeypatch, tmp_path) -> None:
@@ -93,6 +121,7 @@ def test_main_skips_existing_base_and_model_tags(monkeypatch, tmp_path) -> None:
         push=False,
         load=False,
         no_cache=False,
+        verbose=False,
         skip_existing=True,
         force_rebuild=False,
         max_workers=1,
