@@ -108,29 +108,35 @@ import sys
 from pathlib import Path
 
 env_yml = Path({str(env_path)!r})
+requirements_txt = env_yml.with_name('requirements.txt')
 core_file = Path({str(core_path)!r})
 import_name_overrides = {IMPORT_NAME_OVERRIDES!r}
 
 deps = []
-in_pip_section = False
-with env_yml.open(encoding="utf-8") as handle:
+requirements_files = [requirements_txt] if requirements_txt.exists() else [env_yml]
+for requirements_file in requirements_files:
+    in_pip_section = requirements_file.suffix in {{'.txt', '.in'}}
+    handle = requirements_file.open(encoding="utf-8")
     for line in handle:
         stripped = line.strip()
         if stripped == '- pip:' or stripped == 'pip:':
             in_pip_section = True
             continue
-        if in_pip_section:
+        if not in_pip_section:
+            continue
+        if requirements_file == env_yml:
             if not stripped or (not line.startswith(' ') and not line.startswith('\\t')):
                 in_pip_section = False
                 if not stripped:
                     continue
                 break
-            if stripped.startswith('#'):
-                continue
-            pkg_name = re.split(r'[>=<!=]', stripped.lstrip('- '))[0].strip()
-            import_name = import_name_overrides.get(pkg_name, pkg_name.replace('-', '_'))
-            if import_name:
-                deps.append(import_name)
+        if not stripped or stripped.startswith('#'):
+            continue
+        pkg_name = re.split(r'[>=<!=;\\[]', stripped.lstrip('- '))[0].strip()
+        import_name = import_name_overrides.get(pkg_name, pkg_name.replace('-', '_'))
+        if import_name:
+            deps.append(import_name)
+    handle.close()
 
 deps.append('numpy')
 
