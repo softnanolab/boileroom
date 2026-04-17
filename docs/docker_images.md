@@ -27,6 +27,20 @@ uv run python scripts/images/build_model_images.py --cuda-version=12.6 --tag=sha
 ```
 
 Single-platform non-push builds auto-load into the local Docker daemon. Multi-platform builds should generally be paired with `--push`.
+Pushed buildx builds import and export stable per-image registry caches such as `boileroom-chai1:buildcache-cuda12.6`, so GitHub Actions runners can reuse dependency layers across validation tags and releases. Pass `--no-cache` to bypass those caches.
+
+### ARM64 smoke workflow
+The `.github/workflows/arm64-image-smoke.yml` workflow runs on an `ubuntu-24.04-arm` runner, builds the image set for `linux/arm64` with the `arm64-ci` tag, and then runs the import and server-health smoke checks. It is informational and does not push images.
+
+To reproduce the same path locally on an ARM64 machine, run:
+
+```bash
+uv run python scripts/images/build_model_images.py --cuda-version=12.6 --tag=arm64-ci --platform=linux/arm64 --max-workers=3
+uv run python scripts/images/check_model_imports.py --cuda-version=12.6 --tag=arm64-ci
+uv run python scripts/images/check_model_server_health.py --cuda-version=12.6 --tag=arm64-ci
+```
+
+The build helper also supports `--skip-existing` and `--force-rebuild` for registry-aware rebuilds.
 
 ### 🔖 Tag policy
 - Docker Hub is kept clean for users. The long-lived public tags are version tags such as `0.3.0` and the corresponding CUDA-qualified tags such as `cuda12.6-0.3.0` and `cuda11.8-0.3.0`.
@@ -45,12 +59,6 @@ export BOILEROOM_MODAL_IMAGE_TAG="$TAG"
 ```
 
 Because `12.6` is the default CUDA line, publishing `--tag="$TAG"` also creates the explicit `cuda12.6-$TAG` tag alongside the unqualified alias.
-
-You can still use the Bash wrapper if you prefer:
-```bash
-chmod +x scripts/images/build_model_images.sh
-scripts/images/build_model_images.sh --cuda-version=12.6 --platform=linux/amd64
-```
 
 ### ✅ Import smoke tests
 Run the lightweight smoke script to ensure each image can import its expected modules:

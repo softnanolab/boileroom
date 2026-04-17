@@ -19,6 +19,7 @@ from boileroom.images.metadata import (  # noqa: E402
     BASE_IMAGE_SPEC,
     CUDA_MICROMAMBA_BASE,
     CUDA_TORCH_WHEEL_INDEX,
+    DOCKER_REGISTRY,
     MODEL_IMAGE_SPECS,
     RuntimeImageSpec,
     get_supported_cuda,
@@ -71,6 +72,34 @@ def log_warn(message: str) -> None:
 
 def log_error(message: str) -> None:
     print(Colors.wrap(message, Colors.red), file=sys.stderr)
+
+
+def build_cache_reference(image_name: str, cuda_version: str) -> str:
+    """Return the stable registry cache reference for a build output."""
+    return f"{DOCKER_REGISTRY}/{image_name}:buildcache-cuda{cuda_version}"
+
+
+def append_registry_cache_args(
+    cmd: list[str],
+    image_name: str,
+    cuda_version: str,
+    *,
+    push: bool,
+    no_cache: bool,
+) -> None:
+    """Add BuildKit registry cache flags for pushed buildx builds."""
+    if not push or no_cache:
+        return
+
+    cache_reference = build_cache_reference(image_name, cuda_version)
+    cmd.extend(
+        [
+            "--cache-from",
+            f"type=registry,ref={cache_reference}",
+            "--cache-to",
+            f"type=registry,ref={cache_reference},mode=max",
+        ]
+    )
 
 
 def run(cmd: list[str], log_file: Path | None = None, echo: bool = True) -> None:
@@ -203,6 +232,16 @@ def parse_args() -> argparse.Namespace:
         help="Load single-platform builds into the local Docker daemon. Incompatible with --push and multi-platform builds.",
     )
     parser.add_argument("--no-cache", action="store_true", help="Disable Docker build cache.")
+    parser.add_argument(
+        "--skip-existing",
+        action="store_true",
+        help="Skip a build when the canonical image tag already exists in Docker Hub.",
+    )
+    parser.add_argument(
+        "--force-rebuild",
+        action="store_true",
+        help="Ignore --skip-existing and rebuild even when matching tags already exist.",
+    )
     parser.add_argument("--max-workers", type=int, default=1, help="Maximum concurrent model-image builds.")
     return parser.parse_args()
 
@@ -241,6 +280,17 @@ def resolve_output_flag(push: bool, load: bool, platform: str) -> str | None:
     if multi_platform:
         return None
     return "--load"
+
+
+def image_reference_exists(image_reference: str) -> bool:
+    """Return whether a Docker image reference already exists in the registry."""
+    result = subprocess.run(
+        ["docker", "manifest", "inspect", image_reference],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    return result.returncode == 0
 
 
 def should_use_local_docker_build(push: bool, platform: str) -> bool:
@@ -286,6 +336,13 @@ def build_base(
             "--build-arg",
             f"MICROMAMBA_BASE={micromamba_base}",
         ]
+        append_registry_cache_args(
+            cmd,
+            BASE_IMAGE_SPEC.image_name,
+            cuda_version,
+            push=output_flag == "--push",
+            no_cache=no_cache,
+        )
     for image_reference in image_references:
         cmd.extend(["-t", image_reference])
     cmd.extend(["-f", str(BASE_IMAGE_SPEC.dockerfile_path), str(BASE_IMAGE_SPEC.context_path)])
@@ -336,6 +393,13 @@ def build_model(
             "--build-arg",
             f"TORCH_WHEEL_INDEX={CUDA_TORCH_WHEEL_INDEX[task.cuda_version]}",
         ]
+        append_registry_cache_args(
+            cmd,
+            task.image_spec.image_name,
+            task.cuda_version,
+            push=output_flag == "--push",
+            no_cache=no_cache,
+        )
     for image_reference in image_references:
         cmd.extend(["-t", image_reference])
     cmd.extend(["-f", str(task.image_spec.dockerfile_path), str(task.image_spec.context_path)])
@@ -376,25 +440,35 @@ def main() -> None:
     log_info(f"Model images: {', '.join(spec.image_name for spec in MODEL_IMAGE_SPECS)}")
     log_info(f"CUDA versions: {', '.join(cuda_versions)}")
     log_info(f"Platforms: {args.platform}")
+    if args.force_rebuild and args.skip_existing:
+        log_info("Ignoring --skip-existing because --force-rebuild was set.")
 
-    built_references: list[str] = []
+    published_references: list[str] = []
     tasks: list[BuildTask] = []
 
     for cuda_version in cuda_versions:
         try:
-            base_reference = build_base(
-                cuda_version,
-                tag,
-                args.platform,
-                output_flag,
-                args.no_cache,
-                use_local_docker_build,
-            )
+            target_base_reference = published_image_references(BASE_IMAGE_SPEC.image_name, cuda_version, tag)[0]
+            if args.skip_existing and not args.force_rebuild and image_reference_exists(target_base_reference):
+                log_info(
+                    f"Skipping base build for CUDA {cuda_version}; existing tag already present: "
+                    f"{target_base_reference}"
+                )
+                base_reference = target_base_reference
+            else:
+                base_reference = build_base(
+                    cuda_version,
+                    tag,
+                    args.platform,
+                    output_flag,
+                    args.no_cache,
+                    use_local_docker_build,
+                )
         except Exception as exc:
             log_error(f"Failed to build base image for CUDA {cuda_version}: {exc}")
             raise SystemExit(1) from exc
 
-        built_references.append(base_reference)
+        published_references.append(base_reference)
 
         for image_spec in MODEL_IMAGE_SPECS:
             supported_cuda = get_supported_cuda(image_spec)
@@ -403,6 +477,14 @@ def main() -> None:
                     f"Skipping {image_spec.image_name} for CUDA {cuda_version} "
                     f"(supported CUDA variants: {', '.join(supported_cuda)})"
                 )
+                continue
+            target_reference = published_image_references(image_spec.image_name, cuda_version, tag)[0]
+            if args.skip_existing and not args.force_rebuild and image_reference_exists(target_reference):
+                log_info(
+                    f"Skipping {image_spec.image_name} for CUDA {cuda_version}; existing tag already present: "
+                    f"{target_reference}"
+                )
+                published_references.append(target_reference)
                 continue
             tasks.append(
                 BuildTask(
@@ -418,7 +500,7 @@ def main() -> None:
     elif args.max_workers <= 1 or len(tasks) == 1:
         for task in tasks:
             try:
-                built_references.extend(
+                published_references.extend(
                     build_model(task, args.platform, output_flag, args.no_cache, use_local_docker_build)
                 )
             except Exception as exc:
@@ -441,7 +523,7 @@ def main() -> None:
             for future in as_completed(future_map):
                 task = future_map[future]
                 try:
-                    built_references.extend(future.result())
+                    published_references.extend(future.result())
                 except Exception as exc:
                     log_error(f"Failed to build {task.image_spec.image_name} for CUDA {task.cuda_version}: {exc}")
                     executor.shutdown(wait=False, cancel_futures=True)
@@ -451,7 +533,7 @@ def main() -> None:
 
     log_success("")
     log_success("=== Build complete ===")
-    for image_reference in built_references:
+    for image_reference in published_references:
         print(f"  {image_reference}")
 
 
