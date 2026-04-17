@@ -60,7 +60,7 @@ jobs:
 
       - name: Build and push validation images
         run: |
-          uv run python ./scripts/images/build_model_images.py --all-cuda --tag=${{ steps.validation_tag.outputs.value }} --platform=linux/amd64 --push
+          uv run python ./scripts/images/build_model_images.py --all-cuda --tag=${{ steps.validation_tag.outputs.value }} --platform=linux/amd64 --push --verbose --max-workers=3
 
       - name: Free disk space after build
         run: |
