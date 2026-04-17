@@ -34,6 +34,13 @@ export BOILEROOM_DOCKER_REPOSITORY=docker.io/my-dockerhub-user
 
 The same variable is used by Modal and Apptainer image lookups, so pytest runs that import Modal wrappers will pull from the same repository override. `BOILEROOM_MODAL_IMAGE_TAG` still controls only the tag.
 
+For Modal pytest runs against images in a custom namespace, set both values:
+
+```bash
+export BOILEROOM_DOCKER_REPOSITORY=docker.io/my-dockerhub-user
+export BOILEROOM_MODAL_IMAGE_TAG=0.3.0
+```
+
 Single-platform non-push builds auto-load into the local Docker daemon. Multi-platform builds should generally be paired with `--push`.
 Pushed buildx builds import and export stable per-image registry caches such as `boileroom-chai1:buildcache-cuda12.6`, so GitHub Actions runners can reuse dependency layers across validation tags and releases. Pass `--no-cache` to bypass those caches.
 

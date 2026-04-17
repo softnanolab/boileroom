@@ -245,7 +245,13 @@ def get_supported_cuda(spec: RuntimeImageSpec) -> tuple[str, ...]:
 
 def render_modal_runtime_env(spec: RuntimeImageSpec, model_dir: str) -> dict[str, str]:
     """Render runtime environment overrides for Modal."""
-    env = {"MODEL_DIR": model_dir}
+    env = {
+        "MODEL_DIR": model_dir,
+        DOCKER_REPOSITORY_ENV: get_docker_repository(),
+        MODAL_IMAGE_TAG_ENV: get_modal_image_tag(),
+    }
+    if (override := os.environ.get(MODAL_BASE_IMAGE_REF_ENV)) and (normalized := override.strip()):
+        env[MODAL_BASE_IMAGE_REF_ENV] = normalized
     for key, value in spec.modal_runtime_env:
         env[key] = value.replace("{MODEL_DIR}", model_dir)
     return env
