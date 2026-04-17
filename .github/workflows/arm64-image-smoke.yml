@@ -14,10 +14,9 @@ concurrency: arm64-image-smoke-${{ github.ref }}
 
 jobs:
   arm64-image-smoke:
-    name: ARM64 Image Smoke (informational)
+    name: ARM64 Image Smoke
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 180
-    continue-on-error: true
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -41,7 +40,8 @@ jobs:
             --cuda-version=12.6 \
             --tag=arm64-ci \
             --platform=linux/arm64 \
-            --max-workers=3
+            --max-workers=3 \
+            --verbose
 
       - name: Run ARM64 import smoke
         run: |
