@@ -1,5 +1,7 @@
 """Fast contract tests for Docker image build helpers."""
 
+import sys
+from argparse import Namespace
 from pathlib import Path
 
 from scripts.images import build_model_images
@@ -54,3 +56,85 @@ def test_build_base_no_cache_disables_registry_cache(monkeypatch, tmp_path) -> N
     assert "--no-cache" in cmd
     assert "--cache-from" not in cmd
     assert "--cache-to" not in cmd
+
+
+def test_parse_args_exposes_skip_controls(monkeypatch) -> None:
+    """The build helper should accept the documented skip flags."""
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "build_model_images.py",
+            "--skip-existing",
+            "--force-rebuild",
+        ],
+    )
+
+    args = build_model_images.parse_args()
+    assert args.skip_existing is True
+    assert args.force_rebuild is True
+
+
+def test_main_skips_existing_base_and_model_tags(monkeypatch, tmp_path) -> None:
+    """The main build flow should skip existing tags when skip-existing is set."""
+    args = Namespace(
+        tag="sha-test",
+        cuda_versions=["12.6"],
+        all_cuda=False,
+        platform="linux/amd64",
+        push=False,
+        load=False,
+        no_cache=False,
+        skip_existing=True,
+        force_rebuild=False,
+        max_workers=1,
+    )
+
+    built_tasks: list[tuple[str, str]] = []
+    checked_refs: list[str] = []
+    built_bases: list[str] = []
+
+    def fake_parse_args() -> Namespace:
+        return args
+
+    def fake_ensure_docker() -> None:
+        return None
+
+    def fake_image_reference_exists(image_reference: str) -> bool:
+        checked_refs.append(image_reference)
+        return image_reference.endswith("boileroom-base:cuda12.6-sha-test") or image_reference.endswith(
+            "boileroom-boltz:cuda12.6-sha-test"
+        )
+
+    def fake_build_base(cuda_version: str, tag: str, *_args, **_kwargs) -> str:
+        built_bases.append(f"{cuda_version}:{tag}")
+        return f"docker.io/jakublala/boileroom-base:cuda{cuda_version}-{tag}"
+
+    def fake_build_model(task, *_args, **_kwargs):
+        built_tasks.append((task.image_spec.image_name, task.base_image_reference))
+        return (f"{task.image_spec.image_name}:built",)
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(build_model_images, "parse_args", fake_parse_args)
+    monkeypatch.setattr(build_model_images, "ensure_docker", fake_ensure_docker)
+    monkeypatch.setattr(build_model_images, "ensure_buildx_builder", lambda: None)
+    monkeypatch.setattr(build_model_images, "image_reference_exists", fake_image_reference_exists)
+    monkeypatch.setattr(build_model_images, "build_base", fake_build_base)
+    monkeypatch.setattr(build_model_images, "build_model", fake_build_model)
+    monkeypatch.setattr(build_model_images, "log_info", lambda *args, **kwargs: None)
+    monkeypatch.setattr(build_model_images, "log_warn", lambda *args, **kwargs: None)
+    monkeypatch.setattr(build_model_images, "log_success", lambda *args, **kwargs: None)
+
+    build_model_images.main()
+
+    assert built_bases == []
+    assert built_tasks == [
+        ("boileroom-chai1", "docker.io/jakublala/boileroom-base:cuda12.6-sha-test"),
+        ("boileroom-esm", "docker.io/jakublala/boileroom-base:cuda12.6-sha-test"),
+    ]
+    assert checked_refs == [
+        "docker.io/jakublala/boileroom-base:cuda12.6-sha-test",
+        "docker.io/jakublala/boileroom-boltz:cuda12.6-sha-test",
+        "docker.io/jakublala/boileroom-chai1:cuda12.6-sha-test",
+        "docker.io/jakublala/boileroom-esm:cuda12.6-sha-test",
+    ]

@@ -29,29 +29,18 @@ uv run python scripts/images/build_model_images.py --cuda-version=12.6 --tag=sha
 Single-platform non-push builds auto-load into the local Docker daemon. Multi-platform builds should generally be paired with `--push`.
 Pushed buildx builds import and export stable per-image registry caches such as `boileroom-chai1:buildcache-cuda12.6`, so GitHub Actions runners can reuse dependency layers across validation tags and releases. Pass `--no-cache` to bypass those caches.
 
-### ARM64 CI image reuse
-The ARM64 smoke workflow publishes private CI images to Docker Hub using `-ci` image names, for example `boileroom-base-ci`, `boileroom-boltz-ci`, `boileroom-chai1-ci`, and `boileroom-esm-ci`. These CI images are separate from the public runtime images.
+### ARM64 smoke workflow
+The `.github/workflows/arm64-image-smoke.yml` workflow runs on an `ubuntu-24.04-arm` runner, builds the image set for `linux/arm64` with the `arm64-ci` tag, and then runs the import and server-health smoke checks. It is informational and does not push images.
 
-The workflow computes content tags from the files that affect each Docker build:
-
-- **base**: `boileroom/images/Dockerfile`, `boileroom/images/.dockerignore`, image metadata, and the image build script.
-- **boltz**: the base inputs plus `boileroom/models/boltz/Dockerfile`, `.dockerignore`, `environment.yml`, and `config.yaml`.
-- **chai1**: the base inputs plus `boileroom/models/chai/Dockerfile`, `.dockerignore`, `environment.yml`, and `config.yaml`.
-- **esm**: the base inputs plus `boileroom/models/esm/Dockerfile`, `.dockerignore`, `environment.yml`, and `config.yaml`.
-
-Each job calls `build_model_images.py --skip-existing`, so PR image builds are skipped when the matching content tag already exists in Docker Hub. Pushes to `main` force rebuilds to refresh the CI images after merge. Use the workflow dispatch `force_rebuild` input, or pass `--force-rebuild` locally, to rebuild even when a matching CI tag exists.
-
-Model jobs use `--skip-base --base-tag=<base tag>` and run as a matrix after the base job, so Boltz, Chai, and ESM can build in parallel while still sharing the exact same base image.
-
-To test the CI image path locally without pushing, run:
+To reproduce the same path locally on an ARM64 machine, run:
 
 ```bash
-scripts/images/build_arm64_ci_images_local.sh --smoke
+uv run python scripts/images/build_model_images.py --cuda-version=12.6 --tag=arm64-ci --platform=linux/arm64 --max-workers=3
+uv run python scripts/images/check_model_imports.py --cuda-version=12.6 --tag=arm64-ci
+uv run python scripts/images/check_model_server_health.py --cuda-version=12.6 --tag=arm64-ci
 ```
 
-This builds `linux/arm64` images with the `-ci` image-name suffix and a local `arm64-ci-local` tag under the `boileroom-local` image namespace, loads them into the local Docker daemon, and runs the same import and server-health smoke checks. Add `--model boltz`, `--model chai`, or `--model esm` to test one model image. The script passes `--force-rebuild` by default; add `--no-force` to use Docker's normal local cache.
-
-To force the remote workflow before merging, run the **ARM64 Image Smoke** workflow manually from your branch and set `force_rebuild` to `true`. PR runs reuse matching Docker Hub CI images when they exist; pushes to `main` force rebuild automatically.
+The build helper also supports `--skip-existing` and `--force-rebuild` for registry-aware rebuilds.
 
 ### 🔖 Tag policy
 - Docker Hub is kept clean for users. The long-lived public tags are version tags such as `0.3.0` and the corresponding CUDA-qualified tags such as `cuda12.6-0.3.0` and `cuda11.8-0.3.0`.
