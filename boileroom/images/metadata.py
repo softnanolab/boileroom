@@ -11,12 +11,13 @@ from functools import cache
 from pathlib import Path
 from typing import Final
 
-import yaml
-
-DOCKER_REGISTRY: Final = "docker.io/jakublala"
+DEFAULT_DOCKER_REPOSITORY: Final = "docker.io/jakublala"
+DOCKER_REGISTRY: Final = DEFAULT_DOCKER_REPOSITORY
 PACKAGE_NAME: Final = "boileroom"
 DEFAULT_CUDA_VERSION: Final = "12.6"
+DOCKER_REPOSITORY_ENV: Final = "BOILEROOM_DOCKER_REPOSITORY"
 MODAL_IMAGE_TAG_ENV: Final = "BOILEROOM_MODAL_IMAGE_TAG"
+MODAL_BASE_IMAGE_REF_ENV: Final = "BOILEROOM_MODAL_BASE_IMAGE"
 
 CUDA_MICROMAMBA_BASE: Final[dict[str, str]] = {
     "11.8": "mambaorg/micromamba:2.4-cuda11.8.0-ubuntu22.04",
@@ -167,22 +168,44 @@ def published_tags(cuda_version: str, tag: str | None) -> tuple[str, ...]:
     return tuple(tags)
 
 
+def get_docker_repository() -> str:
+    """Return the Docker repository namespace for published runtime images."""
+    override = os.environ.get(DOCKER_REPOSITORY_ENV)
+    if override is None or not override.strip():
+        return DEFAULT_DOCKER_REPOSITORY
+
+    repository = override.strip()
+    if not repository.startswith("docker.io/") or repository.endswith("/"):
+        raise ValueError(f"{DOCKER_REPOSITORY_ENV} must use the form 'docker.io/<repository>'.")
+    return repository
+
+
 def format_image_reference(image_name: str, tag: str | None = None) -> str:
     """Return a fully qualified Docker image reference."""
     resolved_tag = resolve_registry_tag(tag)
-    return f"{DOCKER_REGISTRY}/{image_name}:{resolved_tag}"
+    return f"{get_docker_repository()}/{image_name}:{resolved_tag}"
 
 
 def published_image_references(image_name: str, cuda_version: str, tag: str | None) -> tuple[str, ...]:
     """Return all published references for a built image."""
     return tuple(
-        f"{DOCKER_REGISTRY}/{image_name}:{published_tag}" for published_tag in published_tags(cuda_version, tag)
+        f"{get_docker_repository()}/{image_name}:{published_tag}" for published_tag in published_tags(cuda_version, tag)
     )
 
 
 def get_modal_image_tag() -> str:
     """Return the tag Modal should pull from the registry."""
     return resolve_registry_tag(os.environ.get(MODAL_IMAGE_TAG_ENV))
+
+
+def get_modal_base_image_reference() -> str:
+    """Return the base image Modal should use for the shared runtime layer."""
+    override = os.environ.get(MODAL_BASE_IMAGE_REF_ENV)
+    if override:
+        normalized = override.strip()
+        if normalized:
+            return normalized
+    return format_image_reference(BASE_IMAGE_SPEC.image_name, get_modal_image_tag())
 
 
 def get_model_image_spec(identifier: str) -> RuntimeImageSpec:
@@ -203,6 +226,8 @@ def get_supported_cuda(spec: RuntimeImageSpec) -> tuple[str, ...]:
     config_path = get_repo_root() / spec.config_relative_path
     if not config_path.exists():
         return tuple(sorted(CUDA_MICROMAMBA_BASE))
+
+    import yaml
 
     config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
     raw_supported_cuda = config.get("supported_cuda", [])

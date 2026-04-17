@@ -19,9 +19,9 @@ from boileroom.images.metadata import (  # noqa: E402
     BASE_IMAGE_SPEC,
     CUDA_MICROMAMBA_BASE,
     CUDA_TORCH_WHEEL_INDEX,
-    DOCKER_REGISTRY,
     MODEL_IMAGE_SPECS,
     RuntimeImageSpec,
+    get_docker_repository,
     get_supported_cuda,
     normalize_cuda_version,
     normalize_requested_tag,
@@ -76,7 +76,7 @@ def log_error(message: str) -> None:
 
 def build_cache_reference(image_name: str, cuda_version: str) -> str:
     """Return the stable registry cache reference for a build output."""
-    return f"{DOCKER_REGISTRY}/{image_name}:buildcache-cuda{cuda_version}"
+    return f"{get_docker_repository()}/{image_name}:buildcache-cuda{cuda_version}"
 
 
 def append_registry_cache_args(
@@ -437,6 +437,7 @@ def main() -> None:
         )
 
     log_info(Colors.wrap(f"Boileroom repo root: {REPO_ROOT}", Colors.magenta))
+    log_info(f"Docker repository: {get_docker_repository()}")
     log_info(f"Model images: {', '.join(spec.image_name for spec in MODEL_IMAGE_SPECS)}")
     log_info(f"CUDA versions: {', '.join(cuda_versions)}")
     log_info(f"Platforms: {args.platform}")

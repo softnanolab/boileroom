@@ -58,6 +58,14 @@ def test_build_base_no_cache_disables_registry_cache(monkeypatch, tmp_path) -> N
     assert "--cache-to" not in cmd
 
 
+def test_build_cache_reference_uses_repository_env(monkeypatch) -> None:
+    """Build cache tags should follow the same repository override as image tags."""
+    monkeypatch.setenv("BOILEROOM_DOCKER_REPOSITORY", "docker.io/example")
+    assert build_model_images.build_cache_reference("boileroom-base", "12.6") == (
+        "docker.io/example/boileroom-base:buildcache-cuda12.6"
+    )
+
+
 def test_parse_args_exposes_skip_controls(monkeypatch) -> None:
     """The build helper should accept the documented skip flags."""
     monkeypatch.setattr(
