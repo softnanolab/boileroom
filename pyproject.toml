@@ -9,6 +9,7 @@ name = "boileroom"
 version = "0.3.0"
 authors = [
     { name="Jakub Lála", email="jakublala@gmail.com" },
+    { name="Michael Krása", email="michael.krasa@gmail.com" },
 ]
 description = "Protein prediction models with Modal"
 readme = "README.md"
