@@ -58,6 +58,17 @@
 - The backend binds the repo source tree read-only plus `MODEL_DIR`.
 - Model-specific subdirectories under `MODEL_DIR` are derived automatically where needed.
 
+## Branch and PR Conventions
+- Branch names use `<type>/<short-description>` in kebab-case, e.g. `feat/profam`, `fix/ci-disk-space`, `chore/add-author`.
+  - Allowed types: `feat`, `fix`, `chore`, `docs`, `refactor`, `ci`, `test`.
+- Commit messages and PR titles follow [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/): `<type>: <lowercase description>`. No trailing period. Keep under 70 characters.
+- Commits should be atomic: one meaningful change per commit.
+- One feature per PR. Do not combine unrelated changes.
+- Create a draft PR immediately when opening a new branch. Convert to ready when it is ready for review.
+- Squash-and-merge into `main`. Delete the branch after merge.
+- Never push directly to `main`. All changes go through a reviewed PR.
+- All existing tests must pass before a PR is merged.
+
 ## Contributor Notes
 - `AGENTS.md` is a symlink to this file.
 - Keep this file concise. Put long-form implementation walkthroughs in `docs/` or Bagel docs instead of expanding always-loaded agent context.
