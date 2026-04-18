@@ -2,17 +2,51 @@ name: Build and Push Boileroom Images
 
 on:
   push:
-    branches: [ main ]
+    branches:
+      - main
   workflow_dispatch:
+    inputs:
+      promote:
+        description: Promote validated images to the derived release version. Only allowed from main.
+        required: true
+        type: boolean
+        default: false
+      docker_repository:
+        description: Docker repository namespace for manual runs, for example docker.io/my-dockerhub-user.
+        required: true
+        type: string
+        default: docker.io/jakublala
+      dockerhub_username:
+        description: Docker Hub username for manual runs.
+        required: true
+        type: string
+        default: jakublala
+      dockerhub_token_secret:
+        description: Name of the GitHub secret containing the Docker Hub token for manual runs.
+        required: true
+        type: string
+        default: DOCKERHUB_TOKEN
 
 permissions:
   contents: read
 
 concurrency: dockerhub-builds-${{ github.ref }}
 
+env:
+  BOILEROOM_DOCKER_REPOSITORY: ${{ github.event.inputs.docker_repository || 'docker.io/jakublala' }}
+  DOCKERHUB_USERNAME_FOR_RUN: ${{ github.event.inputs.dockerhub_username || secrets.DOCKERHUB_USERNAME }}
+  DOCKERHUB_TOKEN_SECRET_FOR_RUN: ${{ github.event.inputs.dockerhub_token_secret || 'DOCKERHUB_TOKEN' }}
+  IMAGE_BUILD_MAX_WORKERS: "3"
+  SHOULD_PROMOTE: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || inputs.promote }}
+
 jobs:
-  build-and-push:
+  prepare-release:
     runs-on: ubuntu-latest
+    outputs:
+      release_version: ${{ steps.release_version.outputs.pep440 }}
+      validation_tag: ${{ steps.validation_tag.outputs.value }}
+      cuda_versions: ${{ steps.image_metadata.outputs.cuda_versions }}
+      default_cuda_version: ${{ steps.image_metadata.outputs.default_cuda_version }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -21,10 +55,169 @@ jobs:
 
       - name: Validate release ref
         run: |
-          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
-            echo "This publishing workflow only derives release versions from main."
+          if [ "$SHOULD_PROMOTE" = "true" ] && [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "Publishing release tags is only allowed from main."
             exit 1
           fi
+          if [ "$SHOULD_PROMOTE" != "true" ]; then
+            echo "Running validation-only image workflow for $GITHUB_REF."
+          fi
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Determine Boileroom release version
+        id: release_version
+        run: |
+          uv run python ./scripts/ci/derive_version.py --github-output "$GITHUB_OUTPUT"
+
+      - name: Determine validation tag
+        id: validation_tag
+        run: echo "value=sha-${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+
+      - name: Determine image metadata
+        id: image_metadata
+        run: |
+          uv run python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+
+          from boileroom.images.metadata import CUDA_MICROMAMBA_BASE, DEFAULT_CUDA_VERSION
+
+          print(f"cuda_versions={json.dumps(sorted(CUDA_MICROMAMBA_BASE))}")
+          print(f"default_cuda_version={DEFAULT_CUDA_VERSION}")
+          PY
+
+  build-validation-images:
+    needs: prepare-release
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cuda_version: ${{ fromJSON(needs.prepare-release.outputs.cuda_versions) }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          registry: docker.io
+          username: ${{ env.DOCKERHUB_USERNAME_FOR_RUN }}
+          password: ${{ secrets[env.DOCKERHUB_TOKEN_SECRET_FOR_RUN] }}
+
+      - name: Build and push validation images
+        run: |
+          uv run python ./scripts/images/build_model_images.py \
+            --cuda-version=${{ matrix.cuda_version }} \
+            --tag=${{ needs.prepare-release.outputs.validation_tag }} \
+            --platform=linux/amd64 \
+            --push \
+            --local-base \
+            --max-workers=${IMAGE_BUILD_MAX_WORKERS} \
+            --verbose
+
+      - name: Verify local canonical validation image imports
+        run: |
+          uv run python ./scripts/images/check_model_imports.py \
+            --cuda-version=${{ matrix.cuda_version }} \
+            --tag=${{ needs.prepare-release.outputs.validation_tag }}
+
+      - name: Verify local canonical validation image server health
+        run: |
+          uv run python ./scripts/images/check_model_server_health.py \
+            --cuda-version=${{ matrix.cuda_version }} \
+            --tag=${{ needs.prepare-release.outputs.validation_tag }}
+
+      - name: Verify local validation alias image imports
+        if: matrix.cuda_version == needs.prepare-release.outputs.default_cuda_version
+        run: |
+          uv run python ./scripts/images/check_model_imports.py \
+            --tag=${{ needs.prepare-release.outputs.validation_tag }}
+
+      - name: Verify local validation alias image server health
+        if: matrix.cuda_version == needs.prepare-release.outputs.default_cuda_version
+        run: |
+          uv run python ./scripts/images/check_model_server_health.py \
+            --tag=${{ needs.prepare-release.outputs.validation_tag }}
+
+      - name: Free disk space after build
+        if: always()
+        run: |
+          docker builder prune --all --force
+
+  arm64-image-smoke:
+    name: ARM64 Image Smoke
+    needs: prepare-release
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 180
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Build ARM64 image set
+        run: |
+          uv run python ./scripts/images/build_model_images.py \
+            --cuda-version=${{ needs.prepare-release.outputs.default_cuda_version }} \
+            --tag=${{ needs.prepare-release.outputs.validation_tag }} \
+            --platform=linux/arm64 \
+            --max-workers=${IMAGE_BUILD_MAX_WORKERS} \
+            --verbose
+
+      - name: Verify local ARM64 image imports
+        run: |
+          uv run python ./scripts/images/check_model_imports.py \
+            --cuda-version=${{ needs.prepare-release.outputs.default_cuda_version }} \
+            --tag=${{ needs.prepare-release.outputs.validation_tag }}
+
+      - name: Verify local ARM64 image server health
+        run: |
+          uv run python ./scripts/images/check_model_server_health.py \
+            --cuda-version=${{ needs.prepare-release.outputs.default_cuda_version }} \
+            --tag=${{ needs.prepare-release.outputs.validation_tag }}
+
+  promote-validated-images:
+    needs: [ prepare-release, build-validation-images, arm64-image-smoke ]
+    runs-on: ubuntu-latest
+    if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || inputs.promote }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -46,42 +239,12 @@ jobs:
         uses: docker/login-action@v3
         with:
           registry: docker.io
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Determine Boileroom release version
-        id: release_version
-        run: |
-          uv run python ./scripts/ci/derive_version.py --github-output "$GITHUB_OUTPUT"
-
-      - name: Determine validation tag
-        id: validation_tag
-        run: echo "value=sha-${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
-
-      - name: Build and push validation images
-        run: |
-          uv run python ./scripts/images/build_model_images.py --all-cuda --tag=${{ steps.validation_tag.outputs.value }} --platform=linux/amd64 --push
-
-      - name: Free disk space after build
-        run: |
-          docker builder prune --all --force
-
-      - name: Verify canonical validation image imports
-        run: |
-          uv run python ./scripts/images/check_model_imports.py --all-cuda --tag=${{ steps.validation_tag.outputs.value }} --pull --cleanup
-
-      - name: Verify canonical validation image server health
-        run: |
-          uv run python ./scripts/images/check_model_server_health.py --all-cuda --tag=${{ steps.validation_tag.outputs.value }} --pull --cleanup
-
-      - name: Verify validation alias image imports
-        run: |
-          uv run python ./scripts/images/check_model_imports.py --tag=${{ steps.validation_tag.outputs.value }} --pull --cleanup
-
-      - name: Verify validation alias image server health
-        run: |
-          uv run python ./scripts/images/check_model_server_health.py --tag=${{ steps.validation_tag.outputs.value }} --pull --cleanup
+          username: ${{ env.DOCKERHUB_USERNAME_FOR_RUN }}
+          password: ${{ secrets[env.DOCKERHUB_TOKEN_SECRET_FOR_RUN] }}
 
       - name: Promote validated images to version tag
         run: |
-          uv run python ./scripts/images/promote_image_tags.py --all-cuda --source-tag=${{ steps.validation_tag.outputs.value }} --target-tag=${{ steps.release_version.outputs.pep440 }}
+          uv run python ./scripts/images/promote_image_tags.py \
+            --all-cuda \
+            --source-tag=${{ needs.prepare-release.outputs.validation_tag }} \
+            --target-tag=${{ needs.prepare-release.outputs.release_version }}

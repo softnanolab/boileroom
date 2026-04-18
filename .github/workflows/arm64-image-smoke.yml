@@ -3,8 +3,6 @@ name: ARM64 Image Smoke
 on:
   pull_request:
     branches: [ main ]
-  push:
-    branches: [ main ]
   workflow_dispatch:
 
 permissions:
@@ -34,10 +32,19 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra dev
 
+      - name: Determine default CUDA version
+        id: image_metadata
+        run: |
+          uv run python - <<'PY' >> "$GITHUB_OUTPUT"
+          from boileroom.images.metadata import DEFAULT_CUDA_VERSION
+
+          print(f"default_cuda_version={DEFAULT_CUDA_VERSION}")
+          PY
+
       - name: Build ARM64 image set
         run: |
           uv run python scripts/images/build_model_images.py \
-            --cuda-version=12.6 \
+            --cuda-version=${{ steps.image_metadata.outputs.default_cuda_version }} \
             --tag=arm64-ci \
             --platform=linux/arm64 \
             --max-workers=3 \
@@ -46,11 +53,11 @@ jobs:
       - name: Run ARM64 import smoke
         run: |
           uv run python scripts/images/check_model_imports.py \
-            --cuda-version=12.6 \
+            --cuda-version=${{ steps.image_metadata.outputs.default_cuda_version }} \
             --tag=arm64-ci
 
       - name: Run ARM64 server health smoke
         run: |
           uv run python scripts/images/check_model_server_health.py \
-            --cuda-version=12.6 \
+            --cuda-version=${{ steps.image_metadata.outputs.default_cuda_version }} \
             --tag=arm64-ci
