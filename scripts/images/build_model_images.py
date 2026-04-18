@@ -359,8 +359,7 @@ def build_base(
     if not use_local_docker_build and output_flag is not None:
         cmd.append(output_flag)
 
-    if verbose:
-        log_info(f"Build log: {log_file}")
+    log_info(f"Build log: {log_file}")
     run(cmd, log_file=log_file, echo=verbose)
     return canonical_reference
 
@@ -421,8 +420,7 @@ def build_model(
     if not use_local_docker_build and output_flag is not None:
         cmd.append(output_flag)
 
-    if verbose:
-        log_info(f"Build log: {log_file}")
+    log_info(f"Build log: {log_file}")
     run(cmd, log_file=log_file, echo=verbose)
     return image_references
 
@@ -457,7 +455,11 @@ def main() -> None:
     log_info(f"CUDA versions: {', '.join(cuda_versions)}")
     log_info(f"Platforms: {args.platform}")
     if args.verbose:
-        output_mode = output_flag or "buildx cache only"
+        output_mode = {
+            "--push": "push to registry",
+            "--load": "load into local Docker",
+            None: "buildx cache only",
+        }[output_flag]
         log_info(f"Verbose build logs enabled; output mode: {output_mode}")
     if args.force_rebuild and args.skip_existing:
         log_info("Ignoring --skip-existing because --force-rebuild was set.")

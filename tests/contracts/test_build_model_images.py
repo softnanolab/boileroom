@@ -66,8 +66,8 @@ def test_build_cache_reference_uses_repository_env(monkeypatch) -> None:
     )
 
 
-def test_parse_args_exposes_skip_controls(monkeypatch) -> None:
-    """The build helper should accept the documented skip flags."""
+def test_parse_args_exposes_documented_flags(monkeypatch) -> None:
+    """The build helper should accept the documented flags."""
     monkeypatch.setattr(
         sys,
         "argv",
