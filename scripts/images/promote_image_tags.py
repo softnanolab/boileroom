@@ -13,6 +13,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from boileroom.images.metadata import (  # noqa: E402
     BASE_IMAGE_SPEC,
+    CUDA_MICROMAMBA_BASE,
     MODEL_IMAGE_SPECS,
     RuntimeImageSpec,
     get_supported_cuda,
@@ -31,7 +32,7 @@ def parse_args() -> argparse.Namespace:
         "--cuda-version",
         action="append",
         dest="cuda_versions",
-        help="CUDA version to promote (repeatable). Supported values: 11.8, 12.6.",
+        help=f"CUDA version to promote (repeatable). Supported values: {', '.join(sorted(CUDA_MICROMAMBA_BASE))}.",
     )
     parser.add_argument("--all-cuda", action="store_true", help="Promote all supported CUDA variants.")
     return parser.parse_args()
