@@ -233,6 +233,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--no-cache", action="store_true", help="Disable Docker build cache.")
     parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Print Docker build output and plain BuildKit progress while still writing per-image log files.",
+    )
+    parser.add_argument(
         "--skip-existing",
         action="store_true",
         help="Skip a build when the canonical image tag already exists in Docker Hub.",
@@ -305,6 +310,7 @@ def build_base(
     output_flag: str | None,
     no_cache: bool,
     use_local_docker_build: bool,
+    verbose: bool = False,
 ) -> str:
     """Build the shared base image and return its canonical reference."""
     image_references = published_image_references(BASE_IMAGE_SPEC.image_name, cuda_version, tag)
@@ -343,6 +349,8 @@ def build_base(
             push=output_flag == "--push",
             no_cache=no_cache,
         )
+    if verbose:
+        cmd.extend(["--progress", "plain"])
     for image_reference in image_references:
         cmd.extend(["-t", image_reference])
     cmd.extend(["-f", str(BASE_IMAGE_SPEC.dockerfile_path), str(BASE_IMAGE_SPEC.context_path)])
@@ -351,7 +359,8 @@ def build_base(
     if not use_local_docker_build and output_flag is not None:
         cmd.append(output_flag)
 
-    run(cmd, log_file=log_file, echo=False)
+    log_info(f"Build log: {log_file}")
+    run(cmd, log_file=log_file, echo=verbose)
     return canonical_reference
 
 
@@ -361,6 +370,7 @@ def build_model(
     output_flag: str | None,
     no_cache: bool,
     use_local_docker_build: bool,
+    verbose: bool = False,
 ) -> tuple[str, ...]:
     """Build a single model image and return all published references."""
     image_references = published_image_references(task.image_spec.image_name, task.cuda_version, task.tag)
@@ -400,6 +410,8 @@ def build_model(
             push=output_flag == "--push",
             no_cache=no_cache,
         )
+    if verbose:
+        cmd.extend(["--progress", "plain"])
     for image_reference in image_references:
         cmd.extend(["-t", image_reference])
     cmd.extend(["-f", str(task.image_spec.dockerfile_path), str(task.image_spec.context_path)])
@@ -408,7 +420,8 @@ def build_model(
     if not use_local_docker_build and output_flag is not None:
         cmd.append(output_flag)
 
-    run(cmd, log_file=log_file, echo=False)
+    log_info(f"Build log: {log_file}")
+    run(cmd, log_file=log_file, echo=verbose)
     return image_references
 
 
@@ -441,6 +454,13 @@ def main() -> None:
     log_info(f"Model images: {', '.join(spec.image_name for spec in MODEL_IMAGE_SPECS)}")
     log_info(f"CUDA versions: {', '.join(cuda_versions)}")
     log_info(f"Platforms: {args.platform}")
+    if args.verbose:
+        output_mode = {
+            "--push": "push to registry",
+            "--load": "load into local Docker",
+            None: "buildx cache only",
+        }[output_flag]
+        log_info(f"Verbose build logs enabled; output mode: {output_mode}")
     if args.force_rebuild and args.skip_existing:
         log_info("Ignoring --skip-existing because --force-rebuild was set.")
 
@@ -464,6 +484,7 @@ def main() -> None:
                     output_flag,
                     args.no_cache,
                     use_local_docker_build,
+                    args.verbose,
                 )
         except Exception as exc:
             log_error(f"Failed to build base image for CUDA {cuda_version}: {exc}")
@@ -502,7 +523,14 @@ def main() -> None:
         for task in tasks:
             try:
                 published_references.extend(
-                    build_model(task, args.platform, output_flag, args.no_cache, use_local_docker_build)
+                    build_model(
+                        task,
+                        args.platform,
+                        output_flag,
+                        args.no_cache,
+                        use_local_docker_build,
+                        args.verbose,
+                    )
                 )
             except Exception as exc:
                 log_error(f"Failed to build {task.image_spec.image_name} for CUDA {task.cuda_version}: {exc}")
@@ -518,6 +546,7 @@ def main() -> None:
                     output_flag,
                     args.no_cache,
                     use_local_docker_build,
+                    args.verbose,
                 ): task
                 for task in tasks
             }
