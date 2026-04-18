@@ -22,7 +22,6 @@ uv run python scripts/images/build_model_images.py --cuda-version=12.6 --platfor
 
 # Optional flags
 uv run python scripts/images/build_model_images.py --no-cache ...
-uv run python scripts/images/build_model_images.py --verbose ...
 uv run python scripts/images/build_model_images.py --all-cuda --tag=0.3.0 --push ...
 uv run python scripts/images/build_model_images.py --cuda-version=12.6 --tag=sha-$(git rev-parse --short HEAD) --push ...
 ```
@@ -44,7 +43,6 @@ export BOILEROOM_MODAL_IMAGE_TAG=0.3.0
 
 Single-platform non-push builds auto-load into the local Docker daemon. Multi-platform builds should generally be paired with `--push`.
 Pushed buildx builds import and export stable per-image registry caches such as `boileroom-chai1:buildcache-cuda12.6`, so GitHub Actions runners can reuse dependency layers across validation tags and releases. Pass `--no-cache` to bypass those caches.
-Pass `--verbose` to stream Docker build output and plain BuildKit progress while still writing per-image log files.
 
 ### ARM64 smoke workflow
 The `.github/workflows/arm64-image-smoke.yml` workflow runs on an `ubuntu-24.04-arm` runner, builds the image set for `linux/arm64` with the `arm64-ci` tag, and then runs the import and server-health smoke checks. It is informational and does not push images.

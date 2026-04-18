@@ -20,8 +20,8 @@ MODAL_IMAGE_TAG_ENV: Final = "BOILEROOM_MODAL_IMAGE_TAG"
 MODAL_BASE_IMAGE_REF_ENV: Final = "BOILEROOM_MODAL_BASE_IMAGE"
 
 CUDA_MICROMAMBA_BASE: Final[dict[str, str]] = {
-    "11.8": "mambaorg/micromamba:2.5-cuda11.8.0-ubuntu22.04",
-    "12.6": "mambaorg/micromamba:2.5-cuda12.6.3-ubuntu22.04",
+    "11.8": "mambaorg/micromamba:2.4-cuda11.8.0-ubuntu22.04",
+    "12.6": "mambaorg/micromamba:2.4-cuda12.6.3-ubuntu22.04",
 }
 
 CUDA_TORCH_WHEEL_INDEX: Final[dict[str, str]] = {
