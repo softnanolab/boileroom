@@ -45,7 +45,7 @@ def package_name_to_import_name(package_name: str) -> str | None:
     return IMPORT_NAME_OVERRIDES.get(package_name, package_name.replace("-", "_"))
 
 
-def iter_image_targets(tag: str, cuda_versions: list[str]) -> list[tuple[str, str, str, Path, Path]]:
+def iter_image_targets(tag: str | None, cuda_versions: list[str]) -> list[tuple[str, str, str, Path, Path]]:
     """Return model-image targets for smoke checks.
 
     Returns tuples of ``(image_key, image_reference, display_tag, env_path, core_path)``.
