@@ -28,6 +28,18 @@ uv run pre-commit run --all-files
 
 This runs **ruff** and **mypy**.
 
+## Repo harness
+
+Before opening a model-family, backend, or image-related PR, run:
+
+```bash
+uv run python scripts/harness/check_repo.py
+```
+
+The harness checks objective implementation contracts such as model-family files,
+lightweight output types, registry/image links, public wrapper exports, and image
+smoke target coverage. See [docs/agent_harness.md](docs/agent_harness.md).
+
 ## Pull request expectations
 
 - All CI checks must pass.

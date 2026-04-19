@@ -11,6 +11,7 @@
 ## Commands
 - Use `uv run` for repo commands. Do not rely on system Python.
 - Setup: `uv python install 3.12 && uv sync`
+- Repo harness: `uv run python scripts/harness/check_repo.py`
 - Tests: `uv run pytest`
 - Parallel tests: use `-n 4` if needed; do not use `-n auto`
 - Lint/type checks: `uv run pre-commit run --all-files`
