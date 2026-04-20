@@ -12,12 +12,10 @@ from pathlib import Path
 from typing import Final
 
 DEFAULT_DOCKER_REPOSITORY: Final = "docker.io/jakublala"
-DOCKER_REGISTRY: Final = DEFAULT_DOCKER_REPOSITORY
 PACKAGE_NAME: Final = "boileroom"
 DEFAULT_CUDA_VERSION: Final = "12.6"
 DOCKER_REPOSITORY_ENV: Final = "BOILEROOM_DOCKER_REPOSITORY"
 MODAL_IMAGE_TAG_ENV: Final = "BOILEROOM_MODAL_IMAGE_TAG"
-MODAL_BASE_IMAGE_REF_ENV: Final = "BOILEROOM_MODAL_BASE_IMAGE"
 
 CUDA_MICROMAMBA_BASE: Final[dict[str, str]] = {
     "11.8": "mambaorg/micromamba:2.5-cuda11.8.0-ubuntu22.04",
@@ -174,29 +172,51 @@ def get_docker_repository() -> str:
     if override is None or not override.strip():
         return DEFAULT_DOCKER_REPOSITORY
 
-    repository = override.strip()
+    return normalize_docker_repository(override)
+
+
+def normalize_docker_repository(repository: str) -> str:
+    """Return a normalized Docker Hub repository namespace."""
+    normalized = repository.strip().removesuffix("/")
+    if not normalized:
+        raise ValueError("Docker repository must not be empty.")
+    if normalized == "docker.io" or ("." in normalized and "/" not in normalized):
+        raise ValueError("Docker repository must use the form 'docker.io/<repository>'.")
+    if "/" in normalized and "." in normalized.split("/", 1)[0] and not normalized.startswith("docker.io/"):
+        raise ValueError("Docker repository must use the form 'docker.io/<repository>'.")
+    if not normalized.startswith("docker.io/"):
+        normalized = f"docker.io/{normalized}"
     if (
         re.fullmatch(
             r"docker\.io/(?:[a-z0-9]+(?:[._-][a-z0-9]+)*)(?:/(?:[a-z0-9]+(?:[._-][a-z0-9]+)*))*",
-            repository,
+            normalized,
         )
         is None
     ):
-        raise ValueError(f"{DOCKER_REPOSITORY_ENV} must use the form 'docker.io/<repository>'.")
-    return repository
+        raise ValueError("Docker repository must use the form 'docker.io/<repository>'.")
+    return normalized
 
 
-def format_image_reference(image_name: str, tag: str | None = None) -> str:
+def format_image_reference(image_name: str, tag: str | None = None, docker_repository: str | None = None) -> str:
     """Return a fully qualified Docker image reference."""
     resolved_tag = resolve_registry_tag(tag)
-    return f"{get_docker_repository()}/{image_name}:{resolved_tag}"
-
-
-def published_image_references(image_name: str, cuda_version: str, tag: str | None) -> tuple[str, ...]:
-    """Return all published references for a built image."""
-    return tuple(
-        f"{get_docker_repository()}/{image_name}:{published_tag}" for published_tag in published_tags(cuda_version, tag)
+    repository = (
+        get_docker_repository() if docker_repository is None else normalize_docker_repository(docker_repository)
     )
+    return f"{repository}/{image_name}:{resolved_tag}"
+
+
+def published_image_references(
+    image_name: str,
+    cuda_version: str,
+    tag: str | None,
+    docker_repository: str | None = None,
+) -> tuple[str, ...]:
+    """Return all published references for a built image."""
+    repository = (
+        get_docker_repository() if docker_repository is None else normalize_docker_repository(docker_repository)
+    )
+    return tuple(f"{repository}/{image_name}:{published_tag}" for published_tag in published_tags(cuda_version, tag))
 
 
 def get_modal_image_tag() -> str:
@@ -206,11 +226,6 @@ def get_modal_image_tag() -> str:
 
 def get_modal_base_image_reference() -> str:
     """Return the base image Modal should use for the shared runtime layer."""
-    override = os.environ.get(MODAL_BASE_IMAGE_REF_ENV)
-    if override:
-        normalized = override.strip()
-        if normalized:
-            return normalized
     return format_image_reference(BASE_IMAGE_SPEC.image_name, get_modal_image_tag())
 
 
@@ -256,8 +271,6 @@ def render_modal_runtime_env(spec: RuntimeImageSpec, model_dir: str) -> dict[str
         DOCKER_REPOSITORY_ENV: get_docker_repository(),
         MODAL_IMAGE_TAG_ENV: get_modal_image_tag(),
     }
-    if (override := os.environ.get(MODAL_BASE_IMAGE_REF_ENV)) and (normalized := override.strip()):
-        env[MODAL_BASE_IMAGE_REF_ENV] = normalized
     for key, value in spec.modal_runtime_env:
         env[key] = value.replace("{MODEL_DIR}", model_dir)
     return env

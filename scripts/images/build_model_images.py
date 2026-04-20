@@ -19,10 +19,11 @@ from boileroom.images.metadata import (  # noqa: E402
     BASE_IMAGE_SPEC,
     CUDA_MICROMAMBA_BASE,
     CUDA_TORCH_WHEEL_INDEX,
+    DEFAULT_DOCKER_REPOSITORY,
     MODEL_IMAGE_SPECS,
     RuntimeImageSpec,
-    get_docker_repository,
     get_supported_cuda,
+    normalize_docker_repository,
     normalize_cuda_version,
     normalize_requested_tag,
     published_image_references,
@@ -38,6 +39,7 @@ class BuildTask:
     cuda_version: str
     image_spec: RuntimeImageSpec
     base_image_reference: str
+    docker_repository: str
     tag: str
 
 
@@ -74,9 +76,10 @@ def log_error(message: str) -> None:
     print(Colors.wrap(message, Colors.red), file=sys.stderr)
 
 
-def build_cache_reference(image_name: str, cuda_version: str) -> str:
+def build_cache_reference(docker_repository: str, image_name: str, cuda_version: str) -> str:
     """Return the stable registry cache reference for a build output."""
-    return f"{get_docker_repository()}/{image_name}:buildcache-cuda{cuda_version}"
+    docker_repository = normalize_docker_repository(docker_repository)
+    return f"{docker_repository}/{image_name}:buildcache-cuda{cuda_version}"
 
 
 def append_registry_cache_args(
@@ -84,6 +87,7 @@ def append_registry_cache_args(
     image_name: str,
     cuda_version: str,
     *,
+    docker_repository: str,
     push: bool,
     no_cache: bool,
 ) -> None:
@@ -91,7 +95,7 @@ def append_registry_cache_args(
     if not push or no_cache:
         return
 
-    cache_reference = build_cache_reference(image_name, cuda_version)
+    cache_reference = build_cache_reference(docker_repository, image_name, cuda_version)
     cmd.extend(
         [
             "--cache-from",
@@ -225,6 +229,14 @@ def parse_args() -> argparse.Namespace:
         help="Unqualified tag to publish. Defaults to the current boileroom package version; explicit examples include 0.3.0 or sha-<commit>.",
     )
     parser.add_argument(
+        "--docker-user",
+        default=DEFAULT_DOCKER_REPOSITORY,
+        help=(
+            "Docker Hub user or namespace to publish under. "
+            "Accepts either a user such as my-dockerhub-user or a full namespace such as docker.io/my-dockerhub-user."
+        ),
+    )
+    parser.add_argument(
         "--cuda-version",
         action="append",
         dest="cuda_versions",
@@ -325,6 +337,7 @@ def should_use_local_docker_build(push: bool, platform: str) -> bool:
 def build_base(
     cuda_version: str,
     tag: str,
+    docker_repository: str,
     platform: str,
     output_flag: str | None,
     no_cache: bool,
@@ -333,14 +346,14 @@ def build_base(
     push_after_build: bool = False,
 ) -> str:
     """Build the shared base image and return its canonical reference."""
-    image_references = published_image_references(BASE_IMAGE_SPEC.image_name, cuda_version, tag)
-    canonical_reference = image_references[0]
+    references = published_image_references(BASE_IMAGE_SPEC.image_name, cuda_version, tag, docker_repository)
+    canonical_reference = references[0]
     micromamba_base = CUDA_MICROMAMBA_BASE[cuda_version]
 
     log_info("")
     log_info(Colors.wrap(f"=== Building base image for CUDA {cuda_version}: {canonical_reference}", Colors.bold))
     log_info(f"Using micromamba base: {micromamba_base}")
-    log_info(f"Publishing tags: {', '.join(image_references)}")
+    log_info(f"Publishing tags: {', '.join(references)}")
 
     log_file = Path.cwd() / f"{canonical_reference.replace('/', '_').replace(':', '_')}.log"
     effective_output_flag = "--load" if push_after_build else output_flag
@@ -367,12 +380,13 @@ def build_base(
             cmd,
             BASE_IMAGE_SPEC.image_name,
             cuda_version,
+            docker_repository=docker_repository,
             push=output_flag == "--push" or push_after_build,
             no_cache=no_cache,
         )
     if verbose:
         cmd.extend(["--progress", "plain"])
-    for image_reference in image_references:
+    for image_reference in references:
         cmd.extend(["-t", image_reference])
     cmd.extend(["-f", str(BASE_IMAGE_SPEC.dockerfile_path), str(BASE_IMAGE_SPEC.context_path)])
     if no_cache:
@@ -383,7 +397,7 @@ def build_base(
     log_info(f"Build log: {log_file}")
     run(cmd, log_file=log_file, echo=verbose)
     if push_after_build:
-        push_image_references(image_references)
+        push_image_references(references)
     return canonical_reference
 
 
@@ -397,11 +411,16 @@ def build_model(
     push_after_build: bool = False,
 ) -> tuple[str, ...]:
     """Build a single model image and return all published references."""
-    image_references = published_image_references(task.image_spec.image_name, task.cuda_version, task.tag)
-    canonical_reference = image_references[0]
+    references = published_image_references(
+        task.image_spec.image_name,
+        task.cuda_version,
+        task.tag,
+        task.docker_repository,
+    )
+    canonical_reference = references[0]
 
     log_info(Colors.wrap(f"--- Building {task.image_spec.key} for CUDA {task.cuda_version}: {canonical_reference}", Colors.bold))
-    log_info(f"Publishing tags: {', '.join(image_references)}")
+    log_info(f"Publishing tags: {', '.join(references)}")
 
     log_file = Path.cwd() / f"{canonical_reference.replace('/', '_').replace(':', '_')}.log"
     effective_output_flag = "--load" if push_after_build else output_flag
@@ -432,6 +451,7 @@ def build_model(
             cmd,
             task.image_spec.image_name,
             task.cuda_version,
+            docker_repository=task.docker_repository,
             push=output_flag == "--push" or push_after_build,
             no_cache=no_cache,
         )
@@ -439,7 +459,7 @@ def build_model(
             append_local_image_context_args(cmd, task.base_image_reference)
     if verbose:
         cmd.extend(["--progress", "plain"])
-    for image_reference in image_references:
+    for image_reference in references:
         cmd.extend(["-t", image_reference])
     cmd.extend(["-f", str(task.image_spec.dockerfile_path), str(task.image_spec.context_path)])
     if no_cache:
@@ -450,8 +470,8 @@ def build_model(
     log_info(f"Build log: {log_file}")
     run(cmd, log_file=log_file, echo=verbose)
     if push_after_build:
-        push_image_references(image_references)
-    return image_references
+        push_image_references(references)
+    return references
 
 
 def main() -> None:
@@ -461,6 +481,7 @@ def main() -> None:
     try:
         ensure_docker()
         tag = resolve_publish_tag(args.tag)
+        docker_repository = normalize_docker_repository(args.docker_user)
         cuda_versions = compute_cuda_versions(args.cuda_versions, args.all_cuda)
         output_flag = resolve_output_flag(args.push, args.load, args.platform)
         use_local_docker_build = should_use_local_docker_build(args.push, args.platform)
@@ -490,7 +511,7 @@ def main() -> None:
         )
 
     log_info(Colors.wrap(f"Boileroom repo root: {REPO_ROOT}", Colors.magenta))
-    log_info(f"Docker repository: {get_docker_repository()}")
+    log_info(f"Docker repository: {docker_repository}")
     log_info(f"Model images: {', '.join(spec.image_name for spec in MODEL_IMAGE_SPECS)}")
     log_info(f"CUDA versions: {', '.join(cuda_versions)}")
     log_info(f"Platforms: {args.platform}")
@@ -509,7 +530,12 @@ def main() -> None:
 
     for cuda_version in cuda_versions:
         try:
-            target_base_reference = published_image_references(BASE_IMAGE_SPEC.image_name, cuda_version, tag)[0]
+            target_base_reference = published_image_references(
+                BASE_IMAGE_SPEC.image_name,
+                cuda_version,
+                tag,
+                docker_repository,
+            )[0]
             if args.skip_existing and not args.force_rebuild and image_reference_exists(target_base_reference):
                 log_info(
                     f"Skipping base build for CUDA {cuda_version}; existing tag already present: "
@@ -520,6 +546,7 @@ def main() -> None:
                 base_reference = build_base(
                     cuda_version,
                     tag,
+                    docker_repository,
                     args.platform,
                     output_flag,
                     args.no_cache,
@@ -541,7 +568,7 @@ def main() -> None:
                     f"(supported CUDA variants: {', '.join(supported_cuda)})"
                 )
                 continue
-            target_reference = published_image_references(image_spec.image_name, cuda_version, tag)[0]
+            target_reference = published_image_references(image_spec.image_name, cuda_version, tag, docker_repository)[0]
             if args.skip_existing and not args.force_rebuild and image_reference_exists(target_reference):
                 log_info(
                     f"Skipping {image_spec.image_name} for CUDA {cuda_version}; existing tag already present: "
@@ -554,6 +581,7 @@ def main() -> None:
                     cuda_version=cuda_version,
                     image_spec=image_spec,
                     base_image_reference=base_reference,
+                    docker_repository=docker_repository,
                     tag=tag,
                 )
             )

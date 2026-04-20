@@ -33,7 +33,7 @@ permissions:
 concurrency: dockerhub-builds-${{ github.ref }}
 
 env:
-  BOILEROOM_DOCKER_REPOSITORY: ${{ github.event.inputs.docker_repository || 'docker.io/jakublala' }}
+  DOCKER_REPOSITORY_FOR_RUN: ${{ github.event.inputs.docker_repository || 'docker.io/jakublala' }}
   DOCKERHUB_USERNAME_FOR_RUN: ${{ github.event.inputs.dockerhub_username || secrets.DOCKERHUB_USERNAME }}
   DOCKERHUB_TOKEN_SECRET_FOR_RUN: ${{ github.event.inputs.dockerhub_token_secret || 'DOCKERHUB_TOKEN' }}
   IMAGE_BUILD_MAX_WORKERS: "3"
@@ -146,6 +146,7 @@ jobs:
           uv run python ./scripts/images/build_model_images.py \
             --cuda-version=${{ matrix.cuda_version }} \
             --tag=${{ needs.prepare-release.outputs.validation_tag }} \
+            --docker-user="${DOCKER_REPOSITORY_FOR_RUN}" \
             --platform=${{ matrix.platform }} \
             "${build_args[@]}" \
             --max-workers=${IMAGE_BUILD_MAX_WORKERS} \
@@ -155,24 +156,28 @@ jobs:
         run: |
           uv run python ./scripts/images/check_model_imports.py \
             --cuda-version=${{ matrix.cuda_version }} \
+            --docker-user="${DOCKER_REPOSITORY_FOR_RUN}" \
             --tag=${{ needs.prepare-release.outputs.validation_tag }}
 
       - name: Verify local canonical validation image server health
         run: |
           uv run python ./scripts/images/check_model_server_health.py \
             --cuda-version=${{ matrix.cuda_version }} \
+            --docker-user="${DOCKER_REPOSITORY_FOR_RUN}" \
             --tag=${{ needs.prepare-release.outputs.validation_tag }}
 
       - name: Verify local validation alias image imports
         if: matrix.platform == 'linux/amd64' && matrix.cuda_version == needs.prepare-release.outputs.default_cuda_version
         run: |
           uv run python ./scripts/images/check_model_imports.py \
+            --docker-user="${DOCKER_REPOSITORY_FOR_RUN}" \
             --tag=${{ needs.prepare-release.outputs.validation_tag }}
 
       - name: Verify local validation alias image server health
         if: matrix.platform == 'linux/amd64' && matrix.cuda_version == needs.prepare-release.outputs.default_cuda_version
         run: |
           uv run python ./scripts/images/check_model_server_health.py \
+            --docker-user="${DOCKER_REPOSITORY_FOR_RUN}" \
             --tag=${{ needs.prepare-release.outputs.validation_tag }}
 
       - name: Free disk space after build
@@ -215,5 +220,6 @@ jobs:
         run: |
           uv run python ./scripts/images/promote_image_tags.py \
             --all-cuda \
+            --docker-user="${DOCKER_REPOSITORY_FOR_RUN}" \
             --source-tag=${{ needs.prepare-release.outputs.validation_tag }} \
             --target-tag=${{ needs.prepare-release.outputs.release_version }}

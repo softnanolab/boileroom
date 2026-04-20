@@ -21,6 +21,7 @@ def test_build_base_push_uses_registry_cache(monkeypatch, tmp_path) -> None:
     build_model_images.build_base(
         DEFAULT_CUDA_VERSION,
         "sha-test",
+        "docker.io/jakublala",
         "linux/amd64",
         "--push",
         no_cache=False,
@@ -47,6 +48,7 @@ def test_build_base_no_cache_disables_registry_cache(monkeypatch, tmp_path) -> N
     build_model_images.build_base(
         DEFAULT_CUDA_VERSION,
         "sha-test",
+        "docker.io/jakublala",
         "linux/amd64",
         "--push",
         no_cache=True,
@@ -59,10 +61,9 @@ def test_build_base_no_cache_disables_registry_cache(monkeypatch, tmp_path) -> N
     assert "--cache-to" not in cmd
 
 
-def test_build_cache_reference_uses_repository_env(monkeypatch) -> None:
-    """Build cache tags should follow the same repository override as image tags."""
-    monkeypatch.setenv("BOILEROOM_DOCKER_REPOSITORY", "docker.io/example")
-    assert build_model_images.build_cache_reference("boileroom-base", DEFAULT_CUDA_VERSION) == (
+def test_build_cache_reference_uses_explicit_repository() -> None:
+    """Build cache tags should follow the requested repository."""
+    assert build_model_images.build_cache_reference("example", "boileroom-base", DEFAULT_CUDA_VERSION) == (
         f"docker.io/example/boileroom-base:buildcache-cuda{DEFAULT_CUDA_VERSION}"
     )
 
@@ -78,6 +79,7 @@ def test_parse_args_exposes_documented_flags(monkeypatch) -> None:
             "--force-rebuild",
             "--verbose",
             "--local-base",
+            "--docker-user=example",
         ],
     )
 
@@ -86,6 +88,7 @@ def test_parse_args_exposes_documented_flags(monkeypatch) -> None:
     assert args.force_rebuild is True
     assert args.verbose is True
     assert args.local_base is True
+    assert args.docker_user == "example"
 
 
 def test_build_base_verbose_echoes_plain_progress(monkeypatch, tmp_path) -> None:
@@ -101,6 +104,7 @@ def test_build_base_verbose_echoes_plain_progress(monkeypatch, tmp_path) -> None
     build_model_images.build_base(
         DEFAULT_CUDA_VERSION,
         "sha-test",
+        "docker.io/jakublala",
         "linux/amd64",
         "--load",
         no_cache=False,
@@ -127,6 +131,7 @@ def test_build_base_local_base_uses_buildx_cache_load_then_push(monkeypatch, tmp
     build_model_images.build_base(
         DEFAULT_CUDA_VERSION,
         "sha-test",
+        "docker.io/jakublala",
         "linux/amd64",
         "--push",
         no_cache=False,
@@ -164,6 +169,7 @@ def test_build_model_local_base_uses_buildx_cache_context_then_push(monkeypatch,
             cuda_version=DEFAULT_CUDA_VERSION,
             image_spec=model_spec,
             base_image_reference=base_image_reference,
+            docker_repository="docker.io/jakublala",
             tag="sha-test",
         ),
         "linux/amd64",
@@ -203,6 +209,7 @@ def test_main_skips_existing_base_and_model_tags(monkeypatch, tmp_path) -> None:
         force_rebuild=False,
         max_workers=1,
         local_base=False,
+        docker_user="docker.io/jakublala",
     )
 
     built_tasks: list[tuple[str, str]] = []
@@ -223,9 +230,9 @@ def test_main_skips_existing_base_and_model_tags(monkeypatch, tmp_path) -> None:
         )
         return image_reference.endswith(existing_refs)
 
-    def fake_build_base(cuda_version: str, tag: str, *_args, **_kwargs) -> str:
+    def fake_build_base(cuda_version: str, tag: str, docker_repository: str, *_args, **_kwargs) -> str:
         built_bases.append(f"{cuda_version}:{tag}")
-        return f"docker.io/jakublala/boileroom-base:cuda{cuda_version}-{tag}"
+        return f"{docker_repository}/boileroom-base:cuda{cuda_version}-{tag}"
 
     def fake_build_model(task, *_args, **_kwargs):
         built_tasks.append((task.image_spec.image_name, task.base_image_reference))
@@ -272,6 +279,7 @@ def test_local_base_push_builds_locally_then_pushes(monkeypatch, tmp_path) -> No
         force_rebuild=False,
         max_workers=1,
         local_base=True,
+        docker_user="docker.io/jakublala",
     )
 
     base_calls: list[tuple[bool, bool]] = []
@@ -288,6 +296,7 @@ def test_local_base_push_builds_locally_then_pushes(monkeypatch, tmp_path) -> No
     def fake_build_base(
         cuda_version: str,
         tag: str,
+        docker_repository: str,
         _platform: str,
         _output_flag: str,
         _no_cache: bool,
@@ -296,7 +305,7 @@ def test_local_base_push_builds_locally_then_pushes(monkeypatch, tmp_path) -> No
         push_after_build: bool = False,
     ) -> str:
         base_calls.append((use_local_docker_build, push_after_build))
-        return f"docker.io/jakublala/boileroom-base:cuda{cuda_version}-{tag}"
+        return f"{docker_repository}/boileroom-base:cuda{cuda_version}-{tag}"
 
     def fake_build_model(
         task,

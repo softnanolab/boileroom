@@ -28,19 +28,18 @@ uv run python scripts/images/build_model_images.py --cuda-version=12.6 --tag=0.3
 uv run python scripts/images/build_model_images.py --cuda-version=12.6 --tag=sha-$(git rev-parse --short HEAD) --push ...
 ```
 
-Images publish to `docker.io/jakublala` by default. Set `BOILEROOM_DOCKER_REPOSITORY` to build and run against another namespace:
+Images publish to `docker.io/jakublala` by default. If `--tag` is omitted, image helpers use the current boileroom package version from `pyproject.toml`. Pass `--docker-user` and `--tag` to build or publish a specific tag under another Docker Hub namespace:
 
 ```bash
-export BOILEROOM_DOCKER_REPOSITORY=docker.io/my-dockerhub-user
+uv run python scripts/images/build_model_images.py --cuda-version=12.6 --tag=0.3.0 --docker-user=my-dockerhub-user --push
 ```
 
-The same variable is used by Modal and Apptainer image lookups, so pytest runs that import Modal wrappers will pull from the same repository override. `BOILEROOM_MODAL_IMAGE_TAG` still controls only the tag.
+The image build, smoke check, and promotion helpers all accept the same `--docker-user` flag.
 
-For Modal pytest runs against images in a custom namespace, set both values:
+Modal pytest uses `docker.io/jakublala` plus the current package version by default. To run against manually published images, pass the same user and tag:
 
 ```bash
-export BOILEROOM_DOCKER_REPOSITORY=docker.io/my-dockerhub-user
-export BOILEROOM_MODAL_IMAGE_TAG=0.3.0
+uv run pytest --backend=modal --docker-user=my-dockerhub-user --image-tag=0.3.0
 ```
 
 Single-platform non-push builds auto-load into the local Docker daemon. Multi-platform builds should generally be paired with `--push`.
@@ -73,11 +72,6 @@ For example, a temporary validation push on the default CUDA line:
 ```bash
 TAG=sha-$(git rev-parse --short HEAD)
 uv run python scripts/images/build_model_images.py --cuda-version=12.6 --tag="$TAG" --platform=linux/amd64 --push
-```
-
-Modal can then be pointed at that published validation tag with:
-```bash
-export BOILEROOM_MODAL_IMAGE_TAG="$TAG"
 ```
 
 Because `12.6` is the default CUDA line, publishing `--tag="$TAG"` also creates the explicit `cuda12.6-$TAG` tag alongside the unqualified alias.
