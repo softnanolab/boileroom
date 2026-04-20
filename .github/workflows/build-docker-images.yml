@@ -99,11 +99,17 @@ jobs:
 
   build-validation-images:
     needs: prepare-release
-    runs-on: ubuntu-latest
+    name: Build Validation Images (${{ matrix.platform }}, CUDA ${{ matrix.cuda_version }})
+    runs-on: ${{ matrix.platform == 'linux/arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
         cuda_version: ${{ fromJSON(needs.prepare-release.outputs.cuda_versions) }}
+        platform: [linux/amd64]
+        include:
+          - cuda_version: ${{ needs.prepare-release.outputs.default_cuda_version }}
+            platform: linux/arm64
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -122,20 +128,26 @@ jobs:
         run: uv sync --extra dev
 
       - name: Log in to Docker Hub
+        if: matrix.platform == 'linux/amd64'
         uses: docker/login-action@v3
         with:
           registry: docker.io
           username: ${{ env.DOCKERHUB_USERNAME_FOR_RUN }}
           password: ${{ secrets[env.DOCKERHUB_TOKEN_SECRET_FOR_RUN] }}
 
-      - name: Build and push validation images
+      - name: Build validation images
+        shell: bash
         run: |
+          build_args=()
+          if [ "${{ matrix.platform }}" = "linux/amd64" ]; then
+            build_args+=(--push --local-base)
+          fi
+
           uv run python ./scripts/images/build_model_images.py \
             --cuda-version=${{ matrix.cuda_version }} \
             --tag=${{ needs.prepare-release.outputs.validation_tag }} \
-            --platform=linux/amd64 \
-            --push \
-            --local-base \
+            --platform=${{ matrix.platform }} \
+            "${build_args[@]}" \
             --max-workers=${IMAGE_BUILD_MAX_WORKERS} \
             --verbose
 
@@ -152,13 +164,13 @@ jobs:
             --tag=${{ needs.prepare-release.outputs.validation_tag }}
 
       - name: Verify local validation alias image imports
-        if: matrix.cuda_version == needs.prepare-release.outputs.default_cuda_version
+        if: matrix.platform == 'linux/amd64' && matrix.cuda_version == needs.prepare-release.outputs.default_cuda_version
         run: |
           uv run python ./scripts/images/check_model_imports.py \
             --tag=${{ needs.prepare-release.outputs.validation_tag }}
 
       - name: Verify local validation alias image server health
-        if: matrix.cuda_version == needs.prepare-release.outputs.default_cuda_version
+        if: matrix.platform == 'linux/amd64' && matrix.cuda_version == needs.prepare-release.outputs.default_cuda_version
         run: |
           uv run python ./scripts/images/check_model_server_health.py \
             --tag=${{ needs.prepare-release.outputs.validation_tag }}
@@ -168,51 +180,8 @@ jobs:
         run: |
           docker builder prune --all --force
 
-  arm64-image-smoke:
-    name: ARM64 Image Smoke
-    needs: prepare-release
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 180
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install uv
-        run: |
-          curl -LsSf https://astral.sh/uv/install.sh | sh
-          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-
-      - name: Install dependencies
-        run: uv sync --extra dev
-
-      - name: Build ARM64 image set
-        run: |
-          uv run python ./scripts/images/build_model_images.py \
-            --cuda-version=${{ needs.prepare-release.outputs.default_cuda_version }} \
-            --tag=${{ needs.prepare-release.outputs.validation_tag }} \
-            --platform=linux/arm64 \
-            --max-workers=${IMAGE_BUILD_MAX_WORKERS} \
-            --verbose
-
-      - name: Verify local ARM64 image imports
-        run: |
-          uv run python ./scripts/images/check_model_imports.py \
-            --cuda-version=${{ needs.prepare-release.outputs.default_cuda_version }} \
-            --tag=${{ needs.prepare-release.outputs.validation_tag }}
-
-      - name: Verify local ARM64 image server health
-        run: |
-          uv run python ./scripts/images/check_model_server_health.py \
-            --cuda-version=${{ needs.prepare-release.outputs.default_cuda_version }} \
-            --tag=${{ needs.prepare-release.outputs.validation_tag }}
-
   promote-validated-images:
-    needs: [ prepare-release, build-validation-images, arm64-image-smoke ]
+    needs: [ prepare-release, build-validation-images ]
     runs-on: ubuntu-latest
     if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || inputs.promote }}
     steps:
