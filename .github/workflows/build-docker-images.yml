@@ -4,10 +4,12 @@ on:
   push:
     branches:
       - main
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       promote:
-        description: Promote validated images to the derived release version. Only allowed from main.
+        description: Promote validated images to the derived prerelease version. Only allowed from main.
         required: true
         type: boolean
         default: false
@@ -37,13 +39,13 @@ env:
   DOCKERHUB_USERNAME_FOR_RUN: ${{ github.event.inputs.dockerhub_username || secrets.DOCKERHUB_USERNAME }}
   DOCKERHUB_TOKEN_SECRET_FOR_RUN: ${{ github.event.inputs.dockerhub_token_secret || 'DOCKERHUB_TOKEN' }}
   IMAGE_BUILD_MAX_WORKERS: "3"
-  SHOULD_PROMOTE: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || inputs.promote }}
+  SHOULD_PROMOTE: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'release' || inputs.promote }}
 
 jobs:
   prepare-release:
     runs-on: ubuntu-latest
     outputs:
-      release_version: ${{ steps.release_version.outputs.pep440 }}
+      release_version: ${{ steps.version.outputs.docker_tag }}
       validation_tag: ${{ steps.validation_tag.outputs.value }}
       cuda_versions: ${{ steps.image_metadata.outputs.cuda_versions }}
       default_cuda_version: ${{ steps.image_metadata.outputs.default_cuda_version }}
@@ -55,8 +57,8 @@ jobs:
 
       - name: Validate release ref
         run: |
-          if [ "$SHOULD_PROMOTE" = "true" ] && [ "$GITHUB_REF" != "refs/heads/main" ]; then
-            echo "Publishing release tags is only allowed from main."
+          if [ "$SHOULD_PROMOTE" = "true" ] && [ "$GITHUB_REF" != "refs/heads/main" ] && [ "$GITHUB_EVENT_NAME" != "release" ]; then
+            echo "Publishing prerelease tags is only allowed from main."
             exit 1
           fi
           if [ "$SHOULD_PROMOTE" != "true" ]; then
@@ -76,10 +78,15 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra dev
 
-      - name: Determine Boileroom release version
-        id: release_version
+      - name: Determine Boileroom version
+        id: version
         run: |
-          uv run python ./scripts/ci/derive_version.py --github-output "$GITHUB_OUTPUT"
+          version_args=()
+          if [ "$GITHUB_EVENT_NAME" = "release" ]; then
+            version_args+=(--release-tag "$GITHUB_REF_NAME")
+          fi
+
+          uv run python ./scripts/ci/derive_version.py "${version_args[@]}" --github-output "$GITHUB_OUTPUT"
 
       - name: Determine validation tag
         id: validation_tag
@@ -188,7 +195,7 @@ jobs:
   promote-validated-images:
     needs: [ prepare-release, build-validation-images ]
     runs-on: ubuntu-latest
-    if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || inputs.promote }}
+    if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'release' || inputs.promote }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -216,7 +223,7 @@ jobs:
           username: ${{ env.DOCKERHUB_USERNAME_FOR_RUN }}
           password: ${{ secrets[env.DOCKERHUB_TOKEN_SECRET_FOR_RUN] }}
 
-      - name: Promote validated images to version tag
+      - name: Promote validated images to target tag
         run: |
           uv run python ./scripts/images/promote_image_tags.py \
             --all-cuda \

@@ -43,16 +43,17 @@
 - Explicit image-tag overrides still work:
   - Modal via `BOILEROOM_MODAL_IMAGE_TAG`
   - Apptainer via `backend="apptainer:<tag>"`
-- Canonical published tags are CUDA-qualified, for example `cuda12.6-0.3.0`.
-- The default CUDA line `12.6` also gets an unqualified alias for the same version, for example `0.3.0`.
+- Canonical published tags are CUDA-qualified, for example `cuda12.6-0.3.0` or `cuda12.6-0.3.1-alpha.1`.
+- The default CUDA line `12.6` also gets an unqualified alias for the same version, for example `0.3.0` or `0.3.1-alpha.1`.
 - Temporary validation tags such as `sha-<commit>` are allowed and should be deleted after use.
 
 ## Release Flow
-- Merging to `main` publishes Docker Hub images for an automatically derived `0.3.x` version.
-- The workflow first publishes a temporary `sha-<commit>` tag, verifies it, then promotes it to `0.3.x` tags.
-- The `0.3.x` patch component is derived from commits after the configured CI baseline and grows with each main-branch commit.
-- PyPI publication is separate and happens from the GitHub release workflow, which injects the `0.3.x` release tag into `pyproject.toml` before building.
-- Changing `project.version` changes package release semantics, but Docker image tags are derived by CI.
+- Merging to `main` publishes Docker Hub images for an automatically derived alpha prerelease tag such as `0.3.1-alpha.1`.
+- The workflow first publishes a temporary `sha-<commit>` tag, verifies it, then promotes it to the derived alpha tag.
+- Alpha numbers are counted from the latest reachable stable release tag; before the first stable release tag, they use the configured CI baseline.
+- Publishing a GitHub release from a `vX.Y.Z` tag promotes verified Docker images to the stable `X.Y.Z` tag.
+- PyPI publication is separate and happens from the GitHub release workflow, which injects the stable release tag into `pyproject.toml` before building.
+- Changing `project.version` changes the stable target for subsequent alpha image tags and package release semantics.
 
 ## Apptainer Notes
 - Apptainer images are pulled from Docker Hub and cached as `.sif` files.

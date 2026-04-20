@@ -1,4 +1,4 @@
-"""Derive CI/CD release versions from the main-branch commit count."""
+"""Derive CI/CD release and prerelease versions."""
 
 from __future__ import annotations
 
@@ -11,6 +11,9 @@ from pathlib import Path
 MAIN_VERSION_BASE_SHA = "48e8a23fbde63e95a0e39fe0d5748c3f338b30b3"
 DEFAULT_PYPROJECT_PATH = Path(__file__).resolve().parents[2] / "pyproject.toml"
 VERSION_PATTERN = re.compile(r"^(?P<major>0|[1-9]\d*)\.(?P<minor>0|[1-9]\d*)\.(?P<patch>0|[1-9]\d*)$")
+RELEASE_TAG_PATTERN = re.compile(
+    r"^(?:refs/tags/)?v(?P<major>0|[1-9]\d*)\.(?P<minor>0|[1-9]\d*)\.(?P<patch>0|[1-9]\d*)$"
+)
 
 
 def run_git(args: list[str]) -> str:
@@ -32,29 +35,81 @@ def parse_version(version: str) -> tuple[int, int, int]:
     return int(match.group("major")), int(match.group("minor")), int(match.group("patch"))
 
 
-def main_patch_for_head(head_ref: str = "HEAD", base_patch: int | None = None) -> int:
-    """Return the patch version offset for ``head_ref`` on the main release line."""
-    commit_count = run_git(["rev-list", "--count", f"{MAIN_VERSION_BASE_SHA}..{head_ref}"])
-    if base_patch is None:
-        base_patch = parse_version(pyproject_version())[2]
-    return base_patch + int(commit_count)
+def normalize_release_tag(tag: str) -> str:
+    """Return a stable version from a release tag such as ``v0.3.7``."""
+    match = RELEASE_TAG_PATTERN.fullmatch(tag)
+    if match is None:
+        raise ValueError(f"Expected a release tag like v0.3.0, got {tag!r}.")
+    return f"{match.group('major')}.{match.group('minor')}.{match.group('patch')}"
+
+
+def reachable_release_tags(head_ref: str = "HEAD") -> list[tuple[int, int, int, str]]:
+    """Return reachable stable release tags."""
+    raw_tags = run_git(["tag", "--merged", head_ref, "--list"])
+    release_tags: list[tuple[int, int, int, str]] = []
+    for tag in raw_tags.splitlines():
+        try:
+            normalized = normalize_release_tag(tag)
+        except ValueError:
+            continue
+        version_parts = parse_version(normalized)
+        release_tags.append((*version_parts, tag))
+    return sorted(release_tags)
+
+
+def release_tags_before(base_version: str, head_ref: str = "HEAD") -> list[tuple[int, int, int, str]]:
+    """Return reachable stable release tags older than ``base_version``."""
+    base_parts = parse_version(base_version)
+    return [tag_parts for tag_parts in reachable_release_tags(head_ref) if tag_parts[:3] < base_parts]
+
+
+def prerelease_base_ref(head_ref: str = "HEAD", base_version: str | None = None) -> str:
+    """Return the ref that starts the current prerelease sequence."""
+    version = base_version or pyproject_version()
+    version_parts = parse_version(version)
+    stable_tags = reachable_release_tags(head_ref)
+    matching_tags = [tag for *tag_version, tag in stable_tags if tuple(tag_version) == version_parts]
+    if matching_tags:
+        raise ValueError(
+            f"Stable release tag {matching_tags[-1]!r} already matches pyproject.version {version!r}. "
+            "Bump pyproject.version to the next release target or adjust the release process."
+        )
+
+    release_tags = [tag_parts for tag_parts in stable_tags if tag_parts[:3] < version_parts]
+    if release_tags:
+        return release_tags[-1][3]
+    return MAIN_VERSION_BASE_SHA
+
+
+def main_prerelease_number(head_ref: str = "HEAD", base_version: str | None = None) -> int:
+    """Return the alpha prerelease number for ``head_ref``."""
+    base_ref = prerelease_base_ref(head_ref, base_version)
+    commit_count = int(run_git(["rev-list", "--count", f"{base_ref}..{head_ref}"]))
+    return max(1, commit_count)
 
 
 def main_version(head_ref: str = "HEAD", base_version: str | None = None) -> str:
-    """Return the PEP 440 version for ``head_ref`` on the main release line."""
-    major, minor, base_patch = parse_version(base_version or pyproject_version())
-    patch = main_patch_for_head(head_ref, base_patch)
-    return f"{major}.{minor}.{patch}"
+    """Return the Docker tag for ``head_ref`` on the main prerelease line."""
+    major, minor, patch = parse_version(base_version or pyproject_version())
+    alpha = main_prerelease_number(head_ref, base_version)
+    return f"{major}.{minor}.{patch}-alpha.{alpha}"
 
 
 def version_from_release_tag(tag: str, base_version: str | None = None) -> str:
-    """Return a PEP 440 version from a release tag such as ``0.3.7``."""
-    normalized = tag.removeprefix("refs/tags/")
+    """Return a stable version from a release tag such as ``v0.3.7``."""
+    normalized = normalize_release_tag(tag)
     base_major, base_minor, _ = parse_version(base_version or pyproject_version())
     release_major, release_minor, _ = parse_version(normalized)
     if (release_major, release_minor) != (base_major, base_minor):
-        raise ValueError(f"Expected a release tag like {base_major}.{base_minor}.x, got {tag!r}.")
+        raise ValueError(f"Expected a release tag like v{base_major}.{base_minor}.x, got {tag!r}.")
     return normalized
+
+
+def pep440_version(version: str) -> str:
+    """Return the PEP 440 spelling for a stable or alpha Docker tag."""
+    if "-alpha." in version:
+        return version.replace("-alpha.", "a", 1)
+    return version
 
 
 def write_pyproject_version(path: Path, version: str) -> None:
@@ -69,14 +124,15 @@ def write_pyproject_version(path: Path, version: str) -> None:
 def write_github_output(path: Path, version: str) -> None:
     """Append version outputs for GitHub Actions."""
     with path.open("a", encoding="utf-8") as output:
-        output.write(f"pep440={version}\n")
+        output.write(f"pep440={pep440_version(version)}\n")
+        output.write(f"docker_tag={version}\n")
 
 
 def parse_args() -> argparse.Namespace:
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--head-ref", default="HEAD", help="Git ref to version. Defaults to HEAD.")
-    parser.add_argument("--release-tag", help="Release tag to normalize, for example 0.3.7.")
+    parser.add_argument("--release-tag", help="Release tag to normalize, for example v0.3.7.")
     parser.add_argument(
         "--base-pyproject",
         type=Path,
@@ -87,7 +143,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--github-output",
         type=Path,
-        help="Optional GitHub Actions output file that receives the pep440 value.",
+        help="Optional GitHub Actions output file that receives pep440 and docker_tag values.",
     )
     return parser.parse_args()
 

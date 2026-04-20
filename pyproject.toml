@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "boileroom"
-# Release automation treats this as the base release line. Change it only
-# when starting a new minor line; CI derives patch versions automatically.
+# Release automation treats this as the current stable target. Main-branch
+# image builds publish prerelease tags such as 0.3.0-alpha.1 from it.
 version = "0.3.0"
 authors = [
     { name="Jakub Lála", email="jakublala@gmail.com" },
