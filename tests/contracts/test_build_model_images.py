@@ -114,8 +114,8 @@ def test_build_base_verbose_echoes_plain_progress(monkeypatch, tmp_path) -> None
     assert echo is True
 
 
-def test_build_base_local_base_uses_daemon_builder_then_push(monkeypatch, tmp_path) -> None:
-    """Local-base builds should publish tags from the daemon image store."""
+def test_build_base_local_base_uses_buildx_cache_load_then_push(monkeypatch, tmp_path) -> None:
+    """Local-base builds should keep BuildKit cache while loading tags locally."""
     calls: list[tuple[list[str], Path | None, bool]] = []
 
     def fake_run(cmd: list[str], log_file: Path | None = None, echo: bool = True) -> None:
@@ -136,19 +136,19 @@ def test_build_base_local_base_uses_daemon_builder_then_push(monkeypatch, tmp_pa
 
     build_cmd = calls[0][0]
     push_cmds = [call[0] for call in calls[1:]]
-    assert build_cmd[:2] == ["docker", "build"]
-    assert "--load" not in build_cmd
+    assert build_cmd[:3] == ["docker", "buildx", "build"]
+    assert "--load" in build_cmd
     assert "--push" not in build_cmd
-    assert "--cache-from" not in build_cmd
-    assert "--cache-to" not in build_cmd
+    assert "--cache-from" in build_cmd
+    assert "--cache-to" in build_cmd
     assert push_cmds == [
         ["docker", "push", f"docker.io/jakublala/boileroom-base:cuda{DEFAULT_CUDA_VERSION}-sha-test"],
         ["docker", "push", "docker.io/jakublala/boileroom-base:sha-test"],
     ]
 
 
-def test_build_model_local_base_uses_daemon_builder_then_push(monkeypatch, tmp_path) -> None:
-    """Local-base model builds should resolve FROM tags from the daemon image store."""
+def test_build_model_local_base_uses_buildx_cache_context_then_push(monkeypatch, tmp_path) -> None:
+    """Local-base model builds should expose the loaded base image to buildx."""
     calls: list[tuple[list[str], Path | None, bool]] = []
 
     def fake_run(cmd: list[str], log_file: Path | None = None, echo: bool = True) -> None:
@@ -158,11 +158,12 @@ def test_build_model_local_base_uses_daemon_builder_then_push(monkeypatch, tmp_p
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(build_model_images, "run", fake_run)
 
+    base_image_reference = f"docker.io/jakublala/boileroom-base:cuda{DEFAULT_CUDA_VERSION}-sha-test"
     build_model_images.build_model(
         build_model_images.BuildTask(
             cuda_version=DEFAULT_CUDA_VERSION,
             image_spec=model_spec,
-            base_image_reference=f"docker.io/jakublala/boileroom-base:cuda{DEFAULT_CUDA_VERSION}-sha-test",
+            base_image_reference=base_image_reference,
             tag="sha-test",
         ),
         "linux/amd64",
@@ -174,11 +175,13 @@ def test_build_model_local_base_uses_daemon_builder_then_push(monkeypatch, tmp_p
 
     build_cmd = calls[0][0]
     push_cmds = [call[0] for call in calls[1:]]
-    assert build_cmd[:2] == ["docker", "build"]
-    assert "--load" not in build_cmd
+    assert build_cmd[:3] == ["docker", "buildx", "build"]
+    assert "--load" in build_cmd
     assert "--push" not in build_cmd
-    assert "--cache-from" not in build_cmd
-    assert "--cache-to" not in build_cmd
+    assert "--cache-from" in build_cmd
+    assert "--cache-to" in build_cmd
+    assert "--build-context" in build_cmd
+    assert f"{base_image_reference}=docker-image://{base_image_reference}" in build_cmd
     assert push_cmds == [
         ["docker", "push", f"docker.io/jakublala/{model_spec.image_name}:cuda{DEFAULT_CUDA_VERSION}-sha-test"],
         ["docker", "push", f"docker.io/jakublala/{model_spec.image_name}:sha-test"],
@@ -319,10 +322,10 @@ def test_local_base_push_builds_locally_then_pushes(monkeypatch, tmp_path) -> No
 
     build_model_images.main()
 
-    assert buildx_calls == 0
-    assert base_calls == [(True, True)]
+    assert buildx_calls == 1
+    assert base_calls == [(False, True)]
     assert model_calls == [
-        (True, True, f"docker.io/jakublala/boileroom-base:cuda{DEFAULT_CUDA_VERSION}-sha-test"),
-        (True, True, f"docker.io/jakublala/boileroom-base:cuda{DEFAULT_CUDA_VERSION}-sha-test"),
-        (True, True, f"docker.io/jakublala/boileroom-base:cuda{DEFAULT_CUDA_VERSION}-sha-test"),
+        (False, True, f"docker.io/jakublala/boileroom-base:cuda{DEFAULT_CUDA_VERSION}-sha-test"),
+        (False, True, f"docker.io/jakublala/boileroom-base:cuda{DEFAULT_CUDA_VERSION}-sha-test"),
+        (False, True, f"docker.io/jakublala/boileroom-base:cuda{DEFAULT_CUDA_VERSION}-sha-test"),
     ]
