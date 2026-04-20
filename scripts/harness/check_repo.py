@@ -152,6 +152,20 @@ def _module_name_for_path(repo_root: Path, path: Path) -> str:
     return ".".join(relative_path.parts)
 
 
+def _module_path_for_name(repo_root: Path, module_path: str) -> tuple[Path, bool] | None:
+    """Return the source file for a dotted module and whether it is a package."""
+
+    module_file = repo_root / f"{module_path.replace('.', '/')}.py"
+    if module_file.exists():
+        return module_file, False
+
+    package_file = repo_root / module_path.replace(".", "/") / "__init__.py"
+    if package_file.exists():
+        return package_file, True
+
+    return None
+
+
 def _resolve_import_from_module(repo_root: Path, path: Path, node: ast.ImportFrom) -> list[str]:
     """Resolve an ImportFrom node to fully qualified module names."""
 
@@ -260,19 +274,74 @@ def check_lightweight_types_imports(
     return issues
 
 
-def _class_exists_in_module(repo_root: Path, dotted_path: str) -> bool:
+def _resolve_reexported_class_path(
+    repo_root: Path,
+    current_module_path: str,
+    current_path: Path,
+    is_package: bool,
+    node: ast.ImportFrom,
+    class_name: str,
+) -> str | None:
+    """Return the original dotted class path for a matching re-export."""
+
+    if node.level == 0:
+        import_module_path = node.module
+    else:
+        package_parts = current_module_path.split(".") if is_package else current_module_path.split(".")[:-1]
+        keep_count = len(package_parts) - node.level + 1
+        if keep_count < 0:
+            return None
+        base_parts = package_parts[:keep_count]
+        import_module_path = ".".join([*base_parts, *(node.module.split(".") if node.module else [])])
+
+    for alias in node.names:
+        if alias.name == "*":
+            continue
+        exported_name = alias.asname or alias.name
+        if exported_name != class_name:
+            continue
+        if import_module_path:
+            return f"{import_module_path}.{alias.name}"
+
+        resolved_modules = _resolve_import_from_module(repo_root, current_path, node)
+        matching_module = next((module for module in resolved_modules if module.rsplit(".", 1)[-1] == alias.name), None)
+        if matching_module is not None:
+            return matching_module
+
+    return None
+
+
+def _class_exists_in_module(repo_root: Path, dotted_path: str, seen: set[str] | None = None) -> bool:
     """Return whether a dotted class path exists without importing the module."""
+
+    seen = set() if seen is None else seen
+    if dotted_path in seen:
+        return False
+    seen.add(dotted_path)
 
     module_path, separator, class_name = dotted_path.rpartition(".")
     if not separator:
         return False
-    candidate = repo_root / f"{module_path.replace('.', '/')}.py"
-    if not candidate.exists():
-        candidate = repo_root / module_path.replace(".", "/") / "__init__.py"
-    if not candidate.exists():
+    module_source = _module_path_for_name(repo_root, module_path)
+    if module_source is None:
         return False
+    candidate, is_package = module_source
     tree = ast.parse(candidate.read_text(encoding="utf-8"), filename=str(candidate))
-    return any(isinstance(node, ast.ClassDef) and node.name == class_name for node in tree.body)
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef) and node.name == class_name:
+            return True
+        if isinstance(node, ast.ImportFrom):
+            reexported_path = _resolve_reexported_class_path(
+                repo_root,
+                module_path,
+                candidate,
+                is_package,
+                node,
+                class_name,
+            )
+            if reexported_path is not None and _class_exists_in_module(repo_root, reexported_path, seen):
+                return True
+    return False
 
 
 def _image_specs_by_key(image_specs: Sequence[RuntimeImageSpec]) -> dict[str, RuntimeImageSpec]:
@@ -447,7 +516,8 @@ def check_wrapper_exposure(model_specs: Sequence[ModelSpec]) -> list[CheckIssue]
     for spec in model_specs:
         try:
             wrapper_cls = resolve_object(spec.wrapper_class_path)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
+            # Wrapper modules can fail through third-party import-time errors; report them as harness issues.
             issues.append(
                 _issue(
                     "unresolved-wrapper-class",
@@ -471,7 +541,8 @@ def check_wrapper_exposure(model_specs: Sequence[ModelSpec]) -> list[CheckIssue]
         if spec.modal_class_path is not None:
             try:
                 resolve_object(spec.modal_class_path)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
+                # Modal wrapper imports can fail before the class is reached; report the import failure.
                 issues.append(
                     _issue(
                         "unresolved-modal-class",
@@ -552,7 +623,7 @@ def check_smoke_targets(image_specs: Sequence[RuntimeImageSpec]) -> list[CheckIs
 
     issues: list[CheckIssue] = []
     expected_keys = {spec.key for spec in image_specs}
-    actual_keys = {image_key for image_key, *_rest in iter_image_targets(None, [])}
+    actual_keys = {image_key for image_key, *_rest in iter_image_targets(None, [], image_specs=image_specs)}
     missing = expected_keys - actual_keys
     extra = actual_keys - expected_keys
     if missing:
@@ -580,7 +651,8 @@ def run_checks(repo_root: Path = REPO_ROOT, contract: dict[str, Any] | None = No
     """Run all objective harness checks."""
 
     loaded_contract = contract or load_contract()
-    family_names = _family_dirs(repo_root) | {spec.family for spec in MODEL_SPECS} | {spec.key for spec in MODEL_IMAGE_SPECS}
+    # Image-only keys are reported by check_registry_image_consistency, not treated as family directories.
+    family_names = _family_dirs(repo_root) | {spec.family for spec in MODEL_SPECS}
     issues: list[CheckIssue] = []
     issues.extend(check_required_family_files(repo_root, loaded_contract, family_names))
     issues.extend(check_lightweight_types_imports(repo_root, loaded_contract, family_names))

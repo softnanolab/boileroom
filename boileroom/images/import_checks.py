@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Final
 
 from .metadata import (
     CUDA_MICROMAMBA_BASE,
     MODEL_IMAGE_SPECS,
+    RuntimeImageSpec,
     format_image_reference,
     get_supported_cuda,
     normalize_cuda_version,
@@ -45,7 +47,12 @@ def package_name_to_import_name(package_name: str) -> str | None:
     return IMPORT_NAME_OVERRIDES.get(package_name, package_name.replace("-", "_"))
 
 
-def iter_image_targets(tag: str | None, cuda_versions: list[str]) -> list[tuple[str, str, str, Path, Path]]:
+def iter_image_targets(
+    tag: str | None,
+    cuda_versions: list[str],
+    *,
+    image_specs: Sequence[RuntimeImageSpec] | None = None,
+) -> list[tuple[str, str, str, Path, Path]]:
     """Return model-image targets for smoke checks.
 
     Returns tuples of ``(image_key, image_reference, display_tag, env_path, core_path)``.
@@ -54,8 +61,9 @@ def iter_image_targets(tag: str | None, cuda_versions: list[str]) -> list[tuple[
     if cuda_versions and _CUDA_TAG_PATTERN.fullmatch(normalized_tag):
         raise ValueError("Do not combine --all-cuda/--cuda-version with an already CUDA-qualified --tag.")
 
+    specs = MODEL_IMAGE_SPECS if image_specs is None else image_specs
     targets: list[tuple[str, str, str, Path, Path]] = []
-    for spec in MODEL_IMAGE_SPECS:
+    for spec in specs:
         env_path = spec.context_path / "environment.yml"
         core_path = spec.context_path / "core.py"
         if cuda_versions:
