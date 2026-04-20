@@ -102,6 +102,17 @@ def append_registry_cache_args(
     )
 
 
+def append_local_image_context_args(cmd: list[str], image_reference: str) -> None:
+    """Make a locally loaded image reference available to buildx FROM resolution."""
+    cmd.extend(["--build-context", f"{image_reference}=docker-image://{image_reference}"])
+
+
+def push_image_references(image_references: tuple[str, ...]) -> None:
+    """Push all tags for a locally built image."""
+    for image_reference in image_references:
+        run(["docker", "push", image_reference])
+
+
 def run(cmd: list[str], log_file: Path | None = None, echo: bool = True) -> None:
     """Run a command and optionally capture the full output to a log file."""
     pretty = Colors.wrap("$ " + " ".join(shlex.quote(part) for part in cmd), Colors.blue)
@@ -217,7 +228,7 @@ def parse_args() -> argparse.Namespace:
         "--cuda-version",
         action="append",
         dest="cuda_versions",
-        help="CUDA version to build (repeatable). Supported values: 11.8, 12.6.",
+        help=f"CUDA version to build (repeatable). Supported values: {', '.join(sorted(CUDA_MICROMAMBA_BASE))}.",
     )
     parser.add_argument("--all-cuda", action="store_true", help="Build all supported CUDA variants.")
     parser.add_argument(
@@ -248,6 +259,14 @@ def parse_args() -> argparse.Namespace:
         help="Ignore --skip-existing and rebuild even when matching tags already exist.",
     )
     parser.add_argument("--max-workers", type=int, default=1, help="Maximum concurrent model-image builds.")
+    parser.add_argument(
+        "--local-base",
+        action="store_true",
+        help=(
+            "For single-platform pushed builds, load the base into the local Docker daemon and build model images "
+            "from that local base before pushing their tags."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -311,6 +330,7 @@ def build_base(
     no_cache: bool,
     use_local_docker_build: bool,
     verbose: bool = False,
+    push_after_build: bool = False,
 ) -> str:
     """Build the shared base image and return its canonical reference."""
     image_references = published_image_references(BASE_IMAGE_SPEC.image_name, cuda_version, tag)
@@ -323,6 +343,7 @@ def build_base(
     log_info(f"Publishing tags: {', '.join(image_references)}")
 
     log_file = Path.cwd() / f"{canonical_reference.replace('/', '_').replace(':', '_')}.log"
+    effective_output_flag = "--load" if push_after_build else output_flag
     if use_local_docker_build:
         cmd = [
             "docker",
@@ -346,7 +367,7 @@ def build_base(
             cmd,
             BASE_IMAGE_SPEC.image_name,
             cuda_version,
-            push=output_flag == "--push",
+            push=output_flag == "--push" or push_after_build,
             no_cache=no_cache,
         )
     if verbose:
@@ -356,11 +377,13 @@ def build_base(
     cmd.extend(["-f", str(BASE_IMAGE_SPEC.dockerfile_path), str(BASE_IMAGE_SPEC.context_path)])
     if no_cache:
         cmd.append("--no-cache")
-    if not use_local_docker_build and output_flag is not None:
-        cmd.append(output_flag)
+    if not use_local_docker_build and effective_output_flag is not None:
+        cmd.append(effective_output_flag)
 
     log_info(f"Build log: {log_file}")
     run(cmd, log_file=log_file, echo=verbose)
+    if push_after_build:
+        push_image_references(image_references)
     return canonical_reference
 
 
@@ -371,6 +394,7 @@ def build_model(
     no_cache: bool,
     use_local_docker_build: bool,
     verbose: bool = False,
+    push_after_build: bool = False,
 ) -> tuple[str, ...]:
     """Build a single model image and return all published references."""
     image_references = published_image_references(task.image_spec.image_name, task.cuda_version, task.tag)
@@ -380,6 +404,7 @@ def build_model(
     log_info(f"Publishing tags: {', '.join(image_references)}")
 
     log_file = Path.cwd() / f"{canonical_reference.replace('/', '_').replace(':', '_')}.log"
+    effective_output_flag = "--load" if push_after_build else output_flag
     if use_local_docker_build:
         cmd = [
             "docker",
@@ -407,9 +432,11 @@ def build_model(
             cmd,
             task.image_spec.image_name,
             task.cuda_version,
-            push=output_flag == "--push",
+            push=output_flag == "--push" or push_after_build,
             no_cache=no_cache,
         )
+        if push_after_build:
+            append_local_image_context_args(cmd, task.base_image_reference)
     if verbose:
         cmd.extend(["--progress", "plain"])
     for image_reference in image_references:
@@ -417,11 +444,13 @@ def build_model(
     cmd.extend(["-f", str(task.image_spec.dockerfile_path), str(task.image_spec.context_path)])
     if no_cache:
         cmd.append("--no-cache")
-    if not use_local_docker_build and output_flag is not None:
-        cmd.append(output_flag)
+    if not use_local_docker_build and effective_output_flag is not None:
+        cmd.append(effective_output_flag)
 
     log_info(f"Build log: {log_file}")
     run(cmd, log_file=log_file, echo=verbose)
+    if push_after_build:
+        push_image_references(image_references)
     return image_references
 
 
@@ -435,13 +464,24 @@ def main() -> None:
         cuda_versions = compute_cuda_versions(args.cuda_versions, args.all_cuda)
         output_flag = resolve_output_flag(args.push, args.load, args.platform)
         use_local_docker_build = should_use_local_docker_build(args.push, args.platform)
+        if args.local_base:
+            if not args.push:
+                raise ValueError("--local-base only applies to pushed builds.")
+            if "," in args.platform:
+                raise ValueError("--local-base requires a single --platform value.")
+            use_local_docker_build = False
         if not use_local_docker_build:
             ensure_buildx_builder()
     except Exception as exc:
         log_error(str(exc))
         raise SystemExit(1) from exc
 
-    if use_local_docker_build:
+    if args.local_base:
+        log_info(
+            "Using buildx --load and named image contexts for single-platform pushed images so model builds "
+            "inherit the local base image."
+        )
+    elif use_local_docker_build:
         log_info("Using plain docker build for single-platform local images.")
     elif output_flag is None:
         log_warn(
@@ -485,6 +525,7 @@ def main() -> None:
                     args.no_cache,
                     use_local_docker_build,
                     args.verbose,
+                    push_after_build=args.local_base,
                 )
         except Exception as exc:
             log_error(f"Failed to build base image for CUDA {cuda_version}: {exc}")
@@ -530,6 +571,7 @@ def main() -> None:
                         args.no_cache,
                         use_local_docker_build,
                         args.verbose,
+                        push_after_build=args.local_base,
                     )
                 )
             except Exception as exc:
@@ -547,6 +589,7 @@ def main() -> None:
                     args.no_cache,
                     use_local_docker_build,
                     args.verbose,
+                    push_after_build=args.local_base,
                 ): task
                 for task in tasks
             }

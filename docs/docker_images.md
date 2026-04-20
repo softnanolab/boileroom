@@ -24,6 +24,7 @@ uv run python scripts/images/build_model_images.py --cuda-version=12.6 --platfor
 uv run python scripts/images/build_model_images.py --no-cache ...
 uv run python scripts/images/build_model_images.py --verbose ...
 uv run python scripts/images/build_model_images.py --all-cuda --tag=0.3.0 --push ...
+uv run python scripts/images/build_model_images.py --cuda-version=12.6 --tag=0.3.0 --push --local-base ...
 uv run python scripts/images/build_model_images.py --cuda-version=12.6 --tag=sha-$(git rev-parse --short HEAD) --push ...
 ```
 
@@ -45,9 +46,13 @@ export BOILEROOM_MODAL_IMAGE_TAG=0.3.0
 Single-platform non-push builds auto-load into the local Docker daemon. Multi-platform builds should generally be paired with `--push`.
 Pushed buildx builds import and export stable per-image registry caches such as `boileroom-chai1:buildcache-cuda12.6`, so GitHub Actions runners can reuse dependency layers across validation tags and releases. Pass `--no-cache` to bypass those caches.
 Pass `--verbose` to stream Docker build output and plain BuildKit progress while still writing per-image log files.
+In CI, the release workflow splits CUDA lines across separate GitHub-hosted runners and passes `--max-workers` within each CUDA job. That keeps the base image dependency order intact while letting model image builds and Docker Hub transfers overlap.
+For single-platform publishing, pass `--local-base` to build and tag images with `buildx --load` before pushing. This keeps dependent model builds from waiting on Docker Hub to receive and then re-serve the base image. Model builds also receive the loaded base tag as a named `docker-image://` build context so their `FROM` instruction resolves locally while preserving BuildKit registry cache import/export.
 
 ### ARM64 smoke workflow
-The `.github/workflows/arm64-image-smoke.yml` workflow runs on an `ubuntu-24.04-arm` runner, builds the image set for `linux/arm64` with the `arm64-ci` tag, and then runs the import and server-health smoke checks. It is informational and does not push images.
+The `.github/workflows/arm64-image-smoke.yml` workflow runs on pull requests to `main` and on manual dispatch. It uses an `ubuntu-24.04-arm` runner, builds the image set for `linux/arm64` with the `arm64-ci` tag, and then runs the import and server-health smoke checks. It is informational and does not push images.
+
+On `main`, ARM64 image smoke is folded into the Docker publishing workflow instead of running as a second separate workflow. That keeps the branch smoke path fast and local while making release promotion wait for the same ARM64 smoke coverage.
 
 To reproduce the same path locally on an ARM64 machine, run:
 
@@ -140,12 +145,36 @@ This publishes:
 ### 📦 CI publishing (production)
 GitHub Actions at `.github/workflows/build-docker-images.yml` now drives the release pipeline:
 - Triggers automatically on pushes to `main` and can also be run manually via **Run workflow** from `main`.
+- Manual runs can also be dispatched from a non-`main` branch with `promote` left disabled. That validation-only path builds and pushes temporary `sha-<commit>` validation images, runs the local AMD64 and ARM64 smoke checks, and skips public version-tag promotion.
 - Builds a temporary `sha-<commit>` validation tag, verifies that exact pushed artifact, and only then promotes it to an automatically derived `0.3.x` version from `scripts/ci/derive_version.py`.
+- Builds each CUDA line in its own job, with model images parallelized behind the matching locally available base image by `--local-base` and `--max-workers`.
+- Verifies canonical CUDA-qualified tags from the same runner-local images after each CUDA build. The default-CUDA alias is checked locally in the `12.6` job.
+- Runs the ARM64 smoke build and checks in the same publishing workflow on `main`; the standalone ARM64 workflow is reserved for pull requests and manual runs.
 - The `0.3.x` patch component is the number of commits after the configured main-line baseline, so it increases with every new commit on `main`.
 - Each successful run publishes canonical CUDA-qualified tags and the unqualified version alias for the default `12.6` line.
 - The official release path currently publishes `linux/amd64` only. If you want to experiment with additional architectures, pass an explicit multi-platform `--platform` value and validate it separately before treating it as supported.
 - Future merges inherit dependency cache layers through BuildKit registry caches, keeping CI times reasonable even on fresh GitHub-hosted runners.
 - PyPI is not published by this workflow. Python package publication happens later from the GitHub release workflow, which injects the `0.3.x` release tag into `pyproject.toml` before building.
+
+To test the publishing workflow before merging:
+1. Push your branch.
+2. Open **Build and Push Boileroom Images** in GitHub Actions.
+3. Choose **Run workflow**, select your branch, leave `promote` disabled, and optionally set `docker_repository` to a temporary namespace such as `docker.io/my-dockerhub-user`.
+4. After the run, delete the temporary `sha-<commit>` validation tags if you no longer need them.
+
+The same branch validation run can be triggered with GitHub CLI:
+```bash
+gh secret set DOCKERHUB_TEST_TOKEN
+
+gh workflow run build-docker-images.yml \
+  --ref "$(git branch --show-current)" \
+  -f promote=false \
+  -f docker_repository=docker.io/my-dockerhub-user \
+  -f dockerhub_username=my-dockerhub-user \
+  -f dockerhub_token_secret=DOCKERHUB_TEST_TOKEN
+```
+
+The `gh secret set` command reads the token from your terminal and stores it as a repository secret. Avoid passing Docker Hub tokens through workflow inputs because inputs are visible in run metadata.
 
 ### 🧱 Convert Docker images to Apptainer (SIF)
 If your cluster uses Apptainer/Singularity for job execution, you can convert the Docker images to a `.sif` image in two common ways:
