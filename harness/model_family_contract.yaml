@@ -1,0 +1,39 @@
+version: 1
+
+model_family:
+  required_files:
+    - __init__.py
+    - core.py
+    - types.py
+    - image.py
+    - Dockerfile
+    - environment.yml
+    - requirements.txt
+    - config.yaml
+
+  lightweight_types:
+    allowed_import_roots:
+      - __future__
+      - collections
+      - dataclasses
+      - enum
+      - numpy
+      - pathlib
+      - typing
+    allowed_import_modules:
+      - boileroom.base
+    forbidden_import_roots:
+      - biotite
+      - boltz
+      - chai_lab
+      - esm
+      - fastapi
+      - modal
+      - pydantic
+      - torch
+      - transformers
+
+registry:
+  required_backends:
+    - modal
+    - apptainer
