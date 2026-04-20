@@ -47,7 +47,7 @@ Single-platform non-push builds auto-load into the local Docker daemon. Multi-pl
 Pushed buildx builds import and export stable per-image registry caches such as `boileroom-chai1:buildcache-cuda12.6`, so GitHub Actions runners can reuse dependency layers across validation tags and releases. Pass `--no-cache` to bypass those caches.
 Pass `--verbose` to stream Docker build output and plain BuildKit progress while still writing per-image log files.
 In CI, the release workflow splits CUDA lines across separate GitHub-hosted runners and passes `--max-workers` within each CUDA job. That keeps the base image dependency order intact while letting model image builds and Docker Hub transfers overlap.
-For single-platform publishing, pass `--local-base` to build and tag images through the local Docker daemon before pushing. This keeps dependent model builds from waiting on Docker Hub to receive and then re-serve the base image.
+For single-platform publishing, pass `--local-base` to build and tag images through the local Docker daemon before pushing. This keeps dependent model builds from waiting on Docker Hub to receive and then re-serve the base image, and ensures model Dockerfiles can resolve the locally built base tag in `FROM`. Because this path uses `docker build` instead of the isolated buildx `docker-container` builder, it relies on the runner-local Docker cache rather than the registry cache import/export path.
 
 ### ARM64 smoke workflow
 The `.github/workflows/arm64-image-smoke.yml` workflow runs on pull requests to `main` and on manual dispatch. It uses an `ubuntu-24.04-arm` runner, builds the image set for `linux/arm64` with the `arm64-ci` tag, and then runs the import and server-health smoke checks. It is informational and does not push images.
@@ -153,7 +153,7 @@ GitHub Actions at `.github/workflows/build-docker-images.yml` now drives the rel
 - The `0.3.x` patch component is the number of commits after the configured main-line baseline, so it increases with every new commit on `main`.
 - Each successful run publishes canonical CUDA-qualified tags and the unqualified version alias for the default `12.6` line.
 - The official release path currently publishes `linux/amd64` only. If you want to experiment with additional architectures, pass an explicit multi-platform `--platform` value and validate it separately before treating it as supported.
-- Future merges inherit dependency cache layers through BuildKit registry caches, keeping CI times reasonable even on fresh GitHub-hosted runners.
+- Non-`--local-base` pushed buildx runs can inherit dependency cache layers through BuildKit registry caches. The release workflow's `--local-base` path favors runner-local base visibility for dependent model builds.
 - PyPI is not published by this workflow. Python package publication happens later from the GitHub release workflow, which injects the `0.3.x` release tag into `pyproject.toml` before building.
 
 To test the publishing workflow before merging:

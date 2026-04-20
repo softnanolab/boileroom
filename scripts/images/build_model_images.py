@@ -339,7 +339,8 @@ def build_base(
 
     log_file = Path.cwd() / f"{canonical_reference.replace('/', '_').replace(':', '_')}.log"
     effective_output_flag = "--load" if push_after_build else output_flag
-    if use_local_docker_build:
+    build_with_local_daemon = use_local_docker_build or push_after_build
+    if build_with_local_daemon:
         cmd = [
             "docker",
             "build",
@@ -372,7 +373,7 @@ def build_base(
     cmd.extend(["-f", str(BASE_IMAGE_SPEC.dockerfile_path), str(BASE_IMAGE_SPEC.context_path)])
     if no_cache:
         cmd.append("--no-cache")
-    if not use_local_docker_build and effective_output_flag is not None:
+    if not build_with_local_daemon and effective_output_flag is not None:
         cmd.append(effective_output_flag)
 
     log_info(f"Build log: {log_file}")
@@ -400,7 +401,8 @@ def build_model(
 
     log_file = Path.cwd() / f"{canonical_reference.replace('/', '_').replace(':', '_')}.log"
     effective_output_flag = "--load" if push_after_build else output_flag
-    if use_local_docker_build:
+    build_with_local_daemon = use_local_docker_build or push_after_build
+    if build_with_local_daemon:
         cmd = [
             "docker",
             "build",
@@ -437,7 +439,7 @@ def build_model(
     cmd.extend(["-f", str(task.image_spec.dockerfile_path), str(task.image_spec.context_path)])
     if no_cache:
         cmd.append("--no-cache")
-    if not use_local_docker_build and effective_output_flag is not None:
+    if not build_with_local_daemon and effective_output_flag is not None:
         cmd.append(effective_output_flag)
 
     log_info(f"Build log: {log_file}")
@@ -462,7 +464,7 @@ def main() -> None:
                 raise ValueError("--local-base only applies to pushed builds.")
             if "," in args.platform:
                 raise ValueError("--local-base requires a single --platform value.")
-            use_local_docker_build = False
+            use_local_docker_build = True
         if not use_local_docker_build:
             ensure_buildx_builder()
     except Exception as exc:
@@ -470,7 +472,7 @@ def main() -> None:
         raise SystemExit(1) from exc
 
     if args.local_base:
-        log_info("Using buildx --load for single-platform pushed images so model builds inherit the local base image.")
+        log_info("Using plain docker build for single-platform pushed images so model builds inherit the local base image.")
     elif use_local_docker_build:
         log_info("Using plain docker build for single-platform local images.")
     elif output_flag is None:
