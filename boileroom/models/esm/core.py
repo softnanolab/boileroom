@@ -456,11 +456,9 @@ class ESM2Core(EmbeddingAlgorithm):
         # Stack embeddings along batch dimension (0)
         embeddings = pad_and_stack(embeddings_list, residue_dim=0, batch_dim=0)
         if hidden_states is not None:
-            # Items in ``hidden_states_list`` come from ``hidden_states[batch_idx, :, chain_indices, :]``.
-            # NumPy's mixed basic/advanced indexing rule transposes the fancy axis to the front when an
-            # integer index and a 1-D fancy index are separated by a slice, so each item has shape
-            # (kept_seq_len, num_layers, embedding_dim). Pad on residue_dim=0 to match the variable K,
-            # then transpose to the public (batch, num_layers, seq_len, embedding_dim) output order.
+            # NumPy mixed basic/advanced indexing moves the fancy axis to the front, so each
+            # item has shape (kept_seq_len, num_layers, embedding_dim); pad the sequence axis
+            # and transpose back to the public (batch, num_layers, seq_len, embedding_dim) order.
             hidden_states = pad_and_stack(hidden_states_list, residue_dim=0, batch_dim=0)
             hidden_states = np.transpose(hidden_states, (0, 2, 1, 3))
         chain_index_out = pad_and_stack(chain_index_list, residue_dim=0, batch_dim=0, constant_value=-1)
