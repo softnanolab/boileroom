@@ -141,8 +141,8 @@ This publishes:
 ### 📦 CI publishing (production)
 GitHub Actions at `.github/workflows/build-docker-images.yml` now drives the image publishing pipeline:
 - Triggers automatically on pushes to `main`, on published GitHub releases, and can also be run manually via **Run workflow** from `main`.
-- Manual runs can also be dispatched from a non-`main` branch with `promote` left disabled. That validation-only path builds and pushes temporary `sha-<commit>` validation images, runs the local AMD64 and ARM64 smoke checks, and skips public version-tag promotion.
-- Builds a temporary `sha-<commit>` validation tag, verifies that exact pushed artifact, and only then promotes it. Pushes to `main` promote to an automatically derived alpha prerelease from `scripts/ci/derive_version.py`; full GitHub releases promote to the stable release tag.
+- Manual runs can also be dispatched from a non-`main` branch with `promote` left disabled. That validation-only path builds and pushes temporary `sha-<commit>` validation images, runs the local AMD64 and ARM64 smoke checks, and skips public version-tag publishing.
+- Pushes to `main` build and validate an automatically derived alpha prerelease tag from `scripts/ci/derive_version.py`, such as `0.3.1-alpha.1`. Full GitHub releases build and validate the stable release tag.
 - Builds each CUDA line in its own job, with model images parallelized behind the matching locally available base image by `--local-base` and `--max-workers`.
 - Verifies canonical CUDA-qualified tags from the same runner-local images after each CUDA build. The default-CUDA alias is checked locally in the `12.6` job.
 - Runs the ARM64 smoke build and checks in the same publishing workflow on `main`; the standalone ARM64 workflow is reserved for pull requests and manual runs.
@@ -150,7 +150,7 @@ GitHub Actions at `.github/workflows/build-docker-images.yml` now drives the ima
 - Each successful run publishes canonical CUDA-qualified tags and the unqualified version alias for the default `12.6` line.
 - The official release path currently publishes `linux/amd64` only. If you want to experiment with additional architectures, pass an explicit multi-platform `--platform` value and validate it separately before treating it as supported.
 - Future merges inherit dependency cache layers through BuildKit registry caches, keeping CI times reasonable even on fresh GitHub-hosted runners.
-- Published full GitHub releases from `vX.Y.Z` tags promote the same validated images to the stable `X.Y.Z` Docker tag.
+- Published full GitHub releases from `vX.Y.Z` tags publish the stable `X.Y.Z` Docker tag.
 - GitHub releases marked as pre-releases do not publish stable Docker or PyPI artifacts.
 - PyPI is not published by this workflow. Python package publication happens from the separate GitHub release workflow, which injects the stable release tag into `pyproject.toml` before building.
 
