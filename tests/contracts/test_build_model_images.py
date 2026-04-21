@@ -3,11 +3,13 @@
 from pathlib import Path
 
 from boileroom.images.metadata import DEFAULT_CUDA_VERSION
+import pytest
 from click.testing import CliRunner
+from pytest import CaptureFixture, MonkeyPatch
 from scripts.images import build_model_images
 
 
-def test_build_base_push_uses_registry_cache(monkeypatch, tmp_path) -> None:
+def test_build_base_push_uses_registry_cache(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
     """Pushed buildx builds should import and export stable registry cache layers."""
     calls: list[tuple[list[str], Path | None, bool]] = []
 
@@ -34,7 +36,7 @@ def test_build_base_push_uses_registry_cache(monkeypatch, tmp_path) -> None:
     assert f"type=registry,ref=docker.io/jakublala/boileroom-base:buildcache-cuda{DEFAULT_CUDA_VERSION},mode=max" in cmd
 
 
-def test_build_base_no_cache_disables_registry_cache(monkeypatch, tmp_path) -> None:
+def test_build_base_no_cache_disables_registry_cache(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
     """Explicit no-cache builds should not import or export BuildKit registry cache."""
     calls: list[tuple[list[str], Path | None, bool]] = []
 
@@ -67,7 +69,7 @@ def test_build_cache_reference_uses_explicit_repository() -> None:
     )
 
 
-def test_cli_exposes_documented_flags(monkeypatch) -> None:
+def test_cli_exposes_documented_flags(monkeypatch: MonkeyPatch) -> None:
     """The build helper should accept the documented flags."""
 
     captured: list[build_model_images.BuildOptions] = []
@@ -112,7 +114,56 @@ def test_cli_exposes_documented_flags(monkeypatch) -> None:
     ]
 
 
-def test_build_base_verbose_echoes_plain_progress(monkeypatch, tmp_path) -> None:
+def test_cli_rejects_unknown_flags(monkeypatch: MonkeyPatch) -> None:
+    """Invalid CLI options should fail before invoking the build workflow."""
+
+    captured: list[build_model_images.BuildOptions] = []
+    monkeypatch.setattr(build_model_images, "run_build", captured.append)
+
+    result = CliRunner().invoke(build_model_images.cli, ["--definitely-not-a-real-option"])
+
+    assert result.exit_code != 0
+    assert captured == []
+    assert "No such option" in result.output
+
+
+def test_run_build_validates_cuda_selection_before_docker(
+    monkeypatch: MonkeyPatch, capsys: CaptureFixture[str]
+) -> None:
+    """Semantic option errors should not be masked by missing Docker."""
+
+    options = build_model_images.BuildOptions(
+        tag="sha-test",
+        docker_user="docker.io/jakublala",
+        cuda_versions=None,
+        all_cuda=False,
+        platform="linux/amd64",
+        push=False,
+        load=False,
+        no_cache=False,
+        verbose=False,
+        skip_existing=False,
+        force_rebuild=False,
+        max_workers=1,
+        local_base=False,
+    )
+    docker_checked = False
+
+    def fake_ensure_docker() -> None:
+        nonlocal docker_checked
+        docker_checked = True
+
+    monkeypatch.setattr(build_model_images, "ensure_docker", fake_ensure_docker)
+
+    with pytest.raises(SystemExit) as exc_info:
+        build_model_images.run_build(options)
+
+    assert exc_info.value.code == 1
+    assert docker_checked is False
+    assert "Specify at least one --cuda-version or use --all-cuda." in capsys.readouterr().err
+
+
+def test_build_base_verbose_echoes_plain_progress(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
     """Verbose builds should print command output and request plain BuildKit progress."""
     calls: list[tuple[list[str], Path | None, bool]] = []
 
@@ -215,7 +266,7 @@ def test_build_model_local_base_uses_buildx_cache_context_then_push(monkeypatch,
     ]
 
 
-def test_main_skips_existing_base_and_model_tags(monkeypatch, tmp_path) -> None:
+def test_main_skips_existing_base_and_model_tags(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
     """The main build flow should skip existing tags when skip-existing is set."""
     options = build_model_images.BuildOptions(
         tag="sha-test",

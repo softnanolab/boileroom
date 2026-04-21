@@ -82,11 +82,11 @@ def promote_one(
 def run_promote_images(options: PromoteOptions) -> None:
     """Promote validated runtime images to public tags."""
 
-    ensure_buildx()
     docker_repository = normalize_docker_repository(options.docker_user)
     source_tag = normalize_requested_tag(options.source_tag)
     target_tag = normalize_requested_tag(options.target_tag)
     cuda_versions = compute_cuda_versions(options.cuda_versions, options.all_cuda)
+    ensure_buildx()
     image_specs = (BASE_IMAGE_SPEC, *MODEL_IMAGE_SPECS)
 
     for cuda_version in cuda_versions:
@@ -105,15 +105,18 @@ def run_promote_images(options: PromoteOptions) -> None:
 def cli(source_tag: str, target_tag: str, docker_user: str, cuda_versions: tuple[str, ...], all_cuda: bool) -> None:
     """Run the image promotion Click command."""
 
-    run_promote_images(
-        PromoteOptions(
-            source_tag=source_tag,
-            target_tag=target_tag,
-            docker_user=docker_user,
-            cuda_versions=none_if_empty(cuda_versions),
-            all_cuda=all_cuda,
+    try:
+        run_promote_images(
+            PromoteOptions(
+                source_tag=source_tag,
+                target_tag=target_tag,
+                docker_user=docker_user,
+                cuda_versions=none_if_empty(cuda_versions),
+                all_cuda=all_cuda,
+            )
         )
-    )
+    except ValueError as exc:
+        raise click.UsageError(str(exc)) from exc
 
 
 if __name__ == "__main__":

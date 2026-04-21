@@ -435,7 +435,6 @@ def run_build(options: BuildOptions) -> None:
     """Run the Docker image build workflow."""
 
     try:
-        ensure_docker()
         tag = resolve_publish_tag(options.tag)
         docker_repository = normalize_docker_repository(options.docker_user)
         cuda_versions = compute_cuda_versions(options.cuda_versions, options.all_cuda)
@@ -447,6 +446,7 @@ def run_build(options: BuildOptions) -> None:
             if "," in options.platform:
                 raise ValueError("--local-base requires a single --platform value.")
             use_local_docker_build = False
+        ensure_docker()
         if not use_local_docker_build:
             ensure_buildx_builder()
     except Exception as exc:

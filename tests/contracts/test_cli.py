@@ -3,6 +3,7 @@
 from pathlib import Path
 
 from click.testing import CliRunner
+from pytest import MonkeyPatch
 
 from scripts.ci import derive_version
 from scripts.harness import check_repo
@@ -38,7 +39,7 @@ def test_promote_cli_requires_source_and_target_tags() -> None:
     assert "Missing option '--source-tag'" in result.output
 
 
-def test_derive_version_cli_passes_path_options(monkeypatch, tmp_path) -> None:
+def test_derive_version_cli_passes_path_options(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
     """Path-valued Click options should reach the plain runner as Path objects."""
 
     captured: list[derive_version.VersionOptions] = []
@@ -76,3 +77,24 @@ def test_derive_version_cli_passes_path_options(monkeypatch, tmp_path) -> None:
     assert isinstance(captured[0].base_pyproject, Path)
     assert isinstance(captured[0].write_pyproject, Path)
     assert isinstance(captured[0].github_output, Path)
+
+
+def test_promote_cli_validates_cuda_selection_before_buildx(monkeypatch: MonkeyPatch) -> None:
+    """Usage errors should be reported before external Docker checks."""
+
+    buildx_checked = False
+
+    def fake_ensure_buildx() -> None:
+        nonlocal buildx_checked
+        buildx_checked = True
+
+    monkeypatch.setattr(promote_image_tags, "ensure_buildx", fake_ensure_buildx)
+
+    result = CliRunner().invoke(
+        promote_image_tags.cli,
+        ["--source-tag", "sha-test", "--target-tag", "0.3.0"],
+    )
+
+    assert result.exit_code == 2
+    assert "Specify at least one --cuda-version or use --all-cuda." in result.output
+    assert buildx_checked is False
