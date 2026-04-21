@@ -28,7 +28,7 @@ def pytest_report_header(config: pytest.Config) -> list[str]:
     """
     try:
         from boileroom.images.metadata import MODAL_IMAGE_TAG_ENV, get_docker_repository, get_modal_image_tag
-    except Exception as exc:  # pragma: no cover - defensive; keep pytest running if import fails
+    except ImportError as exc:  # pragma: no cover - defensive; keep pytest running if the module is missing
         return [f"boileroom image: <unresolved: {exc!s}>"]
 
     tag = get_modal_image_tag()
