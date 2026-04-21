@@ -5,6 +5,8 @@ import pathlib
 
 import pytest
 
+from boileroom.images.metadata import DOCKER_REPOSITORY_ENV, MODAL_IMAGE_TAG_ENV, normalize_docker_repository
+
 
 def pytest_addoption(parser):
     """Register pytest CLI options used by the test suite.
@@ -12,6 +14,8 @@ def pytest_addoption(parser):
     Adds two command-line options:
     - --backend: selects the execution backend for tests; allowed values are "modal" and "apptainer", defaults to "modal".
     - --gpu: specifies the GPU type for Modal backend tests (examples: "A100-40GB", "A100-80GB", "T4"); defaults to None which uses the test-suite default.
+    - --docker-user: overrides the default Docker Hub user or namespace for Modal image lookup; defaults to None, which uses the package default.
+    - --image-tag: selects the runtime image tag for Modal image lookup; defaults to None, which uses the current package version.
 
     Parameters
     ----------
@@ -31,6 +35,26 @@ def pytest_addoption(parser):
         default=None,
         help="GPU type for Modal backend tests (e.g., A100-40GB, A100-80GB, T4). Defaults to None (uses default T4).",
     )
+    parser.addoption(
+        "--docker-user",
+        action="store",
+        default=None,
+        help="Docker Hub user or namespace for Modal image lookup.",
+    )
+    parser.addoption(
+        "--image-tag",
+        action="store",
+        default=None,
+        help="Runtime image tag for Modal image lookup.",
+    )
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """Apply image lookup options before test modules import Modal wrappers."""
+    if docker_user := config.getoption("--docker-user"):
+        os.environ[DOCKER_REPOSITORY_ENV] = normalize_docker_repository(docker_user)
+    if image_tag := config.getoption("--image-tag"):
+        os.environ[MODAL_IMAGE_TAG_ENV] = image_tag
 
 
 @pytest.fixture(autouse=True, scope="session")

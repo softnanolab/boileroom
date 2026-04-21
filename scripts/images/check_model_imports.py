@@ -17,6 +17,8 @@ from boileroom.images.import_checks import (  # noqa: E402
     iter_image_targets,
 )
 from boileroom.images.metadata import (  # noqa: E402
+    DEFAULT_DOCKER_REPOSITORY,
+    normalize_docker_repository,
     normalize_requested_tag,
 )
 
@@ -29,6 +31,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Tag to check. Defaults to the installed boileroom version; explicit examples include 0.3.0 or cuda12.6-0.3.0.",
     )
+    parser.add_argument("--docker-user", default=DEFAULT_DOCKER_REPOSITORY, help="Docker Hub user or namespace to check.")
     parser.add_argument(
         "--cuda-version",
         action="append",
@@ -184,8 +187,9 @@ def main() -> None:
     """Run the import smoke workflow."""
     args = parse_args()
     ensure_docker()
+    docker_repository = normalize_docker_repository(args.docker_user)
     cuda_versions = compute_cuda_versions(args.cuda_versions, args.all_cuda)
-    targets = iter_image_targets(args.tag, cuda_versions)
+    targets = iter_image_targets(args.tag, cuda_versions, docker_repository=docker_repository)
     if not targets:
         raise SystemExit("No image targets matched the requested CUDA selection.")
 

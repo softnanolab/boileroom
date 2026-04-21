@@ -9,6 +9,7 @@ from typing import Final
 
 from .metadata import (
     CUDA_MICROMAMBA_BASE,
+    DEFAULT_DOCKER_REPOSITORY,
     MODEL_IMAGE_SPECS,
     RuntimeImageSpec,
     format_image_reference,
@@ -51,6 +52,7 @@ def iter_image_targets(
     tag: str | None,
     cuda_versions: list[str],
     *,
+    docker_repository: str = DEFAULT_DOCKER_REPOSITORY,
     image_specs: Sequence[RuntimeImageSpec] | None = None,
 ) -> list[tuple[str, str, str, Path, Path]]:
     """Return model-image targets for smoke checks.
@@ -70,11 +72,13 @@ def iter_image_targets(
             for cuda_version in cuda_versions:
                 if cuda_version not in get_supported_cuda(spec):
                     continue
-                canonical_ref = published_image_references(spec.image_name, cuda_version, normalized_tag)[0]
+                canonical_ref = published_image_references(
+                    spec.image_name, cuda_version, normalized_tag, docker_repository
+                )[0]
                 display_tag = canonical_ref.rsplit(":", 1)[1]
                 targets.append((spec.key, canonical_ref, display_tag, env_path, core_path))
             continue
 
-        image_reference = format_image_reference(spec.image_name, normalized_tag)
+        image_reference = format_image_reference(spec.image_name, normalized_tag, docker_repository)
         targets.append((spec.key, image_reference, normalized_tag, env_path, core_path))
     return targets

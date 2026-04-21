@@ -13,6 +13,7 @@ from boileroom.images.metadata import (
     get_modal_image_tag,
     get_model_image_spec,
     get_supported_cuda,
+    normalize_docker_repository,
     published_tags,
     render_modal_runtime_env,
     resolve_registry_tag,
@@ -60,40 +61,51 @@ def test_modal_tag_uses_env_override(monkeypatch) -> None:
     assert get_modal_image_tag() == f"cuda12.6-{get_default_image_tag()}"
 
 
-def test_modal_base_image_reference_uses_env_override(monkeypatch) -> None:
-    """Modal base image lookups should respect an optional image reference override."""
-    monkeypatch.setenv("BOILEROOM_MODAL_BASE_IMAGE", "docker.io/example/custom-base:1.2.3")
-    assert get_modal_base_image_reference() == "docker.io/example/custom-base:1.2.3"
+def test_modal_base_image_reference_uses_repository_and_tag(monkeypatch) -> None:
+    """Modal base image lookups should use the same repository and tag as model images."""
+    monkeypatch.setenv("BOILEROOM_DOCKER_REPOSITORY", "docker.io/example")
+    monkeypatch.setenv("BOILEROOM_MODAL_IMAGE_TAG", "0.3.0.1")
+
+    assert get_modal_base_image_reference() == "docker.io/example/boileroom-base:0.3.0.1"
 
 
 def test_modal_runtime_env_carries_image_lookup_overrides(monkeypatch) -> None:
     """Modal containers should re-import wrappers with the same resolved image lookup settings."""
     monkeypatch.setenv("BOILEROOM_DOCKER_REPOSITORY", "docker.io/example")
     monkeypatch.setenv("BOILEROOM_MODAL_IMAGE_TAG", "0.3.0.1")
-    monkeypatch.setenv("BOILEROOM_MODAL_BASE_IMAGE", "docker.io/example/boileroom-base:0.3.0.1")
 
     env = render_modal_runtime_env(get_model_image_spec("boltz"), "/mnt/models")
 
     assert env["BOILEROOM_DOCKER_REPOSITORY"] == "docker.io/example"
     assert env["BOILEROOM_MODAL_IMAGE_TAG"] == "0.3.0.1"
-    assert env["BOILEROOM_MODAL_BASE_IMAGE"] == "docker.io/example/boileroom-base:0.3.0.1"
+    assert set(env) == {"MODEL_DIR", "BOILEROOM_DOCKER_REPOSITORY", "BOILEROOM_MODAL_IMAGE_TAG"}
 
 
 def test_docker_repository_uses_env_override(monkeypatch) -> None:
     """Image references should support a shared Docker repository override."""
-    monkeypatch.setenv("BOILEROOM_DOCKER_REPOSITORY", "docker.io/example")
+    monkeypatch.setenv("BOILEROOM_DOCKER_REPOSITORY", "example")
     assert get_docker_repository() == "docker.io/example"
     assert format_image_reference("boileroom-boltz", "0.3.0") == "docker.io/example/boileroom-boltz:0.3.0"
 
 
-def test_docker_repository_rejects_partial_or_non_docker_io_override(monkeypatch) -> None:
-    """Repository overrides should use the same full Docker Hub namespace format as the default."""
-    monkeypatch.setenv("BOILEROOM_DOCKER_REPOSITORY", "example")
-    with pytest.raises(ValueError, match="BOILEROOM_DOCKER_REPOSITORY"):
-        get_docker_repository()
+def test_normalize_docker_repository_accepts_user_or_full_namespace() -> None:
+    """Docker repository normalization should match CLI shorthand behavior."""
+    assert normalize_docker_repository("example") == "docker.io/example"
+    assert normalize_docker_repository("docker.io/example/team") == "docker.io/example/team"
+    assert normalize_docker_repository("docker.io/example/") == "docker.io/example"
 
+
+@pytest.mark.parametrize("repository", ["docker.io", "docker.io/", "ghcr.io"])
+def test_normalize_docker_repository_rejects_bare_registries(repository: str) -> None:
+    """Bare registry hosts should not be treated as Docker Hub users."""
+    with pytest.raises(ValueError, match="Docker repository"):
+        normalize_docker_repository(repository)
+
+
+def test_docker_repository_rejects_non_docker_io_override(monkeypatch) -> None:
+    """Repository overrides should remain Docker Hub namespaces."""
     monkeypatch.setenv("BOILEROOM_DOCKER_REPOSITORY", "ghcr.io/example")
-    with pytest.raises(ValueError, match="BOILEROOM_DOCKER_REPOSITORY"):
+    with pytest.raises(ValueError, match="Docker repository"):
         get_docker_repository()
 
 
@@ -103,13 +115,12 @@ def test_docker_repository_rejects_partial_or_non_docker_io_override(monkeypatch
         ("docker.io/Example", "uppercase"),
         ("docker.io/example repo", "spaces"),
         ("docker.io/example//repo", "double slash"),
-        ("docker.io/example/", "trailing slash"),
     ],
 )
 def test_docker_repository_rejects_malformed_docker_io_override(monkeypatch, override: str, label: str) -> None:
     """Repository overrides should reject malformed Docker Hub namespaces."""
     monkeypatch.setenv("BOILEROOM_DOCKER_REPOSITORY", override)
-    with pytest.raises(ValueError, match="BOILEROOM_DOCKER_REPOSITORY"):
+    with pytest.raises(ValueError, match="Docker repository"):
         get_docker_repository()
 
 
@@ -135,8 +146,11 @@ def test_package_name_to_import_name_handles_overrides_and_hyphens() -> None:
 
 def test_iter_image_targets_uses_canonical_cuda_tags() -> None:
     """Image smoke targets should honor CUDA-qualified tag selection."""
-    targets = iter_image_targets("0.3.0", ["12.6"])
+    targets = iter_image_targets("0.3.0", ["12.6"], docker_repository="example")
     references = {image_key: image_reference for image_key, image_reference, *_ in targets}
+    assert references["boltz"].startswith("docker.io/example/")
+    assert references["chai"].startswith("docker.io/example/")
+    assert references["esm"].startswith("docker.io/example/")
     assert references["boltz"].endswith(":cuda12.6-0.3.0")
     assert references["chai"].endswith(":cuda12.6-0.3.0")
     assert references["esm"].endswith(":cuda12.6-0.3.0")
