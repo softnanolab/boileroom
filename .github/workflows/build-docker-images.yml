@@ -72,12 +72,10 @@ jobs:
           python-version: "3.12"
 
       - name: Install uv
-        run: |
-          curl -LsSf https://astral.sh/uv/install.sh | sh
-          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-
-      - name: Install dependencies
-        run: uv sync --extra dev
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-suffix: image-prepare
 
       - name: Determine Boileroom version
         id: version
@@ -87,7 +85,7 @@ jobs:
             version_args+=(--release-tag "$GITHUB_REF_NAME")
           fi
 
-          uv run python ./scripts/ci/derive_version.py "${version_args[@]}" --github-output "$GITHUB_OUTPUT"
+          uv run --no-project --with pyyaml python ./scripts/ci/derive_version.py "${version_args[@]}" --github-output "$GITHUB_OUTPUT"
 
       - name: Determine validation tag
         id: validation_tag
@@ -96,7 +94,7 @@ jobs:
       - name: Determine image metadata
         id: image_metadata
         run: |
-          uv run python - <<'PY' >> "$GITHUB_OUTPUT"
+          uv run --no-project --with pyyaml python - <<'PY' >> "$GITHUB_OUTPUT"
           import json
 
           from boileroom.images.metadata import CUDA_MICROMAMBA_BASE, DEFAULT_CUDA_VERSION
@@ -128,12 +126,13 @@ jobs:
           python-version: "3.12"
 
       - name: Install uv
-        run: |
-          curl -LsSf https://astral.sh/uv/install.sh | sh
-          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-suffix: image-build-${{ matrix.platform }}-${{ matrix.cuda_version }}
 
-      - name: Install dependencies
-        run: uv sync --extra dev
+      - name: Prepare image script dependencies
+        run: uv run --no-project --with pyyaml python -c "import yaml"
 
       - name: Log in to Docker Hub
         if: matrix.platform == 'linux/amd64'
@@ -151,7 +150,7 @@ jobs:
             build_args+=(--push --local-base)
           fi
 
-          uv run python ./scripts/images/build_model_images.py \
+          uv run --no-project --with pyyaml python ./scripts/images/build_model_images.py \
             --cuda-version=${{ matrix.cuda_version }} \
             --tag=${{ needs.prepare-release.outputs.validation_tag }} \
             --docker-user="${DOCKER_REPOSITORY_FOR_RUN}" \
@@ -162,14 +161,14 @@ jobs:
 
       - name: Verify local canonical validation image imports
         run: |
-          uv run python ./scripts/images/check_model_imports.py \
+          uv run --no-project --with pyyaml python ./scripts/images/check_model_imports.py \
             --cuda-version=${{ matrix.cuda_version }} \
             --docker-user="${DOCKER_REPOSITORY_FOR_RUN}" \
             --tag=${{ needs.prepare-release.outputs.validation_tag }}
 
       - name: Verify local canonical validation image server health
         run: |
-          uv run python ./scripts/images/check_model_server_health.py \
+          uv run --no-project --with pyyaml python ./scripts/images/check_model_server_health.py \
             --cuda-version=${{ matrix.cuda_version }} \
             --docker-user="${DOCKER_REPOSITORY_FOR_RUN}" \
             --tag=${{ needs.prepare-release.outputs.validation_tag }}
@@ -177,14 +176,14 @@ jobs:
       - name: Verify local validation alias image imports
         if: matrix.platform == 'linux/amd64' && matrix.cuda_version == needs.prepare-release.outputs.default_cuda_version
         run: |
-          uv run python ./scripts/images/check_model_imports.py \
+          uv run --no-project --with pyyaml python ./scripts/images/check_model_imports.py \
             --docker-user="${DOCKER_REPOSITORY_FOR_RUN}" \
             --tag=${{ needs.prepare-release.outputs.validation_tag }}
 
       - name: Verify local validation alias image server health
         if: matrix.platform == 'linux/amd64' && matrix.cuda_version == needs.prepare-release.outputs.default_cuda_version
         run: |
-          uv run python ./scripts/images/check_model_server_health.py \
+          uv run --no-project --with pyyaml python ./scripts/images/check_model_server_health.py \
             --docker-user="${DOCKER_REPOSITORY_FOR_RUN}" \
             --tag=${{ needs.prepare-release.outputs.validation_tag }}
 
@@ -207,12 +206,10 @@ jobs:
           python-version: "3.12"
 
       - name: Install uv
-        run: |
-          curl -LsSf https://astral.sh/uv/install.sh | sh
-          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-
-      - name: Install dependencies
-        run: uv sync --extra dev
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-suffix: image-promote
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -226,7 +223,7 @@ jobs:
 
       - name: Promote validated images to target tag
         run: |
-          uv run python ./scripts/images/promote_image_tags.py \
+          uv run --no-project --with pyyaml python ./scripts/images/promote_image_tags.py \
             --all-cuda \
             --docker-user="${DOCKER_REPOSITORY_FOR_RUN}" \
             --source-tag=${{ needs.prepare-release.outputs.validation_tag }} \

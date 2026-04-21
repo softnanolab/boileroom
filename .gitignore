@@ -11,6 +11,7 @@ dist/
 .cursor/
 .idea/
 .claude/
+.codex/
 script.py
 
 

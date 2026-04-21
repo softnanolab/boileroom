@@ -17,13 +17,14 @@ jobs:
           python-version: '3.12'
 
       - name: Install uv
-        run: |
-          curl -LsSf https://astral.sh/uv/install.sh | sh
-          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-suffix: pypi-publish
 
       - name: Apply release version
         run: |
-          uv run python ./scripts/ci/derive_version.py --release-tag "${GITHUB_REF_NAME}" --write-pyproject pyproject.toml
+          uv run --no-project python ./scripts/ci/derive_version.py --release-tag "${GITHUB_REF_NAME}" --write-pyproject pyproject.toml
 
       - name: Build and publish to PyPI
         run: |

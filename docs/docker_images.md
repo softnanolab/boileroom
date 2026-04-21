@@ -51,6 +51,8 @@ For single-platform publishing, pass `--local-base` to build and tag images with
 ### ARM64 smoke workflow
 The `.github/workflows/arm64-image-smoke.yml` workflow runs on pull requests to `main` and on manual dispatch. It uses an `ubuntu-24.04-arm` runner, builds the image set for `linux/arm64` with the `arm64-ci` tag, and then runs the import and server-health smoke checks. It is informational and does not push images.
 
+The workflow does not install the full project dependency set on the host runner. Host-side image scripts run with `uv run --no-project --with pyyaml`, while heavy model dependencies such as PyTorch and SciPy are validated inside the Docker images themselves.
+
 On `main`, ARM64 image smoke is folded into the Docker publishing workflow instead of running as a second separate workflow. That keeps the branch smoke path fast and local while making release promotion wait for the same ARM64 smoke coverage.
 
 To reproduce the same path locally on an ARM64 machine, run:
