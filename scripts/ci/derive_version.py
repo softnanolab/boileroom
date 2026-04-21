@@ -57,12 +57,6 @@ def reachable_release_tags(head_ref: str = "HEAD") -> list[tuple[int, int, int, 
     return sorted(release_tags)
 
 
-def release_tags_before(base_version: str, head_ref: str = "HEAD") -> list[tuple[int, int, int, str]]:
-    """Return reachable stable release tags older than ``base_version``."""
-    base_parts = parse_version(base_version)
-    return [tag_parts for tag_parts in reachable_release_tags(head_ref) if tag_parts[:3] < base_parts]
-
-
 def prerelease_base_ref(head_ref: str = "HEAD", base_version: str | None = None) -> str:
     """Return the ref that starts the current prerelease sequence."""
     version = base_version or pyproject_version()
@@ -72,6 +66,12 @@ def prerelease_base_ref(head_ref: str = "HEAD", base_version: str | None = None)
     if matching_tags:
         raise ValueError(
             f"Stable release tag {matching_tags[-1]!r} already matches pyproject.version {version!r}. "
+            "Bump pyproject.version to the next release target or adjust the release process."
+        )
+    newer_tags = [tag for *tag_version, tag in stable_tags if tuple(tag_version) > version_parts]
+    if newer_tags:
+        raise ValueError(
+            f"Stable release tag {newer_tags[-1]!r} is newer than pyproject.version {version!r}. "
             "Bump pyproject.version to the next release target or adjust the release process."
         )
 

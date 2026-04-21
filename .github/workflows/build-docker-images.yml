@@ -39,10 +39,11 @@ env:
   DOCKERHUB_USERNAME_FOR_RUN: ${{ github.event.inputs.dockerhub_username || secrets.DOCKERHUB_USERNAME }}
   DOCKERHUB_TOKEN_SECRET_FOR_RUN: ${{ github.event.inputs.dockerhub_token_secret || 'DOCKERHUB_TOKEN' }}
   IMAGE_BUILD_MAX_WORKERS: "3"
-  SHOULD_PROMOTE: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'release' || inputs.promote }}
+  SHOULD_PROMOTE: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'release' && github.event.release.prerelease == false) || inputs.promote }}
 
 jobs:
   prepare-release:
+    if: ${{ github.event_name != 'release' || github.event.release.prerelease == false }}
     runs-on: ubuntu-latest
     outputs:
       release_version: ${{ steps.version.outputs.docker_tag }}

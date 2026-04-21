@@ -44,7 +44,20 @@ def test_main_version_rejects_already_released_base_version(monkeypatch) -> None
 
     monkeypatch.setattr(derive_version, "run_git", fake_run_git)
 
-    with pytest.raises(ValueError, match="Bump pyproject.version to the next release target"):
+    with pytest.raises(ValueError, match=r"Bump pyproject\.version to the next release target"):
+        derive_version.main_version(base_version="0.3.1")
+
+
+def test_main_version_rejects_newer_reachable_stable_release(monkeypatch) -> None:
+    """Main prereleases should not derive from behind a newer stable release."""
+
+    def fake_run_git(args: list[str]) -> str:
+        assert args == ["tag", "--merged", "HEAD", "--list"]
+        return "\n".join(["v0.3.0", "v0.3.2"])
+
+    monkeypatch.setattr(derive_version, "run_git", fake_run_git)
+
+    with pytest.raises(ValueError, match=r"Bump pyproject\.version to the next release target"):
         derive_version.main_version(base_version="0.3.1")
 
 
@@ -74,7 +87,7 @@ def test_version_from_release_tag_accepts_plain_version_tag() -> None:
 @pytest.mark.parametrize("tag", ["v0.2.1", "v0.4.1"])
 def test_version_from_release_tag_rejects_invalid_inputs(tag: str) -> None:
     """Invalid release tags should fail fast."""
-    with pytest.raises(ValueError, match="Expected a release tag like v0.3.x"):
+    with pytest.raises(ValueError, match=r"Expected a release tag like v0\.3\.x"):
         derive_version.version_from_release_tag(tag, "0.3.0")
 
 
@@ -84,7 +97,7 @@ def test_version_from_release_tag_rejects_invalid_inputs(tag: str) -> None:
 )
 def test_version_from_release_tag_rejects_malformed_inputs(tag: str) -> None:
     """Malformed release tags should fail fast."""
-    with pytest.raises(ValueError, match="Expected a release tag like v0.3.0"):
+    with pytest.raises(ValueError, match=r"Expected a release tag like v0\.3\.0"):
         derive_version.version_from_release_tag(tag, "0.3.0")
 
 
