@@ -1,10 +1,9 @@
 """Fast contract tests for Docker image build helpers."""
 
-import sys
-from argparse import Namespace
 from pathlib import Path
 
 from boileroom.images.metadata import DEFAULT_CUDA_VERSION
+from click.testing import CliRunner
 from scripts.images import build_model_images
 
 
@@ -68,13 +67,23 @@ def test_build_cache_reference_uses_explicit_repository() -> None:
     )
 
 
-def test_parse_args_exposes_documented_flags(monkeypatch) -> None:
+def test_cli_exposes_documented_flags(monkeypatch) -> None:
     """The build helper should accept the documented flags."""
-    monkeypatch.setattr(
-        sys,
-        "argv",
+
+    captured: list[build_model_images.BuildOptions] = []
+
+    def fake_run_build(options: build_model_images.BuildOptions) -> None:
+        captured.append(options)
+
+    monkeypatch.setattr(build_model_images, "run_build", fake_run_build)
+
+    result = CliRunner().invoke(
+        build_model_images.cli,
         [
-            "build_model_images.py",
+            "--cuda-version",
+            "12.6",
+            "--cuda-version",
+            "11.8",
             "--skip-existing",
             "--force-rebuild",
             "--verbose",
@@ -83,12 +92,24 @@ def test_parse_args_exposes_documented_flags(monkeypatch) -> None:
         ],
     )
 
-    args = build_model_images.parse_args()
-    assert args.skip_existing is True
-    assert args.force_rebuild is True
-    assert args.verbose is True
-    assert args.local_base is True
-    assert args.docker_user == "example"
+    assert result.exit_code == 0, result.output
+    assert captured == [
+        build_model_images.BuildOptions(
+            tag=None,
+            docker_user="example",
+            cuda_versions=["12.6", "11.8"],
+            all_cuda=False,
+            platform="linux/amd64",
+            push=False,
+            load=False,
+            no_cache=False,
+            verbose=True,
+            skip_existing=True,
+            force_rebuild=True,
+            max_workers=1,
+            local_base=True,
+        )
+    ]
 
 
 def test_build_base_verbose_echoes_plain_progress(monkeypatch, tmp_path) -> None:
@@ -196,8 +217,9 @@ def test_build_model_local_base_uses_buildx_cache_context_then_push(monkeypatch,
 
 def test_main_skips_existing_base_and_model_tags(monkeypatch, tmp_path) -> None:
     """The main build flow should skip existing tags when skip-existing is set."""
-    args = Namespace(
+    options = build_model_images.BuildOptions(
         tag="sha-test",
+        docker_user="docker.io/jakublala",
         cuda_versions=[DEFAULT_CUDA_VERSION],
         all_cuda=False,
         platform="linux/amd64",
@@ -209,15 +231,11 @@ def test_main_skips_existing_base_and_model_tags(monkeypatch, tmp_path) -> None:
         force_rebuild=False,
         max_workers=1,
         local_base=False,
-        docker_user="docker.io/jakublala",
     )
 
     built_tasks: list[tuple[str, str]] = []
     checked_refs: list[str] = []
     built_bases: list[str] = []
-
-    def fake_parse_args() -> Namespace:
-        return args
 
     def fake_ensure_docker() -> None:
         return None
@@ -239,7 +257,6 @@ def test_main_skips_existing_base_and_model_tags(monkeypatch, tmp_path) -> None:
         return (f"{task.image_spec.image_name}:built",)
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(build_model_images, "parse_args", fake_parse_args)
     monkeypatch.setattr(build_model_images, "ensure_docker", fake_ensure_docker)
     monkeypatch.setattr(build_model_images, "ensure_buildx_builder", lambda: None)
     monkeypatch.setattr(build_model_images, "image_reference_exists", fake_image_reference_exists)
@@ -249,7 +266,7 @@ def test_main_skips_existing_base_and_model_tags(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(build_model_images, "log_warn", lambda *args, **kwargs: None)
     monkeypatch.setattr(build_model_images, "log_success", lambda *args, **kwargs: None)
 
-    build_model_images.main()
+    build_model_images.run_build(options)
 
     assert built_bases == []
     assert built_tasks == [
@@ -266,8 +283,9 @@ def test_main_skips_existing_base_and_model_tags(monkeypatch, tmp_path) -> None:
 
 def test_local_base_push_builds_locally_then_pushes(monkeypatch, tmp_path) -> None:
     """Local-base push mode should keep FROM dependencies in the local Docker daemon."""
-    args = Namespace(
+    options = build_model_images.BuildOptions(
         tag="sha-test",
+        docker_user="docker.io/jakublala",
         cuda_versions=[DEFAULT_CUDA_VERSION],
         all_cuda=False,
         platform="linux/amd64",
@@ -279,15 +297,11 @@ def test_local_base_push_builds_locally_then_pushes(monkeypatch, tmp_path) -> No
         force_rebuild=False,
         max_workers=1,
         local_base=True,
-        docker_user="docker.io/jakublala",
     )
 
     base_calls: list[tuple[bool, bool]] = []
     model_calls: list[tuple[bool, bool, str]] = []
     buildx_calls = 0
-
-    def fake_parse_args() -> Namespace:
-        return args
 
     def fake_ensure_buildx_builder() -> None:
         nonlocal buildx_calls
@@ -320,7 +334,6 @@ def test_local_base_push_builds_locally_then_pushes(monkeypatch, tmp_path) -> No
         return (f"{task.image_spec.image_name}:built",)
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(build_model_images, "parse_args", fake_parse_args)
     monkeypatch.setattr(build_model_images, "ensure_docker", lambda: None)
     monkeypatch.setattr(build_model_images, "ensure_buildx_builder", fake_ensure_buildx_builder)
     monkeypatch.setattr(build_model_images, "build_base", fake_build_base)
@@ -329,7 +342,7 @@ def test_local_base_push_builds_locally_then_pushes(monkeypatch, tmp_path) -> No
     monkeypatch.setattr(build_model_images, "log_warn", lambda *args, **kwargs: None)
     monkeypatch.setattr(build_model_images, "log_success", lambda *args, **kwargs: None)
 
-    build_model_images.main()
+    build_model_images.run_build(options)
 
     assert buildx_calls == 1
     assert base_calls == [(False, True)]

@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import argparse
 import ast
 import importlib
 import json
@@ -13,6 +12,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+import click
 import yaml
 
 SCRIPT_PATH = Path(__file__).resolve()
@@ -23,6 +23,7 @@ if str(REPO_ROOT) not in sys.path:
 from boileroom.images.import_checks import iter_image_targets  # noqa: E402
 from boileroom.images.metadata import MODEL_IMAGE_SPECS, RuntimeImageSpec  # noqa: E402
 from boileroom.models.registry import MODEL_SPECS, ModelSpec, resolve_object  # noqa: E402
+from scripts.cli_utils import CONTEXT_SETTINGS  # noqa: E402
 
 DEFAULT_CONTRACT_PATH = REPO_ROOT / "harness/model_family_contract.yaml"
 
@@ -684,31 +685,36 @@ def _print_report(issues: Sequence[CheckIssue]) -> None:
         print(f"   Fix: {issue.fix}", file=sys.stderr)
 
 
-def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
-    """Parse CLI arguments."""
-
-    parser = argparse.ArgumentParser(description="Run objective Boileroom harness checks.")
-    parser.add_argument(
-        "--contract",
-        type=Path,
-        default=DEFAULT_CONTRACT_PATH,
-        help="Path to the YAML harness contract.",
-    )
-    parser.add_argument("--json-output", type=Path, default=None, help="Optional path for a JSON report.")
-    return parser.parse_args(argv)
-
-
-def main(argv: Sequence[str] | None = None) -> int:
+def run_harness(contract_path: Path = DEFAULT_CONTRACT_PATH, json_output: Path | None = None) -> int:
     """Run the harness CLI."""
 
-    args = parse_args(argv)
-    contract = load_contract(args.contract)
+    contract = load_contract(contract_path)
     issues = run_checks(REPO_ROOT, contract)
-    if args.json_output is not None:
-        _write_json_report(args.json_output, issues)
+    if json_output is not None:
+        _write_json_report(json_output, issues)
     _print_report(issues)
     return 1 if issues else 0
 
 
+@click.command(context_settings=CONTEXT_SETTINGS, help="Run objective Boileroom harness checks.")
+@click.option(
+    "--contract",
+    "contract_path",
+    type=click.Path(path_type=Path),
+    default=DEFAULT_CONTRACT_PATH,
+    help="Path to the YAML harness contract.",
+)
+@click.option(
+    "--json-output",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Optional path for a JSON report.",
+)
+def cli(contract_path: Path, json_output: Path | None) -> None:
+    """Run the harness Click command."""
+
+    raise click.exceptions.Exit(run_harness(contract_path, json_output))
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    cli()

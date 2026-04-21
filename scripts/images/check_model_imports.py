@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-import argparse
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
+
+import click
 
 SCRIPT_PATH = Path(__file__).resolve()
 REPO_ROOT = SCRIPT_PATH.parents[2]
@@ -21,27 +23,27 @@ from boileroom.images.metadata import (  # noqa: E402
     normalize_docker_repository,
     normalize_requested_tag,
 )
+from scripts.cli_utils import (  # noqa: E402
+    CONTEXT_SETTINGS,
+    all_cuda_option,
+    cleanup_option,
+    cuda_version_option,
+    none_if_empty,
+    pull_option,
+    tag_option,
+)
 
 
-def parse_args() -> argparse.Namespace:
-    """Parse CLI arguments."""
-    parser = argparse.ArgumentParser(description="Run import smoke checks inside boileroom model images.")
-    parser.add_argument(
-        "--tag",
-        default=None,
-        help="Tag to check. Defaults to the installed boileroom version; explicit examples include 0.3.0 or cuda12.6-0.3.0.",
-    )
-    parser.add_argument("--docker-user", default=DEFAULT_DOCKER_REPOSITORY, help="Docker Hub user or namespace to check.")
-    parser.add_argument(
-        "--cuda-version",
-        action="append",
-        dest="cuda_versions",
-        help="CUDA version to validate canonically (repeatable).",
-    )
-    parser.add_argument("--all-cuda", action="store_true", help="Validate all supported CUDA variants canonically.")
-    parser.add_argument("--pull", action="store_true", help="Pull images before running checks.")
-    parser.add_argument("--cleanup", action="store_true", help="Remove each image after checking to free disk space.")
-    return parser.parse_args()
+@dataclass(frozen=True)
+class ImportCheckOptions:
+    """CLI options for image import smoke checks."""
+
+    tag: str | None
+    docker_user: str
+    cuda_versions: list[str] | None
+    all_cuda: bool
+    pull: bool
+    cleanup: bool
 
 
 def ensure_docker() -> None:
@@ -183,21 +185,50 @@ for dep in deps:
         _remove_image(image_reference)
 
 
-def main() -> None:
+def run_import_checks(options: ImportCheckOptions) -> None:
     """Run the import smoke workflow."""
-    args = parse_args()
+
     ensure_docker()
-    docker_repository = normalize_docker_repository(args.docker_user)
-    cuda_versions = compute_cuda_versions(args.cuda_versions, args.all_cuda)
-    targets = iter_image_targets(args.tag, cuda_versions, docker_repository=docker_repository)
+    docker_repository = normalize_docker_repository(options.docker_user)
+    cuda_versions = compute_cuda_versions(options.cuda_versions, options.all_cuda)
+    targets = iter_image_targets(options.tag, cuda_versions, docker_repository=docker_repository)
     if not targets:
         raise SystemExit("No image targets matched the requested CUDA selection.")
 
     for image_key, image_reference, _display_tag, env_path, core_path in targets:
-        check_image(image_key, image_reference, env_path, core_path, args.pull, args.cleanup)
+        check_image(image_key, image_reference, env_path, core_path, options.pull, options.cleanup)
 
-    print(f"All module imports succeeded for tag selection: {normalize_requested_tag(args.tag)}")
+    print(f"All module imports succeeded for tag selection: {normalize_requested_tag(options.tag)}")
+
+
+@click.command(context_settings=CONTEXT_SETTINGS, help="Run import smoke checks inside boileroom model images.")
+@tag_option
+@click.option("--docker-user", default=DEFAULT_DOCKER_REPOSITORY, help="Docker Hub user or namespace to check.")
+@cuda_version_option("CUDA version to validate canonically (repeatable).")
+@all_cuda_option("Validate all supported CUDA variants canonically.")
+@pull_option
+@cleanup_option
+def cli(
+    tag: str | None,
+    docker_user: str,
+    cuda_versions: tuple[str, ...],
+    all_cuda: bool,
+    pull: bool,
+    cleanup: bool,
+) -> None:
+    """Run the image import-check Click command."""
+
+    run_import_checks(
+        ImportCheckOptions(
+            tag=tag,
+            docker_user=docker_user,
+            cuda_versions=none_if_empty(cuda_versions),
+            all_cuda=all_cuda,
+            pull=pull,
+            cleanup=cleanup,
+        )
+    )
 
 
 if __name__ == "__main__":
-    main()
+    cli()
