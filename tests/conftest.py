@@ -8,6 +8,36 @@ import pytest
 from boileroom.images.metadata import DOCKER_REPOSITORY_ENV, MODAL_IMAGE_TAG_ENV, normalize_docker_repository
 
 
+def pytest_report_header(config: pytest.Config) -> list[str]:
+    """Report the runtime image tag and Docker repository at the top of every pytest run.
+
+    The Modal backend pulls the boileroom package from a prebuilt Docker image whose
+    tag is resolved by ``boileroom.images.metadata.get_modal_image_tag``. Surfacing
+    that tag in the pytest header avoids ambiguity about which image the integration
+    tests are actually exercising.
+
+    Parameters
+    ----------
+    config : pytest.Config
+        The active pytest configuration (unused, required by the hook signature).
+
+    Returns
+    -------
+    list[str]
+        One-line-per-entry header additions.
+    """
+    try:
+        from boileroom.images.metadata import MODAL_IMAGE_TAG_ENV, get_docker_repository, get_modal_image_tag
+    except Exception as exc:  # pragma: no cover - defensive; keep pytest running if import fails
+        return [f"boileroom image: <unresolved: {exc!s}>"]
+
+    tag = get_modal_image_tag()
+    repository = get_docker_repository()
+    override = os.environ.get(MODAL_IMAGE_TAG_ENV)
+    source = f"override via {MODAL_IMAGE_TAG_ENV}" if override else "from pyproject.toml"
+    return [f"boileroom image: {repository}/boileroom-<family>:{tag} ({source})"]
+
+
 def pytest_addoption(parser):
     """Register pytest CLI options used by the test suite.
 
