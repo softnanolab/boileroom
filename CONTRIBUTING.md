@@ -49,12 +49,13 @@ smoke target coverage. See [docs/agent_harness.md](docs/agent_harness.md).
 
 ## Release and versioning
 
-- Docker image version tags follow `project.version` in `pyproject.toml`.
+- Docker image version tags on `main` are prereleases for `project.version` in `pyproject.toml`, for example `0.3.1-alpha.1`.
 - Runtime defaults also follow the installed boileroom package version unless you explicitly override the image tag.
-- Merging to `main` triggers `.github/workflows/build-docker-images.yml`, which publishes Docker Hub tags for the current package version.
-- PyPI publication is a separate step and only happens when a GitHub release is published.
+- Merging to `main` triggers `.github/workflows/build-docker-images.yml`, which publishes Docker Hub tags for the current alpha prerelease.
+- Stable Docker tags and PyPI publication are separate manual release steps and happen from full GitHub release tags such as `v0.3.1`.
+- GitHub releases marked as pre-releases do not publish stable Docker or PyPI artifacts.
 - In practice, Docker Hub can act as the earlier staging/public channel while PyPI remains the later package release step.
-- If you change `project.version`, you are also changing the versioned Docker tags that will be published from `main`.
+- After a stable release, bump `project.version` to the next intended stable version so subsequent `main` builds become the next alpha series.
 
 ## Further reading
 

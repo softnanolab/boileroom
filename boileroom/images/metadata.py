@@ -116,7 +116,8 @@ def normalize_requested_tag(tag: str | None) -> str:
     if normalized == "latest":
         raise ValueError(
             "The 'latest' image tag is no longer published. "
-            "Use a concrete package version such as '0.3.0' or a temporary validation tag such as 'sha-<commit>'."
+            "Use a concrete package version such as '0.3.0', an alpha tag such as "
+            "'0.3.1-alpha.1', or a temporary validation tag such as 'sha-<commit>'."
         )
     return normalized
 
@@ -140,9 +141,9 @@ def canonical_image_tag(cuda_version: str, tag: str | None) -> str:
 def resolve_registry_tag(tag: str | None) -> str:
     """Resolve a tag for runtime image lookup.
 
-    Unqualified tags such as ``0.3.0`` or ``sha-<commit>`` are preserved so they resolve
-    through the published default-CUDA aliases. Explicit CUDA-qualified tags are normalized
-    to the canonical ``cuda<version>-<tag>`` form.
+    Unqualified tags such as ``0.3.0``, ``0.3.1-alpha.1``, or ``sha-<commit>`` are
+    preserved so they resolve through the published default-CUDA aliases. Explicit
+    CUDA-qualified tags are normalized to the canonical ``cuda<version>-<tag>`` form.
     """
     normalized_tag = normalize_requested_tag(tag)
     if match := _CUDA_TAG_PATTERN.fullmatch(normalized_tag):
@@ -155,8 +156,8 @@ def resolve_registry_tag(tag: str | None) -> str:
 def published_tags(cuda_version: str, tag: str | None) -> tuple[str, ...]:
     """Return the canonical published tags for a build output.
 
-    The default CUDA line also gets an unqualified alias such as ``0.3.0`` or
-    ``sha-<commit>`` for convenience.
+    The default CUDA line also gets an unqualified alias such as ``0.3.0``,
+    ``0.3.1-alpha.1``, or ``sha-<commit>`` for convenience.
     """
     normalized_cuda = normalize_cuda_version(cuda_version)
     normalized_tag = normalize_requested_tag(tag)

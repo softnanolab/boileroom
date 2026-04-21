@@ -9,8 +9,8 @@
 Dockerfiles are the canonical image definition for all runtimes. Docker/Apptainer images are built from these Dockerfiles, and Modal pulls the corresponding published model image from Docker Hub instead of maintaining a separate handwritten dependency stack.
 
 ### Tag scheme
-- Canonical published tags are CUDA-qualified, for example `cuda12.6-0.3.0`, `cuda11.8-0.3.0`, or `cuda12.6-sha-abc1234`.
-- The default CUDA line is `12.6`. That line also gets an unqualified alias for the exact package version or temporary validation tag, for example `0.3.0` or `sha-abc1234`.
+- Canonical published tags are CUDA-qualified, for example `cuda12.6-0.3.0`, `cuda11.8-0.3.0`, `cuda12.6-0.3.1-alpha.1`, or `cuda12.6-sha-abc1234`.
+- The default CUDA line is `12.6`. That line also gets an unqualified alias for the exact package version, alpha prerelease, or temporary validation tag, for example `0.3.0`, `0.3.1-alpha.1`, or `sha-abc1234`.
 - `latest` is not published.
 - Runtime shorthands such as `backend="apptainer"` resolve to the installed boileroom package version on the default `12.6` CUDA line.
 
@@ -64,7 +64,7 @@ uv run python scripts/images/check_model_server_health.py --cuda-version=12.6 --
 The build helper also supports `--skip-existing` and `--force-rebuild` for registry-aware rebuilds.
 
 ### 🔖 Tag policy
-- Docker Hub is kept clean for users. The long-lived public tags are version tags such as `0.3.0` and the corresponding CUDA-qualified tags such as `cuda12.6-0.3.0` and `cuda11.8-0.3.0`.
+- Docker Hub is kept clean for users. The long-lived public tags are stable version tags such as `0.3.0`, alpha prerelease tags such as `0.3.1-alpha.1`, and the corresponding CUDA-qualified tags such as `cuda12.6-0.3.0` and `cuda11.8-0.3.0`.
 - Short-lived validation tags such as `sha-<shortsha>` are fine when you need to test a branch through Docker Hub or Modal before promoting a version tag.
 - Validation tags should be deleted once the validation pass is complete.
 
@@ -137,18 +137,20 @@ This publishes:
 - the unqualified version alias such as `0.3.0` for the `12.6` line
 
 ### 📦 CI publishing (production)
-GitHub Actions at `.github/workflows/build-docker-images.yml` now drives the release pipeline:
-- Triggers automatically on pushes to `main` and can also be run manually via **Run workflow** from `main`.
+GitHub Actions at `.github/workflows/build-docker-images.yml` now drives the image publishing pipeline:
+- Triggers automatically on pushes to `main`, on published GitHub releases, and can also be run manually via **Run workflow** from `main`.
 - Manual runs can also be dispatched from a non-`main` branch with `promote` left disabled. That validation-only path builds and pushes temporary `sha-<commit>` validation images, runs the local AMD64 and ARM64 smoke checks, and skips public version-tag promotion.
-- Builds a temporary `sha-<commit>` validation tag, verifies that exact pushed artifact, and only then promotes it to an automatically derived `0.3.x` version from `scripts/ci/derive_version.py`.
+- Builds a temporary `sha-<commit>` validation tag, verifies that exact pushed artifact, and only then promotes it. Pushes to `main` promote to an automatically derived alpha prerelease from `scripts/ci/derive_version.py`; full GitHub releases promote to the stable release tag.
 - Builds each CUDA line in its own job, with model images parallelized behind the matching locally available base image by `--local-base` and `--max-workers`.
 - Verifies canonical CUDA-qualified tags from the same runner-local images after each CUDA build. The default-CUDA alias is checked locally in the `12.6` job.
 - Runs the ARM64 smoke build and checks in the same publishing workflow on `main`; the standalone ARM64 workflow is reserved for pull requests and manual runs.
-- The `0.3.x` patch component is the number of commits after the configured main-line baseline, so it increases with every new commit on `main`.
+- The alpha suffix counts commits since the latest reachable stable release tag, for example `0.3.1-alpha.1`, `0.3.1-alpha.2`, and so on. Before the first stable release tag, the count falls back to the configured CI baseline.
 - Each successful run publishes canonical CUDA-qualified tags and the unqualified version alias for the default `12.6` line.
 - The official release path currently publishes `linux/amd64` only. If you want to experiment with additional architectures, pass an explicit multi-platform `--platform` value and validate it separately before treating it as supported.
 - Future merges inherit dependency cache layers through BuildKit registry caches, keeping CI times reasonable even on fresh GitHub-hosted runners.
-- PyPI is not published by this workflow. Python package publication happens later from the GitHub release workflow, which injects the `0.3.x` release tag into `pyproject.toml` before building.
+- Published full GitHub releases from `vX.Y.Z` tags promote the same validated images to the stable `X.Y.Z` Docker tag.
+- GitHub releases marked as pre-releases do not publish stable Docker or PyPI artifacts.
+- PyPI is not published by this workflow. Python package publication happens from the separate GitHub release workflow, which injects the stable release tag into `pyproject.toml` before building.
 
 To test the publishing workflow before merging:
 1. Push your branch.
