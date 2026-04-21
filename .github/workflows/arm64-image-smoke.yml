@@ -31,7 +31,7 @@ jobs:
           cache-suffix: arm64-image-smoke
 
       - name: Prepare image smoke script dependencies
-        run: uv run --no-project --with pyyaml python -c "import yaml"
+        run: uv run --no-project --with click --with pyyaml python -c "import click, yaml"
 
       - name: Determine default CUDA version
         id: image_metadata
@@ -44,7 +44,7 @@ jobs:
 
       - name: Build ARM64 image set
         run: |
-          uv run --no-project --with pyyaml python scripts/images/build_model_images.py \
+          uv run --no-project --with click --with pyyaml python scripts/images/build_model_images.py \
             --cuda-version=${{ steps.image_metadata.outputs.default_cuda_version }} \
             --tag=arm64-ci \
             --platform=linux/arm64 \
@@ -53,12 +53,12 @@ jobs:
 
       - name: Run ARM64 import smoke
         run: |
-          uv run --no-project --with pyyaml python scripts/images/check_model_imports.py \
+          uv run --no-project --with click --with pyyaml python scripts/images/check_model_imports.py \
             --cuda-version=${{ steps.image_metadata.outputs.default_cuda_version }} \
             --tag=arm64-ci
 
       - name: Run ARM64 server health smoke
         run: |
-          uv run --no-project --with pyyaml python scripts/images/check_model_server_health.py \
+          uv run --no-project --with click --with pyyaml python scripts/images/check_model_server_health.py \
             --cuda-version=${{ steps.image_metadata.outputs.default_cuda_version }} \
             --tag=arm64-ci
