@@ -18,9 +18,10 @@ jobs:
           python-version: '3.12'
 
       - name: Install uv
-        run: |
-          curl -LsSf https://astral.sh/uv/install.sh | sh
-          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-suffix: python-harness
 
       - name: Install dependencies
         run: uv sync
@@ -39,9 +40,10 @@ jobs:
           python-version: '3.12'
 
       - name: Install uv
-        run: |
-          curl -LsSf https://astral.sh/uv/install.sh | sh
-          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-suffix: python-lint
 
       - name: Install dependencies
         run: uv sync --extra dev
@@ -60,9 +62,10 @@ jobs:
           python-version: '3.12'
 
       - name: Install uv
-        run: |
-          curl -LsSf https://astral.sh/uv/install.sh | sh
-          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-suffix: python-unit
 
       - name: Install dependencies
         run: uv sync --extra dev
