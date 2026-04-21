@@ -2,10 +2,11 @@
 
 from pathlib import Path
 
-from boileroom.images.metadata import DEFAULT_CUDA_VERSION
 import pytest
 from click.testing import CliRunner
 from pytest import CaptureFixture, MonkeyPatch
+
+from boileroom.images.metadata import DEFAULT_CUDA_VERSION
 from scripts.images import build_model_images
 
 
@@ -190,7 +191,7 @@ def test_build_base_verbose_echoes_plain_progress(monkeypatch: MonkeyPatch, tmp_
     assert echo is True
 
 
-def test_build_base_local_base_uses_buildx_cache_load_then_push(monkeypatch, tmp_path) -> None:
+def test_build_base_local_base_uses_buildx_cache_load_then_push(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
     """Local-base builds should keep BuildKit cache while loading tags locally."""
     calls: list[tuple[list[str], Path | None, bool]] = []
 
@@ -224,7 +225,7 @@ def test_build_base_local_base_uses_buildx_cache_load_then_push(monkeypatch, tmp
     ]
 
 
-def test_build_model_local_base_uses_buildx_cache_context_then_push(monkeypatch, tmp_path) -> None:
+def test_build_model_local_base_uses_buildx_cache_context_then_push(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
     """Local-base model builds should expose the loaded base image to buildx."""
     calls: list[tuple[list[str], Path | None, bool]] = []
 
@@ -332,7 +333,7 @@ def test_main_skips_existing_base_and_model_tags(monkeypatch: MonkeyPatch, tmp_p
     ]
 
 
-def test_local_base_push_builds_locally_then_pushes(monkeypatch, tmp_path) -> None:
+def test_local_base_push_builds_locally_then_pushes(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
     """Local-base push mode should keep FROM dependencies in the local Docker daemon."""
     options = build_model_images.BuildOptions(
         tag="sha-test",

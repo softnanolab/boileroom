@@ -472,11 +472,14 @@ def run_build(options: BuildOptions) -> None:
     log_info(f"CUDA versions: {', '.join(cuda_versions)}")
     log_info(f"Platforms: {options.platform}")
     if options.verbose:
-        output_mode = {
-            "--push": "push to registry",
-            "--load": "load into local Docker",
-            None: "buildx cache only",
-        }[output_flag]
+        if options.local_base:
+            output_mode = "load into local Docker then push"
+        else:
+            output_mode = {
+                "--push": "push to registry",
+                "--load": "load into local Docker",
+                None: "buildx cache only",
+            }[output_flag]
         log_info(f"Verbose build logs enabled; output mode: {output_mode}")
     if options.force_rebuild and options.skip_existing:
         log_info("Ignoring --skip-existing because --force-rebuild was set.")
