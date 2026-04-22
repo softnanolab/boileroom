@@ -8,9 +8,8 @@ from modal.exception import InvalidError
 
 from .base import Backend
 
-app = modal.App("boileroom")
 _modal_app_managers_lock = threading.Lock()
-_modal_app_managers: dict[int, "ModalAppManager"] = {}
+_modal_app_managers: dict[modal.App, "ModalAppManager"] = {}
 
 
 def get_modal_app(name: str) -> modal.App:
@@ -26,18 +25,17 @@ def modal_app_of(model_cls: Any) -> modal.App:
     """
     try:
         return model_cls._get_app()
-    except AttributeError as error:
+    except (AttributeError, AssertionError, InvalidError) as error:
         raise TypeError("ModalBackend requires a Modal-decorated class registered on a Modal app.") from error
 
 
 def _get_modal_app_manager(modal_app: modal.App) -> "ModalAppManager":
     """Return the shared manager for a Modal app object."""
     with _modal_app_managers_lock:
-        app_id = id(modal_app)
-        manager = _modal_app_managers.get(app_id)
+        manager = _modal_app_managers.get(modal_app)
         if manager is None:
             manager = ModalAppManager(modal_app)
-            _modal_app_managers[app_id] = manager
+            _modal_app_managers[modal_app] = manager
         return manager
 
 
@@ -51,7 +49,7 @@ class _ModalAppToken:
 
 
 class ModalAppManager:
-    """Manage shared access to the global Modal app context."""
+    """Manage shared access to a Modal app context."""
 
     def __init__(self, modal_app: modal.App) -> None:
         self._app = modal_app
@@ -111,10 +109,6 @@ class ModalAppManager:
             raise
         else:
             self._context = context
-
-
-modal_app_manager = ModalAppManager(app)
-_modal_app_managers[id(app)] = modal_app_manager
 
 
 class ModalBackend(Backend):

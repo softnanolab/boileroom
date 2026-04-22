@@ -153,6 +153,19 @@ def test_modal_backend_uses_selected_class_app(spec: ModelSpec) -> None:
     assert backend._app is modal_app_of(modal_cls)
 
 
+def test_modal_app_of_rejects_undecorated_class() -> None:
+    """Modal app lookup should reject classes not registered on a Modal app."""
+
+    class NotAModalClass:
+        pass
+
+    with pytest.raises(TypeError, match="Modal-decorated class"):
+        modal_app_of(NotAModalClass)
+
+    with pytest.raises(TypeError, match="Modal-decorated class"):
+        ModalBackend(NotAModalClass, config={}, device=None)
+
+
 @pytest.mark.parametrize("spec", MODEL_SPECS, ids=lambda spec: spec.public_name)
 def test_public_wrapper_exposes_registry_spec(spec: ModelSpec) -> None:
     """Each public wrapper should expose the same ModelSpec object as the registry."""
