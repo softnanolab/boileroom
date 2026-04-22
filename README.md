@@ -116,7 +116,7 @@ To run Modal integration tests against a specific Docker Hub namespace, image ta
 
 ```bash
 uv run pytest -v -n 4 --dist loadgroup -m integration \
-  --docker-user phauglin \
+  --docker-user <your-dockerhub-user> \
   --image-tag cuda12.6-my-test-tag \
   --gpu A10
 ```

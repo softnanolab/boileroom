@@ -18,8 +18,12 @@ def get_modal_app(name: str) -> modal.App:
     return modal.App(f"boileroom-{name}")
 
 
-def _get_class_app(model_cls: Any) -> modal.App:
-    """Return the Modal app that owns a decorated class."""
+def modal_app_of(model_cls: Any) -> modal.App:
+    """Return the app that owns a Modal-decorated class.
+
+    This centralizes the Modal SDK ``Cls._get_app()`` usage required by
+    Modal >=1.1.0 so callers do not reach into the SDK directly.
+    """
     try:
         return model_cls._get_app()
     except AttributeError as error:
@@ -118,7 +122,7 @@ class ModalBackend(Backend):
 
     def __init__(self, model_cls, config: dict | None = None, device: str | None = None) -> None:
         super().__init__()
-        self._app = _get_class_app(model_cls)
+        self._app = modal_app_of(model_cls)
         self._app_manager = _get_modal_app_manager(self._app)
         self._config = dict(config) if config is not None else {}
         self._model_cls = model_cls

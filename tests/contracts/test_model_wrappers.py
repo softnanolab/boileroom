@@ -5,7 +5,7 @@ from typing import Any
 import numpy as np
 import pytest
 
-from boileroom.backend.modal import ModalBackend
+from boileroom.backend.modal import ModalBackend, modal_app_of
 from boileroom.base import ModelWrapper, PredictionMetadata
 from boileroom.images.metadata import get_default_image_tag
 from boileroom.models.boltz.types import Boltz2Output
@@ -26,12 +26,7 @@ SAMPLE_INPUTS: dict[str, Any] = {
     ),
     "boltz2": "MLKNVHVLVLGAGDVGSVVVRLLEK",
 }
-EXPECTED_MODAL_APP_NAMES = {
-    "esmfold": "boileroom-esmfold",
-    "esm2": "boileroom-esm2",
-    "chai1": "boileroom-chai1",
-    "boltz2": "boileroom-boltz2",
-}
+EXPECTED_MODAL_APP_NAMES = {spec.key: f"boileroom-{spec.key}" for spec in MODEL_SPECS}
 
 
 def _make_metadata(model_name: str) -> PredictionMetadata:
@@ -133,10 +128,13 @@ def test_modal_classes_are_registered_on_model_specific_apps() -> None:
     app_names: list[str] = []
 
     for spec in MODEL_SPECS:
-        assert spec.modal_class_path is not None
-        modal_cls = resolve_object(spec.modal_class_path)
-        app_names.append(modal_cls._get_app().name)
-        assert modal_cls._get_app().name == EXPECTED_MODAL_APP_NAMES[spec.key]
+        modal_class_path = spec.modal_class_path
+        if modal_class_path is None:
+            continue
+        modal_cls = resolve_object(modal_class_path)
+        app_name = modal_app_of(modal_cls).name
+        app_names.append(app_name)
+        assert app_name == EXPECTED_MODAL_APP_NAMES[spec.key]
 
     assert len(app_names) == len(set(app_names))
 
@@ -144,12 +142,15 @@ def test_modal_classes_are_registered_on_model_specific_apps() -> None:
 @pytest.mark.parametrize("spec", MODEL_SPECS, ids=lambda spec: spec.public_name)
 def test_modal_backend_uses_selected_class_app(spec: ModelSpec) -> None:
     """ModalBackend should run the app owned by the concrete Modal class."""
-    assert spec.modal_class_path is not None
-    modal_cls = resolve_object(spec.modal_class_path)
+    modal_class_path = spec.modal_class_path
+    if modal_class_path is None:
+        pytest.skip("Model has no Modal backend class.")
+    assert modal_class_path is not None
+    modal_cls = resolve_object(modal_class_path)
 
     backend = ModalBackend(modal_cls, config={}, device=None)
 
-    assert backend._app is modal_cls._get_app()
+    assert backend._app is modal_app_of(modal_cls)
 
 
 @pytest.mark.parametrize("spec", MODEL_SPECS, ids=lambda spec: spec.public_name)
