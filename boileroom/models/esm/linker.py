@@ -1,41 +1,16 @@
+from collections.abc import Sequence
+
 import numpy as np
 import torch
 import torch.nn.functional as F
 
-from .parsing import ESMSequenceTokens
-
+from .parsing import ESMSequenceTokens, parse_esm2_sequence
 
 ESMSequenceLike = str | ESMSequenceTokens
 
 
 def _tokenize_raw_sequence(sequence: str) -> list[tuple[str, ...]]:
-    chains: list[tuple[str, ...]] = []
-    current_chain: list[str] = []
-    index = 0
-
-    while index < len(sequence):
-        if sequence.startswith("<mask>", index):
-            current_chain.append("<mask>")
-            index += len("<mask>")
-            continue
-
-        token = sequence[index]
-        if token == ":":
-            if not current_chain:
-                raise ValueError(f"Invalid multimer sequence {sequence!r}: empty chain near ':'.")
-            chains.append(tuple(current_chain))
-            current_chain = []
-            index += 1
-            continue
-
-        current_chain.append(token)
-        index += 1
-
-    if not current_chain:
-        raise ValueError(f"Invalid multimer sequence {sequence!r}: empty chain near ':'.")
-
-    chains.append(tuple(current_chain))
-    return chains
+    return [chain.tokens for chain in parse_esm2_sequence(sequence).chains]
 
 
 def _split_chains(sequence: ESMSequenceLike) -> list[tuple[str, ...]]:
@@ -46,7 +21,7 @@ def _split_chains(sequence: ESMSequenceLike) -> list[tuple[str, ...]]:
 
 # --- Glycine linker and positional skip utilities ---
 def compute_position_ids(
-    sequences: list[ESMSequenceLike],
+    sequences: Sequence[ESMSequenceLike],
     glycine_linker: str,
     position_ids_skip: int,
     *,
@@ -98,7 +73,9 @@ def compute_position_ids(
     return torch.stack(position_ids)
 
 
-def store_multimer_properties(_sequences: list[ESMSequenceLike], glycine_linker: str):
+def store_multimer_properties(
+    _sequences: Sequence[ESMSequenceLike], glycine_linker: str
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Store properties needed for multimer processing.
 
     Parameters
@@ -159,5 +136,5 @@ def store_multimer_properties(_sequences: list[ESMSequenceLike], glycine_linker:
     )
 
 
-def replace_glycine_linkers(sequences: list[ESMSequenceLike], glycine_linker: str) -> list[str]:
+def replace_glycine_linkers(sequences: Sequence[ESMSequenceLike], glycine_linker: str) -> list[str]:
     return [glycine_linker.join("".join(chain) for chain in _split_chains(multimer_seq)) for multimer_seq in sequences]

@@ -192,9 +192,7 @@ class ESM2Core(EmbeddingAlgorithm):
     def _ensure_model_for_request(self, effective_config: dict) -> None:
         """Ensure the loaded model can satisfy the requested include fields."""
         include_fields = effective_config.get("include_fields")
-        requested_mode: Literal["base", "masked_lm"] = (
-            "masked_lm" if self._needs_lm_head(include_fields) else "base"
-        )
+        requested_mode: Literal["base", "masked_lm"] = "masked_lm" if self._needs_lm_head(include_fields) else "base"
 
         if self.tokenizer is None:
             self.tokenizer = AutoTokenizer.from_pretrained(
@@ -335,9 +333,7 @@ class ESM2Core(EmbeddingAlgorithm):
         return include_fields is not None and ("hidden_states" in include_fields or "*" in include_fields)
 
     @staticmethod
-    def _store_multimer_properties(
-        sequences: list[ESMSequenceTokens], glycine_linker: str
-    ) -> dict[str, torch.Tensor]:
+    def _store_multimer_properties(sequences: list[ESMSequenceTokens], glycine_linker: str) -> dict[str, torch.Tensor]:
         """Prepare multimer metadata tensors and pad them to account for special <cls> and <eos> tokens.
 
         Parameters

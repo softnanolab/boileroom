@@ -110,8 +110,5 @@ def parse_esm2_sequence(sequence: str) -> ESMSequenceTokens:
 def parse_esm2_sequences(sequences: str | Sequence[str]) -> list[ESMSequenceTokens]:
     """Parse one or more ESM2 input sequences."""
 
-    if isinstance(sequences, str):
-        sequence_list = [sequences]
-    else:
-        sequence_list = list(sequences)
+    sequence_list = [sequences] if isinstance(sequences, str) else list(sequences)
     return [parse_esm2_sequence(sequence) for sequence in sequence_list]

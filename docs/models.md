@@ -29,6 +29,7 @@ result.pae
 Example usage:
 ```python
 from boileroom import ESM2
+from transformers import AutoTokenizer
 
 model = ESM2(
     backend="apptainer",
@@ -41,8 +42,13 @@ result = model.embed(
     options={"include_fields": ["lm_logits"]},
 )
 
-result.embeddings.shape      # (1, 4, 320)
-result.lm_logits.shape[0:2]  # (1, 4)
-# result.lm_logits.shape[-1] is the full tokenizer vocabulary width
-# residue index 1 corresponds to the masked residue position
+tokenizer = AutoTokenizer.from_pretrained("facebook/esm2_t6_8M_UR50D")
+id_to_token = {token_id: token for token, token_id in tokenizer.get_vocab().items()}
+
+result.embeddings.shape  # (1, 4, 320)
+result.lm_logits.shape   # (1, 4, tokenizer.vocab_size)
+# residue index 2 is the masked residue position in AC<mask>D
+
+top_token_ids = result.lm_logits[0].argmax(axis=-1)
+top_tokens = [id_to_token[token_id] for token_id in top_token_ids]
 ```

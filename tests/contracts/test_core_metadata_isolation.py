@@ -88,7 +88,6 @@ def test_esm2_embed_uses_fresh_metadata(monkeypatch: pytest.MonkeyPatch) -> None
 
     core.tokenizer = cast(Any, fake_tokenizer)
     core.model = cast(Any, FakeModel())
-    core._model_mode = "base"
 
     out1 = core.embed("ACDE")
     out2 = core.embed("ACDEFG")

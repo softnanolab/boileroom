@@ -14,7 +14,7 @@
 - Repo harness: `uv run python scripts/harness/check_repo.py`
 - Tests: `uv run pytest`
 - Parallel tests: use `-n 4` if needed; do not use `-n auto`
-- Lint/type checks: `uv run pre-commit run --all-files`
+- Lint/type checks: `uv run --extra dev pre-commit run --all-files`
 
 ## Coding Rules
 - Python 3.12, 4-space indentation, type hints required.
@@ -69,6 +69,7 @@
 - Commits should be atomic: one meaningful change per commit.
 - One feature per PR. Do not combine unrelated changes.
 - Create a draft PR immediately when opening a new branch. Convert to ready when it is ready for review.
+- Before pushing or updating a PR, run `uv run --extra dev pre-commit run --all-files`.
 - Squash-and-merge into `main`. Delete the branch after merge.
 - Never push directly to `main`. All changes go through a reviewed PR.
 - All existing tests must pass before a PR is merged.

@@ -104,20 +104,6 @@ def test_esm2_embed_with_hidden_states(esm2_model_factory, model_config):
     del model
 
 
-def test_esm2_embed_hidden_states(esm2_model_factory):
-    """Test ESM2 embedding hidden states control via include_fields."""
-    sequence = "MALWMRLLPLLALLALWGPDPAAA"
-    model = esm2_model_factory(model_name="esm2_t33_650M_UR50D")
-    result = model.embed([sequence])
-    assert result.hidden_states is None, "hidden_states should be None when not requested via include_fields"
-    assert result.lm_logits is None, "lm_logits should be None when not requested via include_fields"
-    # Even without hidden_states, minimal output should still include embeddings, chain_index, residue_index
-    assert result.embeddings is not None
-    assert result.chain_index is not None
-    assert result.residue_index is not None
-    del model
-
-
 def test_esm2_embed_with_lm_logits(esm2_model_factory):
     """Test ESM2 embedding with full-vocabulary LM-head logits."""
     sequence = "ACDE"
@@ -129,6 +115,24 @@ def test_esm2_embed_with_lm_logits(esm2_model_factory):
     assert result.hidden_states is None
     assert result.lm_logits is not None
     assert result.lm_logits.shape == (1, len(sequence), 33)
+    del model
+
+
+def test_esm2_embed_upgrades_to_lm_logits_per_call(esm2_model_factory):
+    """Test that a base-path model upgrades when lm_logits are requested per call."""
+    sequence = "ACDE"
+    model = esm2_model_factory(model_name="esm2_t6_8M_UR50D")
+
+    base_result = model.embed([sequence])
+    logits_result = model.embed([sequence], options={"include_fields": ["lm_logits"]})
+
+    assert base_result.embeddings.shape == (1, len(sequence), 320)
+    assert base_result.hidden_states is None
+    assert base_result.lm_logits is None
+    assert logits_result.embeddings.shape == (1, len(sequence), 320)
+    assert logits_result.hidden_states is None
+    assert logits_result.lm_logits is not None
+    assert logits_result.lm_logits.shape == (1, len(sequence), 33)
     del model
 
 
@@ -182,6 +186,44 @@ def test_esm2_embed_with_hidden_states_and_lm_logits(esm2_model_factory):
     assert result.hidden_states.shape == (1, 7, len(sequence), 320)
     assert result.lm_logits is not None
     assert result.lm_logits.shape == (1, len(sequence), 33)
+    del model
+
+
+def test_esm2_embed_with_all_optional_fields(esm2_model_factory):
+    """Test that wildcard include_fields returns both optional ESM2 outputs."""
+    sequence = "ACDE"
+    model = esm2_model_factory(model_name="esm2_t6_8M_UR50D", include_fields=["*"])
+
+    result = model.embed([sequence])
+
+    assert result.embeddings.shape == (1, len(sequence), 320)
+    assert result.hidden_states is not None
+    assert result.hidden_states.shape == (1, 7, len(sequence), 320)
+    assert result.lm_logits is not None
+    assert result.lm_logits.shape == (1, len(sequence), 33)
+    del model
+
+
+def test_esm2_embed_masked_multimer_with_hidden_states_and_lm_logits(esm2_model_factory):
+    """Test masked multimers when both optional outputs are requested together."""
+    sequence = "A<mask>:CD"
+    model = esm2_model_factory(
+        model_name="esm2_t6_8M_UR50D",
+        include_fields=["hidden_states", "lm_logits"],
+        glycine_linker="GG",
+        position_ids_skip=512,
+    )
+
+    result = model.embed([sequence])
+
+    assert result.metadata.sequence_lengths == [4]
+    assert result.embeddings.shape == (1, 4, 320)
+    assert result.hidden_states is not None
+    assert result.hidden_states.shape == (1, 7, 4, 320)
+    assert result.lm_logits is not None
+    assert result.lm_logits.shape == (1, 4, 33)
+    assert np.array_equal(result.chain_index[0], np.array([0, 0, 1, 1]))
+    assert np.array_equal(result.residue_index[0], np.array([0, 1, 0, 1]))
     del model
 
 
@@ -326,13 +368,15 @@ def test_esm2_mask_linker_region_pads_hidden_states_on_sequence_axis():
     residue_index = torch.tensor([[0, 1, 2, -1, -1], [0, 1, 2, 3, -1]])
     chain_index = torch.tensor([[0, 0, 1, -1, -1], [0, 0, 1, 1, -1]])
 
-    _, filtered_hidden_states, filtered_lm_logits, filtered_chain_index, filtered_residue_index = core._mask_linker_region(
-        embeddings,
-        hidden_states,
-        lm_logits,
-        linker_map,
-        residue_index,
-        chain_index,
+    _, filtered_hidden_states, filtered_lm_logits, filtered_chain_index, filtered_residue_index = (
+        core._mask_linker_region(
+            embeddings,
+            hidden_states,
+            lm_logits,
+            linker_map,
+            residue_index,
+            chain_index,
+        )
     )
 
     assert filtered_hidden_states is not None

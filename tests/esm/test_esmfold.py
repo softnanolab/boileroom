@@ -1,6 +1,7 @@
 import pathlib
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from io import StringIO
+from typing import Any
 
 import numpy as np
 import pytest
@@ -255,9 +256,13 @@ def test_esmfold_rejects_empty_chain_multimer():
     pytest.importorskip("transformers", reason="requires transformers")
     from boileroom.models.esm.core import ESMFoldCore
 
-    model = ESMFoldCore(config={"device": "cpu", "glycine_linker": "GG", "position_ids_skip": 512})
+    def tokenizer_sentinel(*args: Any, **kwargs: Any) -> dict:
+        return {}
+
+    tokenizer: Callable[..., dict] = tokenizer_sentinel
+    model: ESMFoldCore = ESMFoldCore(config={"device": "cpu", "glycine_linker": "GG", "position_ids_skip": 512})
     model._device = torch.device("cpu")
-    model.tokenizer = lambda *args, **kwargs: {}  # Not reached when validation works correctly
+    model.tokenizer = tokenizer  # Not reached when validation works correctly
 
     with pytest.raises(ValueError, match="empty chain"):
         model._tokenize_sequences(["A::B"], model._merge_options(None))
