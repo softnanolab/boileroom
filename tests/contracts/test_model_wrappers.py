@@ -5,6 +5,7 @@ from typing import Any
 import numpy as np
 import pytest
 
+from boileroom.backend.modal import ModalBackend
 from boileroom.base import ModelWrapper, PredictionMetadata
 from boileroom.images.metadata import get_default_image_tag
 from boileroom.models.boltz.types import Boltz2Output
@@ -24,6 +25,12 @@ SAMPLE_INPUTS: dict[str, Any] = {
         "NPVFTVFKDNEILYRAQLASEDTNAQKTITNCFLLKNKIWCISLVEIYDTGDNVIRPKLFAVKIPEQCTH"
     ),
     "boltz2": "MLKNVHVLVLGAGDVGSVVVRLLEK",
+}
+EXPECTED_MODAL_APP_NAMES = {
+    "esmfold": "boileroom-esmfold",
+    "esm2": "boileroom-esm2",
+    "chai1": "boileroom-chai1",
+    "boltz2": "boileroom-boltz2",
 }
 
 
@@ -119,6 +126,30 @@ def test_model_registry_entries_are_resolvable() -> None:
         assert resolve_object(spec.wrapper_class_path).__name__ == spec.public_name
         if spec.modal_class_path is not None:
             assert resolve_object(spec.modal_class_path).__name__ == spec.modal_class_path.rsplit(".", 1)[-1]
+
+
+def test_modal_classes_are_registered_on_model_specific_apps() -> None:
+    """Modal GPU functions should not all register on one shared app."""
+    app_names: list[str] = []
+
+    for spec in MODEL_SPECS:
+        assert spec.modal_class_path is not None
+        modal_cls = resolve_object(spec.modal_class_path)
+        app_names.append(modal_cls._get_app().name)
+        assert modal_cls._get_app().name == EXPECTED_MODAL_APP_NAMES[spec.key]
+
+    assert len(app_names) == len(set(app_names))
+
+
+@pytest.mark.parametrize("spec", MODEL_SPECS, ids=lambda spec: spec.public_name)
+def test_modal_backend_uses_selected_class_app(spec: ModelSpec) -> None:
+    """ModalBackend should run the app owned by the concrete Modal class."""
+    assert spec.modal_class_path is not None
+    modal_cls = resolve_object(spec.modal_class_path)
+
+    backend = ModalBackend(modal_cls, config={}, device=None)
+
+    assert backend._app is modal_cls._get_app()
 
 
 @pytest.mark.parametrize("spec", MODEL_SPECS, ids=lambda spec: spec.public_name)

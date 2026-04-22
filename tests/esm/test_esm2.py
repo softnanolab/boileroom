@@ -3,7 +3,7 @@ import pytest
 
 from boileroom import ESM2
 
-pytestmark = [pytest.mark.integration, pytest.mark.slow, pytest.mark.gpu]
+pytestmark = [pytest.mark.integration, pytest.mark.slow, pytest.mark.gpu, pytest.mark.xdist_group("esm2")]
 
 
 # Each test instantiates its own model; keeping function scope avoids long-lived Modal handles.

@@ -65,4 +65,5 @@ markers = [
     "integration: real model execution against Modal or Apptainer",
     "slow: tests that take longer than a typical unit test run",
     "gpu: tests that require GPU-backed execution or GPU-specific configuration",
+    "xdist_group: keep related tests on the same xdist worker when using --dist loadgroup",
 ]
