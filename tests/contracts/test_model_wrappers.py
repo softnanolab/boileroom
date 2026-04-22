@@ -11,7 +11,7 @@ from boileroom.images.metadata import get_default_image_tag
 from boileroom.models.boltz.types import Boltz2Output
 from boileroom.models.chai.types import Chai1Output
 from boileroom.models.esm.types import ESM2Output, ESMFoldOutput
-from boileroom.models.registry import CHAI1_SPEC, MODEL_SPECS, ModelSpec, get_model_spec, resolve_object
+from boileroom.models.registry import CHAI1_SPEC, ESM2_SPEC, MODEL_SPECS, ModelSpec, get_model_spec, resolve_object
 
 pytestmark = pytest.mark.contract
 
@@ -41,6 +41,7 @@ def _make_output(spec: ModelSpec) -> object:
             chain_index=np.zeros((1, 3), dtype=np.int64),
             residue_index=np.arange(3, dtype=np.int64)[None, :],
             hidden_states=None,
+            lm_logits=None,
         )
 
     if spec.key == "esmfold":
@@ -214,6 +215,11 @@ def test_parse_backend_apptainer_tag_handling() -> None:
 def test_chai1_contract_declares_single_input_only() -> None:
     """Chai1 should advertise that it does not support top-level batching."""
     assert CHAI1_SPEC.contract.supports_batch is False
+
+
+def test_esm2_contract_declares_lm_logits_optional_field() -> None:
+    """ESM2 should advertise lm_logits as an optional output field."""
+    assert ESM2_SPEC.contract.optional_output_fields == ("hidden_states", "lm_logits")
 
 
 def test_chai1_wrapper_rejects_multiple_top_level_sequences(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -250,6 +250,19 @@ def test_tokenize_sequences_with_mocker(mocker):
     assert multimer_properties is not None
 
 
+def test_esmfold_rejects_empty_chain_multimer():
+    """Empty-chain multimer strings should fail with a clear error."""
+    pytest.importorskip("transformers", reason="requires transformers")
+    from boileroom.models.esm.core import ESMFoldCore
+
+    model = ESMFoldCore(config={"device": "cpu", "glycine_linker": "GG", "position_ids_skip": 512})
+    model._device = torch.device("cpu")
+    model.tokenizer = lambda *args, **kwargs: {}  # Not reached when validation works correctly
+
+    with pytest.raises(ValueError, match="empty chain"):
+        model._tokenize_sequences(["A::B"], model._merge_options(None))
+
+
 def test_sequence_validation(test_sequences: dict[str, str]):
     """Test sequence validation in FoldingAlgorithm."""
     pytest.importorskip("transformers", reason="requires transformers")

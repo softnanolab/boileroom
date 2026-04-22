@@ -20,6 +20,7 @@ class ESM2Output(EmbeddingPrediction):
     chain_index: np.ndarray  # (batch_size, seq_len)
     residue_index: np.ndarray  # (batch_size, seq_len)
     hidden_states: np.ndarray | None = None  # (batch_size, hidden_state_iter, seq_len, embedding_dim)
+    lm_logits: np.ndarray | None = None  # (batch_size, seq_len, vocab_size)
 
 
 @dataclass

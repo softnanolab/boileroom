@@ -114,7 +114,7 @@ ESM2_SPEC = ModelSpec(
         task_kind="embedding",
         static_config_keys=frozenset({"device", "model_name"}),
         minimal_output_fields=("metadata", "embeddings", "chain_index", "residue_index"),
-        optional_output_fields=("hidden_states",),
+        optional_output_fields=("hidden_states", "lm_logits"),
         supports_multimer=True,
     ),
 )

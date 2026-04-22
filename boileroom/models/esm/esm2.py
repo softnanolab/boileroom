@@ -53,14 +53,14 @@ class ModalESM2:
         Parameters
         ----------
         sequences : str | Sequence[str]
-            A single protein sequence string or an iterable of sequence strings.
+            A single protein sequence string or an iterable of sequence strings. ESM2 inputs may include inline ``<mask>`` tokens and optional ``:`` chain separators for multimers.
         options : dict | None, optional
-            Per-call options that override the instance configuration (e.g., model selection, glycine_linker, position_ids_skip, include_fields). Only provided keys are merged with the static configuration.
+            Per-call options that override the instance configuration (e.g., glycine_linker, position_ids_skip, include_fields). Request `include_fields=["lm_logits"]` for full-vocabulary masked-language-model logits; the backend automatically switches its internal model load path when logits are requested and keeps the upgraded MLM-capable model loaded for later calls on that instance.
 
         Returns
         -------
         ESM2Output
-            Prediction container with fields including `embeddings`, `metadata`, `chain_index`, `residue_index`, and `hidden_states` when requested.
+            Prediction container with residue-aligned `embeddings`, `metadata`, `chain_index`, `residue_index`, and optional `hidden_states` / full-vocabulary `lm_logits` when requested.
         """
         assert self._core is not None, "ModalESM2 has not been initialized"
         return self._core.embed(sequences, options=options)
@@ -107,13 +107,13 @@ class ESM2(ModelWrapper):
         Parameters
         ----------
         sequences : str | Sequence[str]
-            A single protein sequence string or a sequence of protein sequences. Multimer inputs may be provided by including ":" characters to separate chains within a sequence.
+            A single protein sequence string or a sequence of protein sequences. ESM2 inputs may include inline ``<mask>`` tokens, and multimer inputs may be provided by including ``:`` characters to separate chains within a sequence.
         options : dict | None, optional
-            Per-call options merged with the backend's static configuration to adjust behavior for this call (for example: model_name, include_fields, glycine_linker, position_ids_skip). Keys not present in `options` fall back to the configured defaults.
+            Per-call options merged with the backend's static configuration to adjust behavior for this call (for example: include_fields, glycine_linker, position_ids_skip). Request `include_fields=["lm_logits"]` for residue-aligned full-vocabulary logits, or combine it with `hidden_states` / `["*"]` to return both optional outputs.
 
         Returns
         -------
         ESM2Output
-            Embeddings and associated metadata (embeddings, chain_index, residue_index, metadata, and optional hidden_states) for the provided sequences.
+            Embeddings and associated metadata (`embeddings`, `chain_index`, `residue_index`, `metadata`, and optional `hidden_states` / `lm_logits`) for the provided sequences. Logit requests trigger automatic internal switching to an MLM-capable variant while keeping the public API unchanged; once upgraded, the instance continues reusing that model for subsequent calls.
         """
         return self._call_backend_method("embed", sequences, options=options)

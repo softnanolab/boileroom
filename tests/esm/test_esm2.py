@@ -71,6 +71,7 @@ def test_esm2_embed_basic(esm2_model_factory, model_config):
     assert result.metadata is not None, "metadata should always be present"
     # hidden_states should be None when not requested via include_fields
     assert result.hidden_states is None, "hidden_states should be None when not requested"
+    assert result.lm_logits is None, "lm_logits should be None when not requested"
     del model
 
 
@@ -109,10 +110,78 @@ def test_esm2_embed_hidden_states(esm2_model_factory):
     model = esm2_model_factory(model_name="esm2_t33_650M_UR50D")
     result = model.embed([sequence])
     assert result.hidden_states is None, "hidden_states should be None when not requested via include_fields"
+    assert result.lm_logits is None, "lm_logits should be None when not requested via include_fields"
     # Even without hidden_states, minimal output should still include embeddings, chain_index, residue_index
     assert result.embeddings is not None
     assert result.chain_index is not None
     assert result.residue_index is not None
+    del model
+
+
+def test_esm2_embed_with_lm_logits(esm2_model_factory):
+    """Test ESM2 embedding with full-vocabulary LM-head logits."""
+    sequence = "ACDE"
+    model = esm2_model_factory(model_name="esm2_t6_8M_UR50D", include_fields=["lm_logits"])
+
+    result = model.embed([sequence])
+
+    assert result.embeddings.shape == (1, len(sequence), 320)
+    assert result.hidden_states is None
+    assert result.lm_logits is not None
+    assert result.lm_logits.shape == (1, len(sequence), 33)
+    del model
+
+
+def test_esm2_embed_masked_sequence_with_lm_logits(esm2_model_factory):
+    """Test that inline <mask> tokens align to the residue axis."""
+    sequence = "AC<mask>D"
+    model = esm2_model_factory(model_name="esm2_t6_8M_UR50D", include_fields=["lm_logits"])
+
+    result = model.embed([sequence])
+
+    assert result.metadata.sequence_lengths == [4]
+    assert result.embeddings.shape == (1, 4, 320)
+    assert result.lm_logits is not None
+    assert result.lm_logits.shape == (1, 4, 33)
+    del model
+
+
+def test_esm2_embed_masked_multimer_with_lm_logits(esm2_model_factory):
+    """Test masked multimer logits stay aligned to residues after linker removal."""
+    sequence = "A<mask>:CD"
+    model = esm2_model_factory(
+        model_name="esm2_t6_8M_UR50D",
+        include_fields=["lm_logits"],
+        glycine_linker="GG",
+        position_ids_skip=512,
+    )
+
+    result = model.embed([sequence])
+
+    assert result.metadata.sequence_lengths == [4]
+    assert result.embeddings.shape == (1, 4, 320)
+    assert result.lm_logits is not None
+    assert result.lm_logits.shape == (1, 4, 33)
+    assert np.array_equal(result.chain_index[0], np.array([0, 0, 1, 1]))
+    assert np.array_equal(result.residue_index[0], np.array([0, 1, 0, 1]))
+    del model
+
+
+def test_esm2_embed_with_hidden_states_and_lm_logits(esm2_model_factory):
+    """Test that hidden states and LM-head logits can be requested together."""
+    sequence = "ACDE"
+    model = esm2_model_factory(
+        model_name="esm2_t6_8M_UR50D",
+        include_fields=["hidden_states", "lm_logits"],
+    )
+
+    result = model.embed([sequence])
+
+    assert result.embeddings.shape == (1, len(sequence), 320)
+    assert result.hidden_states is not None
+    assert result.hidden_states.shape == (1, 7, len(sequence), 320)
+    assert result.lm_logits is not None
+    assert result.lm_logits.shape == (1, len(sequence), 33)
     del model
 
 
@@ -252,13 +321,15 @@ def test_esm2_mask_linker_region_pads_hidden_states_on_sequence_axis():
     core = ESM2Core(config={"device": "cpu", "model_name": "esm2_t6_8M_UR50D"})
     embeddings = np.arange(2 * 5 * 3, dtype=np.float32).reshape(2, 5, 3)
     hidden_states = np.arange(2 * 4 * 5 * 3, dtype=np.float32).reshape(2, 4, 5, 3)
+    lm_logits = np.arange(2 * 5 * 7, dtype=np.float32).reshape(2, 5, 7)
     linker_map = torch.tensor([[1, 1, 1, -1, -1], [1, 1, 1, 1, -1]])
     residue_index = torch.tensor([[0, 1, 2, -1, -1], [0, 1, 2, 3, -1]])
     chain_index = torch.tensor([[0, 0, 1, -1, -1], [0, 0, 1, 1, -1]])
 
-    _, filtered_hidden_states, filtered_chain_index, filtered_residue_index = core._mask_linker_region(
+    _, filtered_hidden_states, filtered_lm_logits, filtered_chain_index, filtered_residue_index = core._mask_linker_region(
         embeddings,
         hidden_states,
+        lm_logits,
         linker_map,
         residue_index,
         chain_index,
@@ -266,7 +337,10 @@ def test_esm2_mask_linker_region_pads_hidden_states_on_sequence_axis():
 
     assert filtered_hidden_states is not None
     assert filtered_hidden_states.shape == (2, 4, 4, 3)
-    assert np.all(filtered_hidden_states[0, 3] == 0)
+    assert np.all(filtered_hidden_states[0, :, 3] == 0)
+    assert filtered_lm_logits is not None
+    assert filtered_lm_logits.shape == (2, 4, 7)
+    assert np.all(filtered_lm_logits[0, 3] == 0)
     assert filtered_chain_index.shape == (2, 4)
     assert filtered_residue_index.shape == (2, 4)
     assert filtered_chain_index[0, 3] == -1
