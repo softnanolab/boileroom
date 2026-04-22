@@ -49,9 +49,10 @@
 
 ## Release Flow
 - Merging to `main` publishes Docker Hub images for an automatically derived alpha prerelease tag such as `0.3.1-alpha.1`.
-- The workflow first publishes a temporary `sha-<commit>` tag, verifies it, then promotes it to the derived alpha tag.
+- Promoted `main` and full-release workflow runs build and validate the final alpha or stable image tag directly.
+- Validation-only manual workflow runs may still publish temporary `sha-<commit>` tags.
 - Alpha numbers are counted from the latest reachable stable release tag; before the first stable release tag, they use the configured CI baseline.
-- Publishing a full GitHub release from a `vX.Y.Z` tag promotes verified Docker images to the stable `X.Y.Z` tag.
+- Publishing a full GitHub release from a `vX.Y.Z` tag publishes verified Docker images with the stable `X.Y.Z` tag.
 - GitHub releases marked as pre-releases do not publish stable Docker or PyPI artifacts.
 - PyPI publication is separate and happens from the GitHub release workflow, which injects the stable release tag into `pyproject.toml` before building.
 - Changing `project.version` changes the stable target for subsequent alpha image tags and package release semantics.

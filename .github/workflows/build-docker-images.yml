@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       promote:
-        description: Promote validated images to the derived prerelease version. Only allowed from main.
+        description: Publish images with the derived prerelease version. Only allowed from main.
         required: true
         type: boolean
         default: false
@@ -47,7 +47,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       release_version: ${{ steps.version.outputs.docker_tag }}
-      validation_tag: ${{ steps.validation_tag.outputs.value }}
+      image_tag: ${{ steps.image_tag.outputs.value }}
       cuda_versions: ${{ steps.image_metadata.outputs.cuda_versions }}
       default_cuda_version: ${{ steps.image_metadata.outputs.default_cuda_version }}
     steps:
@@ -80,6 +80,12 @@ jobs:
       - name: Determine Boileroom version
         id: version
         run: |
+          if [ "$SHOULD_PROMOTE" != "true" ]; then
+            echo "pep440=" >> "$GITHUB_OUTPUT"
+            echo "docker_tag=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           version_args=()
           if [ "$GITHUB_EVENT_NAME" = "release" ]; then
             version_args+=(--release-tag "$GITHUB_REF_NAME")
@@ -87,9 +93,14 @@ jobs:
 
           uv run --no-project --with click --with pyyaml python ./scripts/ci/derive_version.py "${version_args[@]}" --github-output "$GITHUB_OUTPUT"
 
-      - name: Determine validation tag
-        id: validation_tag
-        run: echo "value=sha-${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+      - name: Determine image tag
+        id: image_tag
+        run: |
+          if [ "$SHOULD_PROMOTE" = "true" ]; then
+            echo "value=${{ steps.version.outputs.docker_tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=sha-${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Determine image metadata
         id: image_metadata
@@ -103,9 +114,9 @@ jobs:
           print(f"default_cuda_version={DEFAULT_CUDA_VERSION}")
           PY
 
-  build-validation-images:
+  build-images:
     needs: prepare-release
-    name: Build Validation Images (${{ matrix.platform }}, CUDA ${{ matrix.cuda_version }})
+    name: Build Images (${{ matrix.platform }}, CUDA ${{ matrix.cuda_version }})
     runs-on: ${{ matrix.platform == 'linux/arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     timeout-minutes: 180
     strategy:
@@ -142,7 +153,7 @@ jobs:
           username: ${{ env.DOCKERHUB_USERNAME_FOR_RUN }}
           password: ${{ secrets[env.DOCKERHUB_TOKEN_SECRET_FOR_RUN] }}
 
-      - name: Build validation images
+      - name: Build images
         shell: bash
         run: |
           build_args=()
@@ -152,79 +163,42 @@ jobs:
 
           uv run --no-project --with click --with pyyaml python ./scripts/images/build_model_images.py \
             --cuda-version=${{ matrix.cuda_version }} \
-            --tag=${{ needs.prepare-release.outputs.validation_tag }} \
+            --tag=${{ needs.prepare-release.outputs.image_tag }} \
             --docker-user="${DOCKER_REPOSITORY_FOR_RUN}" \
             --platform=${{ matrix.platform }} \
             "${build_args[@]}" \
             --max-workers=${IMAGE_BUILD_MAX_WORKERS} \
             --verbose
 
-      - name: Verify local canonical validation image imports
+      - name: Verify local canonical image imports
         run: |
           uv run --no-project --with click --with pyyaml python ./scripts/images/check_model_imports.py \
             --cuda-version=${{ matrix.cuda_version }} \
             --docker-user="${DOCKER_REPOSITORY_FOR_RUN}" \
-            --tag=${{ needs.prepare-release.outputs.validation_tag }}
+            --tag=${{ needs.prepare-release.outputs.image_tag }}
 
-      - name: Verify local canonical validation image server health
+      - name: Verify local canonical image server health
         run: |
           uv run --no-project --with click --with pyyaml python ./scripts/images/check_model_server_health.py \
             --cuda-version=${{ matrix.cuda_version }} \
             --docker-user="${DOCKER_REPOSITORY_FOR_RUN}" \
-            --tag=${{ needs.prepare-release.outputs.validation_tag }}
+            --tag=${{ needs.prepare-release.outputs.image_tag }}
 
-      - name: Verify local validation alias image imports
+      - name: Verify local alias image imports
         if: matrix.platform == 'linux/amd64' && matrix.cuda_version == needs.prepare-release.outputs.default_cuda_version
         run: |
           uv run --no-project --with click --with pyyaml python ./scripts/images/check_model_imports.py \
             --docker-user="${DOCKER_REPOSITORY_FOR_RUN}" \
-            --tag=${{ needs.prepare-release.outputs.validation_tag }}
+            --tag=${{ needs.prepare-release.outputs.image_tag }}
 
-      - name: Verify local validation alias image server health
+      - name: Verify local alias image server health
         if: matrix.platform == 'linux/amd64' && matrix.cuda_version == needs.prepare-release.outputs.default_cuda_version
         run: |
           uv run --no-project --with click --with pyyaml python ./scripts/images/check_model_server_health.py \
             --docker-user="${DOCKER_REPOSITORY_FOR_RUN}" \
-            --tag=${{ needs.prepare-release.outputs.validation_tag }}
+            --tag=${{ needs.prepare-release.outputs.image_tag }}
 
       - name: Free disk space after build
         if: always()
         run: |
           docker builder prune --all --force
-
-  promote-validated-images:
-    needs: [ prepare-release, build-validation-images ]
-    runs-on: ubuntu-latest
-    if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'release' || inputs.promote }}
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v7
-        with:
-          enable-cache: true
-          cache-suffix: image-promote
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          registry: docker.io
-          username: ${{ env.DOCKERHUB_USERNAME_FOR_RUN }}
-          password: ${{ secrets[env.DOCKERHUB_TOKEN_SECRET_FOR_RUN] }}
-
-      - name: Promote validated images to target tag
-        run: |
-          uv run --no-project --with click --with pyyaml python ./scripts/images/promote_image_tags.py \
-            --all-cuda \
-            --docker-user="${DOCKER_REPOSITORY_FOR_RUN}" \
-            --source-tag=${{ needs.prepare-release.outputs.validation_tag }} \
-            --target-tag=${{ needs.prepare-release.outputs.release_version }}

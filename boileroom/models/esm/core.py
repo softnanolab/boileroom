@@ -399,7 +399,7 @@ class ESM2Core(EmbeddingAlgorithm):
         tuple
             A tuple containing:
             - embeddings (np.ndarray): Filtered and padded embeddings with shape (batch, kept_seq_len_max, embedding_dim). Padded positions are zero.
-            - hidden_states (np.ndarray | None): If provided, filtered and padded hidden states with shape (batch, kept_seq_len_max, num_layers, embedding_dim); otherwise None. Padded positions are zero.
+            - hidden_states (np.ndarray | None): If provided, filtered and padded hidden states with shape (batch, num_layers, kept_seq_len_max, embedding_dim); otherwise None. Padded positions are zero.
             - chain_index (np.ndarray): Filtered and padded chain indices with shape (batch, kept_seq_len_max). Padded positions use -1.
             - residue_index (np.ndarray): Filtered and padded residue indices with shape (batch, kept_seq_len_max). Padded positions use -1.
         """
@@ -456,8 +456,10 @@ class ESM2Core(EmbeddingAlgorithm):
         # Stack embeddings along batch dimension (0)
         embeddings = pad_and_stack(embeddings_list, residue_dim=0, batch_dim=0)
         if hidden_states is not None:
-            hidden_states = pad_and_stack(hidden_states_list, residue_dim=1, batch_dim=0)
-            # Transpose to get the public output order (batch, seq_len, layers, hidden_dim)
+            # NumPy mixed basic/advanced indexing moves the fancy axis to the front, so each
+            # item has shape (kept_seq_len, num_layers, embedding_dim); pad the sequence axis
+            # and transpose back to the public (batch, num_layers, seq_len, embedding_dim) order.
+            hidden_states = pad_and_stack(hidden_states_list, residue_dim=0, batch_dim=0)
             hidden_states = np.transpose(hidden_states, (0, 2, 1, 3))
         chain_index_out = pad_and_stack(chain_index_list, residue_dim=0, batch_dim=0, constant_value=-1)
         residue_index_out = pad_and_stack(residue_index_list, residue_dim=0, batch_dim=0, constant_value=-1)

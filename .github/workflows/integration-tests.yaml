@@ -4,19 +4,36 @@ on:
   workflow_dispatch:
   schedule:
     - cron: "0 2 * * 0"
+  # Run after the image-build workflow succeeds on main so integration tests
+  # exercise the freshly-published image rather than the stale registry tag.
+  workflow_run:
+    workflows: ["Build and Push Boileroom Images"]
+    types: [completed]
+    branches: [main]
 
 permissions:
   contents: read
 
-concurrency: integration-tests-${{ github.ref }}
+concurrency: integration-tests-${{ github.event.workflow_run.head_sha || github.ref }}
 
 jobs:
   integration-tests:
     runs-on: ubuntu-latest
     timeout-minutes: 240
+    # For workflow_run events, only proceed if the image build succeeded.
+    # For workflow_dispatch and schedule events, always proceed.
+    if: >-
+      github.event_name != 'workflow_run' ||
+      github.event.workflow_run.conclusion == 'success'
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          # Pin to the commit that triggered the image build, otherwise the default
+          # checkout would pick up a later main commit whose image is not yet built.
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          # derive_version.py needs the full history to count commits since the baseline.
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -28,6 +45,13 @@ jobs:
         with:
           enable-cache: true
           cache-suffix: integration-tests
+
+      - name: Resolve freshly-built image tag
+        id: resolve_tag
+        # Only override the tag when chained from a successful image build.
+        # Scheduled and manual runs use the default (pyproject-version-based) tag.
+        if: github.event_name == 'workflow_run'
+        run: uv run --no-project --with click python scripts/ci/derive_version.py --github-output "$GITHUB_OUTPUT"
 
       - name: Install dependencies
         run: uv sync --extra dev
@@ -41,4 +65,6 @@ jobs:
 
       - name: Run integration tests
         shell: bash -l {0}
+        env:
+          BOILEROOM_MODAL_IMAGE_TAG: ${{ steps.resolve_tag.outputs.pep440 }}
         run: uv run pytest -n 4 -m integration
