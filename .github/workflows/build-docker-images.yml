@@ -85,7 +85,7 @@ jobs:
             version_args+=(--release-tag "$GITHUB_REF_NAME")
           fi
 
-          uv run --no-project --with pyyaml python ./scripts/ci/derive_version.py "${version_args[@]}" --github-output "$GITHUB_OUTPUT"
+          uv run --no-project --with click --with pyyaml python ./scripts/ci/derive_version.py "${version_args[@]}" --github-output "$GITHUB_OUTPUT"
 
       - name: Determine validation tag
         id: validation_tag
@@ -132,7 +132,7 @@ jobs:
           cache-suffix: image-build-${{ matrix.platform }}-${{ matrix.cuda_version }}
 
       - name: Prepare image script dependencies
-        run: uv run --no-project --with pyyaml python -c "import yaml"
+        run: uv run --no-project --with click --with pyyaml python -c "import click, yaml"
 
       - name: Log in to Docker Hub
         if: matrix.platform == 'linux/amd64'
@@ -150,7 +150,7 @@ jobs:
             build_args+=(--push --local-base)
           fi
 
-          uv run --no-project --with pyyaml python ./scripts/images/build_model_images.py \
+          uv run --no-project --with click --with pyyaml python ./scripts/images/build_model_images.py \
             --cuda-version=${{ matrix.cuda_version }} \
             --tag=${{ needs.prepare-release.outputs.validation_tag }} \
             --docker-user="${DOCKER_REPOSITORY_FOR_RUN}" \
@@ -161,14 +161,14 @@ jobs:
 
       - name: Verify local canonical validation image imports
         run: |
-          uv run --no-project --with pyyaml python ./scripts/images/check_model_imports.py \
+          uv run --no-project --with click --with pyyaml python ./scripts/images/check_model_imports.py \
             --cuda-version=${{ matrix.cuda_version }} \
             --docker-user="${DOCKER_REPOSITORY_FOR_RUN}" \
             --tag=${{ needs.prepare-release.outputs.validation_tag }}
 
       - name: Verify local canonical validation image server health
         run: |
-          uv run --no-project --with pyyaml python ./scripts/images/check_model_server_health.py \
+          uv run --no-project --with click --with pyyaml python ./scripts/images/check_model_server_health.py \
             --cuda-version=${{ matrix.cuda_version }} \
             --docker-user="${DOCKER_REPOSITORY_FOR_RUN}" \
             --tag=${{ needs.prepare-release.outputs.validation_tag }}
@@ -176,14 +176,14 @@ jobs:
       - name: Verify local validation alias image imports
         if: matrix.platform == 'linux/amd64' && matrix.cuda_version == needs.prepare-release.outputs.default_cuda_version
         run: |
-          uv run --no-project --with pyyaml python ./scripts/images/check_model_imports.py \
+          uv run --no-project --with click --with pyyaml python ./scripts/images/check_model_imports.py \
             --docker-user="${DOCKER_REPOSITORY_FOR_RUN}" \
             --tag=${{ needs.prepare-release.outputs.validation_tag }}
 
       - name: Verify local validation alias image server health
         if: matrix.platform == 'linux/amd64' && matrix.cuda_version == needs.prepare-release.outputs.default_cuda_version
         run: |
-          uv run --no-project --with pyyaml python ./scripts/images/check_model_server_health.py \
+          uv run --no-project --with click --with pyyaml python ./scripts/images/check_model_server_health.py \
             --docker-user="${DOCKER_REPOSITORY_FOR_RUN}" \
             --tag=${{ needs.prepare-release.outputs.validation_tag }}
 
@@ -223,7 +223,7 @@ jobs:
 
       - name: Promote validated images to target tag
         run: |
-          uv run --no-project --with pyyaml python ./scripts/images/promote_image_tags.py \
+          uv run --no-project --with click --with pyyaml python ./scripts/images/promote_image_tags.py \
             --all-cuda \
             --docker-user="${DOCKER_REPOSITORY_FOR_RUN}" \
             --source-tag=${{ needs.prepare-release.outputs.validation_tag }} \

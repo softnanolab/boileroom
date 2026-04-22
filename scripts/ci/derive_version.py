@@ -2,18 +2,39 @@
 
 from __future__ import annotations
 
-import argparse
 import re
 import subprocess
+import sys
 import tomllib
+from dataclasses import dataclass
 from pathlib import Path
 
+import click
+
+SCRIPT_PATH = Path(__file__).resolve()
+REPO_ROOT = SCRIPT_PATH.parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from scripts.cli_utils import CONTEXT_SETTINGS  # noqa: E402
+
 MAIN_VERSION_BASE_SHA = "48e8a23fbde63e95a0e39fe0d5748c3f338b30b3"
-DEFAULT_PYPROJECT_PATH = Path(__file__).resolve().parents[2] / "pyproject.toml"
+DEFAULT_PYPROJECT_PATH = REPO_ROOT / "pyproject.toml"
 VERSION_PATTERN = re.compile(r"^(?P<major>0|[1-9]\d*)\.(?P<minor>0|[1-9]\d*)\.(?P<patch>0|[1-9]\d*)$")
 RELEASE_TAG_PATTERN = re.compile(
     r"^(?:refs/tags/)?v(?P<major>0|[1-9]\d*)\.(?P<minor>0|[1-9]\d*)\.(?P<patch>0|[1-9]\d*)$"
 )
+
+
+@dataclass(frozen=True)
+class VersionOptions:
+    """CLI options for release version derivation."""
+
+    head_ref: str
+    release_tag: str | None
+    base_pyproject: Path
+    write_pyproject: Path | None
+    github_output: Path | None
 
 
 def run_git(args: list[str]) -> str:
@@ -128,41 +149,62 @@ def write_github_output(path: Path, version: str) -> None:
         output.write(f"docker_tag={version}\n")
 
 
-def parse_args() -> argparse.Namespace:
-    """Parse command-line arguments."""
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--head-ref", default="HEAD", help="Git ref to version. Defaults to HEAD.")
-    parser.add_argument("--release-tag", help="Release tag to normalize, for example v0.3.7.")
-    parser.add_argument(
-        "--base-pyproject",
-        type=Path,
-        default=DEFAULT_PYPROJECT_PATH,
-        help="Path to the pyproject.toml version anchor. Defaults to the repository pyproject.toml.",
-    )
-    parser.add_argument("--write-pyproject", type=Path, help="Optional pyproject.toml path to update.")
-    parser.add_argument(
-        "--github-output",
-        type=Path,
-        help="Optional GitHub Actions output file that receives pep440 and docker_tag values.",
-    )
-    return parser.parse_args()
-
-
-def main() -> None:
+def run_derive_version(options: VersionOptions) -> None:
     """CLI entrypoint."""
-    args = parse_args()
-    base_version = pyproject_version(args.base_pyproject)
+
+    base_version = pyproject_version(options.base_pyproject)
     version = (
-        version_from_release_tag(args.release_tag, base_version)
-        if args.release_tag
-        else main_version(args.head_ref, base_version)
+        version_from_release_tag(options.release_tag, base_version)
+        if options.release_tag
+        else main_version(options.head_ref, base_version)
     )
-    if args.write_pyproject is not None:
-        write_pyproject_version(args.write_pyproject, version)
-    if args.github_output is not None:
-        write_github_output(args.github_output, version)
+    if options.write_pyproject is not None:
+        write_pyproject_version(options.write_pyproject, version)
+    if options.github_output is not None:
+        write_github_output(options.github_output, version)
     print(version)
 
 
+@click.command(context_settings=CONTEXT_SETTINGS, help=__doc__)
+@click.option("--head-ref", default="HEAD", help="Git ref to version. Defaults to HEAD.")
+@click.option("--release-tag", default=None, help="Release tag to normalize, for example 0.3.7.")
+@click.option(
+    "--base-pyproject",
+    type=click.Path(path_type=Path),
+    default=DEFAULT_PYPROJECT_PATH,
+    help="Path to the pyproject.toml version anchor. Defaults to the repository pyproject.toml.",
+)
+@click.option(
+    "--write-pyproject",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Optional pyproject.toml path to update.",
+)
+@click.option(
+    "--github-output",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Optional GitHub Actions output file that receives the pep440 value.",
+)
+def cli(
+    head_ref: str,
+    release_tag: str | None,
+    base_pyproject: Path,
+    write_pyproject: Path | None,
+    github_output: Path | None,
+) -> None:
+    """Run the version derivation Click command."""
+
+    run_derive_version(
+        VersionOptions(
+            head_ref=head_ref,
+            release_tag=release_tag,
+            base_pyproject=base_pyproject,
+            write_pyproject=write_pyproject,
+            github_output=github_output,
+        )
+    )
+
+
 if __name__ == "__main__":
-    main()
+    cli()

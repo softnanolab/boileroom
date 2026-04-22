@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-import argparse
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
+
+import click
 
 SCRIPT_PATH = Path(__file__).resolve()
 REPO_ROOT = SCRIPT_PATH.parents[2]
@@ -23,22 +25,27 @@ from boileroom.images.metadata import (  # noqa: E402
     normalize_requested_tag,
     published_image_references,
 )
+from scripts.cli_utils import CONTEXT_SETTINGS, all_cuda_option, cuda_version_option, none_if_empty  # noqa: E402
 
 
-def parse_args() -> argparse.Namespace:
-    """Parse CLI arguments."""
-    parser = argparse.ArgumentParser(description="Promote validated boileroom image tags without rebuilding.")
-    parser.add_argument("--source-tag", required=True, help="Validated source tag, for example sha-abcd1234.")
-    parser.add_argument("--target-tag", required=True, help="Public target tag, for example 0.3.0.")
-    parser.add_argument("--docker-user", default=DEFAULT_DOCKER_REPOSITORY, help="Docker Hub user or namespace to promote.")
-    parser.add_argument(
-        "--cuda-version",
-        action="append",
-        dest="cuda_versions",
-        help=f"CUDA version to promote (repeatable). Supported values: {', '.join(sorted(CUDA_MICROMAMBA_BASE))}.",
-    )
-    parser.add_argument("--all-cuda", action="store_true", help="Promote all supported CUDA variants.")
-    return parser.parse_args()
+@dataclass(frozen=True)
+class PromoteOptions:
+    """CLI options for runtime image promotion."""
+
+    source_tag: str
+    target_tag: str
+    docker_user: str
+    cuda_versions: list[str] | None
+    all_cuda: bool
+
+
+def compute_cuda_versions(requested: list[str] | None, all_cuda: bool) -> list[str]:
+    """Resolve requested CUDA versions."""
+    if all_cuda:
+        return sorted({cuda for spec in (BASE_IMAGE_SPEC, *MODEL_IMAGE_SPECS) for cuda in get_supported_cuda(spec)})
+    if not requested:
+        raise ValueError("Specify at least one --cuda-version or use --all-cuda.")
+    return [normalize_cuda_version(cuda_version) for cuda_version in requested]
 
 
 def ensure_buildx() -> None:
@@ -52,15 +59,6 @@ def ensure_buildx() -> None:
         )
     except (OSError, subprocess.CalledProcessError) as exc:
         raise RuntimeError("Docker buildx is required but was not found.") from exc
-
-
-def compute_cuda_versions(requested: list[str] | None, all_cuda: bool) -> list[str]:
-    """Resolve requested CUDA versions."""
-    if all_cuda:
-        return sorted({cuda for spec in (BASE_IMAGE_SPEC, *MODEL_IMAGE_SPECS) for cuda in get_supported_cuda(spec)})
-    if not requested:
-        raise ValueError("Specify at least one --cuda-version or use --all-cuda.")
-    return [normalize_cuda_version(cuda_version) for cuda_version in requested]
 
 
 def promote_one(
@@ -81,14 +79,14 @@ def promote_one(
     subprocess.run(cmd, check=True)
 
 
-def main() -> None:
+def run_promote_images(options: PromoteOptions) -> None:
     """Promote validated runtime images to public tags."""
-    args = parse_args()
+
+    docker_repository = normalize_docker_repository(options.docker_user)
+    source_tag = normalize_requested_tag(options.source_tag)
+    target_tag = normalize_requested_tag(options.target_tag)
+    cuda_versions = compute_cuda_versions(options.cuda_versions, options.all_cuda)
     ensure_buildx()
-    docker_repository = normalize_docker_repository(args.docker_user)
-    source_tag = normalize_requested_tag(args.source_tag)
-    target_tag = normalize_requested_tag(args.target_tag)
-    cuda_versions = compute_cuda_versions(args.cuda_versions, args.all_cuda)
     image_specs = (BASE_IMAGE_SPEC, *MODEL_IMAGE_SPECS)
 
     for cuda_version in cuda_versions:
@@ -98,5 +96,28 @@ def main() -> None:
             promote_one(spec, cuda_version, source_tag, target_tag, docker_repository)
 
 
+@click.command(context_settings=CONTEXT_SETTINGS, help="Promote validated boileroom image tags without rebuilding.")
+@click.option("--source-tag", required=True, help="Validated source tag, for example sha-abcd1234.")
+@click.option("--target-tag", required=True, help="Public target tag, for example 0.3.0.")
+@click.option("--docker-user", default=DEFAULT_DOCKER_REPOSITORY, help="Docker Hub user or namespace to promote.")
+@cuda_version_option("CUDA version to promote (repeatable). Supported values: 11.8, 12.6.")
+@all_cuda_option("Promote all supported CUDA variants.")
+def cli(source_tag: str, target_tag: str, docker_user: str, cuda_versions: tuple[str, ...], all_cuda: bool) -> None:
+    """Run the image promotion Click command."""
+
+    try:
+        run_promote_images(
+            PromoteOptions(
+                source_tag=source_tag,
+                target_tag=target_tag,
+                docker_user=docker_user,
+                cuda_versions=none_if_empty(cuda_versions),
+                all_cuda=all_cuda,
+            )
+        )
+    except ValueError as exc:
+        raise click.UsageError(str(exc)) from exc
+
+
 if __name__ == "__main__":
-    main()
+    cli()

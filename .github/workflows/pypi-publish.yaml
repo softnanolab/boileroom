@@ -24,7 +24,7 @@ jobs:
 
       - name: Apply release version
         run: |
-          uv run --no-project python ./scripts/ci/derive_version.py --release-tag "${GITHUB_REF_NAME}" --write-pyproject pyproject.toml
+          uv run --no-project --with click python ./scripts/ci/derive_version.py --release-tag "${GITHUB_REF_NAME}" --write-pyproject pyproject.toml
 
       - name: Build and publish to PyPI
         run: |

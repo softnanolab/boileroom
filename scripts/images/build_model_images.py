@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-import argparse
 import re
 import shlex
 import subprocess
@@ -9,6 +8,8 @@ import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
+
+import click
 
 SCRIPT_PATH = Path(__file__).resolve()
 REPO_ROOT = SCRIPT_PATH.parents[2]
@@ -28,6 +29,7 @@ from boileroom.images.metadata import (  # noqa: E402
     normalize_requested_tag,
     published_image_references,
 )
+from scripts.cli_utils import CONTEXT_SETTINGS, all_cuda_option, cuda_version_option, none_if_empty  # noqa: E402
 
 _CUDA_TAG_PATTERN = re.compile(r"^cuda\d+\.\d+(?:-.+)?$")
 
@@ -41,6 +43,25 @@ class BuildTask:
     base_image_reference: str
     docker_repository: str
     tag: str
+
+
+@dataclass(frozen=True)
+class BuildOptions:
+    """CLI options for the Docker image build workflow."""
+
+    tag: str | None
+    docker_user: str
+    cuda_versions: list[str] | None
+    all_cuda: bool
+    platform: str
+    push: bool
+    load: bool
+    no_cache: bool
+    verbose: bool
+    skip_existing: bool
+    force_rebuild: bool
+    max_workers: int
+    local_base: bool
 
 
 class Colors:
@@ -216,70 +237,6 @@ def ensure_buildx_builder() -> None:
 
     subprocess.run(["docker", "buildx", "use", "boileroom-builder"], check=True)
     log_info("Using existing buildx builder 'boileroom-builder'.")
-
-
-def parse_args() -> argparse.Namespace:
-    """Parse CLI arguments."""
-    parser = argparse.ArgumentParser(
-        description="Build base and per-model Docker images using shared boileroom image metadata."
-    )
-    parser.add_argument(
-        "--tag",
-        default=None,
-        help="Unqualified tag to publish. Defaults to the current boileroom package version; explicit examples include 0.3.0, 0.3.1-alpha.1, or sha-<commit>.",
-    )
-    parser.add_argument(
-        "--docker-user",
-        default=DEFAULT_DOCKER_REPOSITORY,
-        help=(
-            "Docker Hub user or namespace to publish under. "
-            "Accepts either a user such as my-dockerhub-user or a full namespace such as docker.io/my-dockerhub-user."
-        ),
-    )
-    parser.add_argument(
-        "--cuda-version",
-        action="append",
-        dest="cuda_versions",
-        help=f"CUDA version to build (repeatable). Supported values: {', '.join(sorted(CUDA_MICROMAMBA_BASE))}.",
-    )
-    parser.add_argument("--all-cuda", action="store_true", help="Build all supported CUDA variants.")
-    parser.add_argument(
-        "--platform",
-        default="linux/amd64",
-        help="Comma-separated buildx platforms. The default release path publishes linux/amd64 only.",
-    )
-    parser.add_argument("--push", action="store_true", help="Push built images to Docker Hub.")
-    parser.add_argument(
-        "--load",
-        action="store_true",
-        help="Load single-platform builds into the local Docker daemon. Incompatible with --push and multi-platform builds.",
-    )
-    parser.add_argument("--no-cache", action="store_true", help="Disable Docker build cache.")
-    parser.add_argument(
-        "--verbose",
-        action="store_true",
-        help="Print Docker build output and plain BuildKit progress while still writing per-image log files.",
-    )
-    parser.add_argument(
-        "--skip-existing",
-        action="store_true",
-        help="Skip a build when the canonical image tag already exists in Docker Hub.",
-    )
-    parser.add_argument(
-        "--force-rebuild",
-        action="store_true",
-        help="Ignore --skip-existing and rebuild even when matching tags already exist.",
-    )
-    parser.add_argument("--max-workers", type=int, default=1, help="Maximum concurrent model-image builds.")
-    parser.add_argument(
-        "--local-base",
-        action="store_true",
-        help=(
-            "For single-platform pushed builds, load the base into the local Docker daemon and build model images "
-            "from that local base before pushing their tags."
-        ),
-    )
-    return parser.parse_args()
 
 
 def resolve_publish_tag(tag: str | None) -> str:
@@ -474,30 +431,29 @@ def build_model(
     return references
 
 
-def main() -> None:
+def run_build(options: BuildOptions) -> None:
     """Run the Docker image build workflow."""
-    args = parse_args()
 
     try:
-        ensure_docker()
-        tag = resolve_publish_tag(args.tag)
-        docker_repository = normalize_docker_repository(args.docker_user)
-        cuda_versions = compute_cuda_versions(args.cuda_versions, args.all_cuda)
-        output_flag = resolve_output_flag(args.push, args.load, args.platform)
-        use_local_docker_build = should_use_local_docker_build(args.push, args.platform)
-        if args.local_base:
-            if not args.push:
+        tag = resolve_publish_tag(options.tag)
+        docker_repository = normalize_docker_repository(options.docker_user)
+        cuda_versions = compute_cuda_versions(options.cuda_versions, options.all_cuda)
+        output_flag = resolve_output_flag(options.push, options.load, options.platform)
+        use_local_docker_build = should_use_local_docker_build(options.push, options.platform)
+        if options.local_base:
+            if not options.push:
                 raise ValueError("--local-base only applies to pushed builds.")
-            if "," in args.platform:
+            if "," in options.platform:
                 raise ValueError("--local-base requires a single --platform value.")
             use_local_docker_build = False
+        ensure_docker()
         if not use_local_docker_build:
             ensure_buildx_builder()
     except Exception as exc:
         log_error(str(exc))
         raise SystemExit(1) from exc
 
-    if args.local_base:
+    if options.local_base:
         log_info(
             "Using buildx --load and named image contexts for single-platform pushed images so model builds "
             "inherit the local base image."
@@ -514,15 +470,18 @@ def main() -> None:
     log_info(f"Docker repository: {docker_repository}")
     log_info(f"Model images: {', '.join(spec.image_name for spec in MODEL_IMAGE_SPECS)}")
     log_info(f"CUDA versions: {', '.join(cuda_versions)}")
-    log_info(f"Platforms: {args.platform}")
-    if args.verbose:
-        output_mode = {
-            "--push": "push to registry",
-            "--load": "load into local Docker",
-            None: "buildx cache only",
-        }[output_flag]
+    log_info(f"Platforms: {options.platform}")
+    if options.verbose:
+        if options.local_base:
+            output_mode = "load into local Docker then push"
+        else:
+            output_mode = {
+                "--push": "push to registry",
+                "--load": "load into local Docker",
+                None: "buildx cache only",
+            }[output_flag]
         log_info(f"Verbose build logs enabled; output mode: {output_mode}")
-    if args.force_rebuild and args.skip_existing:
+    if options.force_rebuild and options.skip_existing:
         log_info("Ignoring --skip-existing because --force-rebuild was set.")
 
     published_references: list[str] = []
@@ -536,7 +495,7 @@ def main() -> None:
                 tag,
                 docker_repository,
             )[0]
-            if args.skip_existing and not args.force_rebuild and image_reference_exists(target_base_reference):
+            if options.skip_existing and not options.force_rebuild and image_reference_exists(target_base_reference):
                 log_info(
                     f"Skipping base build for CUDA {cuda_version}; existing tag already present: "
                     f"{target_base_reference}"
@@ -547,12 +506,12 @@ def main() -> None:
                     cuda_version,
                     tag,
                     docker_repository,
-                    args.platform,
+                    options.platform,
                     output_flag,
-                    args.no_cache,
+                    options.no_cache,
                     use_local_docker_build,
-                    args.verbose,
-                    push_after_build=args.local_base,
+                    options.verbose,
+                    push_after_build=options.local_base,
                 )
         except Exception as exc:
             log_error(f"Failed to build base image for CUDA {cuda_version}: {exc}")
@@ -569,7 +528,7 @@ def main() -> None:
                 )
                 continue
             target_reference = published_image_references(image_spec.image_name, cuda_version, tag, docker_repository)[0]
-            if args.skip_existing and not args.force_rebuild and image_reference_exists(target_reference):
+            if options.skip_existing and not options.force_rebuild and image_reference_exists(target_reference):
                 log_info(
                     f"Skipping {image_spec.image_name} for CUDA {cuda_version}; existing tag already present: "
                     f"{target_reference}"
@@ -588,36 +547,36 @@ def main() -> None:
 
     if not tasks:
         log_warn("No model images matched the requested CUDA selection.")
-    elif args.max_workers <= 1 or len(tasks) == 1:
+    elif options.max_workers <= 1 or len(tasks) == 1:
         for task in tasks:
             try:
                 published_references.extend(
                     build_model(
                         task,
-                        args.platform,
+                        options.platform,
                         output_flag,
-                        args.no_cache,
+                        options.no_cache,
                         use_local_docker_build,
-                        args.verbose,
-                        push_after_build=args.local_base,
+                        options.verbose,
+                        push_after_build=options.local_base,
                     )
                 )
             except Exception as exc:
                 log_error(f"Failed to build {task.image_spec.image_name} for CUDA {task.cuda_version}: {exc}")
                 raise SystemExit(1) from exc
     else:
-        executor = ThreadPoolExecutor(max_workers=max(1, args.max_workers))
+        executor = ThreadPoolExecutor(max_workers=max(1, options.max_workers))
         try:
             future_map = {
                 executor.submit(
                     build_model,
                     task,
-                    args.platform,
+                    options.platform,
                     output_flag,
-                    args.no_cache,
+                    options.no_cache,
                     use_local_docker_build,
-                    args.verbose,
-                    push_after_build=args.local_base,
+                    options.verbose,
+                    push_after_build=options.local_base,
                 ): task
                 for task in tasks
             }
@@ -638,5 +597,99 @@ def main() -> None:
         print(f"  {image_reference}")
 
 
+@click.command(
+    context_settings=CONTEXT_SETTINGS,
+    help="Build base and per-model Docker images using shared boileroom image metadata.",
+)
+@click.option(
+    "--tag",
+    default=None,
+    help=(
+        "Unqualified tag to publish. Defaults to the current boileroom package version; explicit examples include "
+        "0.3.0 or sha-<commit>."
+    ),
+)
+@cuda_version_option("CUDA version to build (repeatable). Supported values: 11.8, 12.6.")
+@all_cuda_option("Build all supported CUDA variants.")
+@click.option(
+    "--docker-user",
+    default=DEFAULT_DOCKER_REPOSITORY,
+    help=(
+        "Docker Hub user or namespace to publish under. Accepts either a user such as my-dockerhub-user "
+        "or a full namespace such as docker.io/my-dockerhub-user."
+    ),
+)
+@click.option(
+    "--platform",
+    default="linux/amd64",
+    help="Comma-separated buildx platforms. The default release path publishes linux/amd64 only.",
+)
+@click.option("--push", is_flag=True, help="Push built images to Docker Hub.")
+@click.option(
+    "--load",
+    is_flag=True,
+    help="Load single-platform builds into the local Docker daemon. Incompatible with --push and multi-platform builds.",
+)
+@click.option("--no-cache", is_flag=True, help="Disable Docker build cache.")
+@click.option(
+    "--verbose",
+    is_flag=True,
+    help="Print Docker build output and plain BuildKit progress while still writing per-image log files.",
+)
+@click.option(
+    "--skip-existing",
+    is_flag=True,
+    help="Skip a build when the canonical image tag already exists in Docker Hub.",
+)
+@click.option(
+    "--force-rebuild",
+    is_flag=True,
+    help="Ignore --skip-existing and rebuild even when matching tags already exist.",
+)
+@click.option("--max-workers", type=int, default=1, help="Maximum concurrent model-image builds.")
+@click.option(
+    "--local-base",
+    is_flag=True,
+    help=(
+        "For single-platform pushed builds, load the base into the local Docker daemon and build model images "
+        "from that local base before pushing their tags."
+    ),
+)
+def cli(
+    tag: str | None,
+    cuda_versions: tuple[str, ...],
+    all_cuda: bool,
+    docker_user: str,
+    platform: str,
+    push: bool,
+    load: bool,
+    no_cache: bool,
+    verbose: bool,
+    skip_existing: bool,
+    force_rebuild: bool,
+    max_workers: int,
+    local_base: bool,
+) -> None:
+    """Run the Docker image build Click command."""
+
+    run_build(
+        BuildOptions(
+            tag=tag,
+            docker_user=docker_user,
+            cuda_versions=none_if_empty(cuda_versions),
+            all_cuda=all_cuda,
+            platform=platform,
+            push=push,
+            load=load,
+            no_cache=no_cache,
+            verbose=verbose,
+            skip_existing=skip_existing,
+            force_rebuild=force_rebuild,
+            max_workers=max_workers,
+            local_base=local_base,
+        )
+    )
+
+
 if __name__ == "__main__":
-    main()
+    cli()

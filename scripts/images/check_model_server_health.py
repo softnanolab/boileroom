@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-import argparse
 import socket
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from urllib import error, request
+
+import click
 
 SCRIPT_PATH = Path(__file__).resolve()
 REPO_ROOT = SCRIPT_PATH.parents[2]
@@ -21,31 +23,31 @@ from boileroom.images.metadata import (  # noqa: E402
     normalize_docker_repository,
     normalize_requested_tag,
 )
+from scripts.cli_utils import (  # noqa: E402
+    CONTEXT_SETTINGS,
+    all_cuda_option,
+    cleanup_option,
+    cuda_version_option,
+    none_if_empty,
+    pull_option,
+    tag_option,
+)
 
 SERVER_PATH = REPO_ROOT / "boileroom/backend/server.py"
 FAKE_MODEL_CLASS = "boileroom.testing.fake_core.HealthcheckCore"
 
 
-def parse_args() -> argparse.Namespace:
-    """Parse CLI arguments."""
-    parser = argparse.ArgumentParser(description="Run /health smoke checks inside boileroom model images.")
-    parser.add_argument(
-        "--tag",
-        default=None,
-        help="Tag to check. Defaults to the installed boileroom version; explicit examples include 0.3.0 or cuda12.6-0.3.0.",
-    )
-    parser.add_argument("--docker-user", default=DEFAULT_DOCKER_REPOSITORY, help="Docker Hub user or namespace to check.")
-    parser.add_argument(
-        "--cuda-version",
-        action="append",
-        dest="cuda_versions",
-        help="CUDA version to validate canonically (repeatable).",
-    )
-    parser.add_argument("--all-cuda", action="store_true", help="Validate all supported CUDA variants canonically.")
-    parser.add_argument("--pull", action="store_true", help="Pull images before running checks.")
-    parser.add_argument("--cleanup", action="store_true", help="Remove each image after checking to free disk space.")
-    parser.add_argument("--timeout", type=float, default=30.0, help="Seconds to wait for each container health check.")
-    return parser.parse_args()
+@dataclass(frozen=True)
+class HealthCheckOptions:
+    """CLI options for image server health checks."""
+
+    tag: str | None
+    docker_user: str
+    cuda_versions: list[str] | None
+    all_cuda: bool
+    pull: bool
+    cleanup: bool
+    timeout: float
 
 
 def ensure_docker() -> None:
@@ -176,21 +178,53 @@ def check_server_health(
         _remove_image(image_reference)
 
 
-def main() -> None:
+def run_server_health_checks(options: HealthCheckOptions) -> None:
     """Run the server health-smoke workflow."""
-    args = parse_args()
+
     ensure_docker()
-    docker_repository = normalize_docker_repository(args.docker_user)
-    cuda_versions = compute_cuda_versions(args.cuda_versions, args.all_cuda)
-    targets = iter_image_targets(args.tag, cuda_versions, docker_repository=docker_repository)
+    docker_repository = normalize_docker_repository(options.docker_user)
+    cuda_versions = compute_cuda_versions(options.cuda_versions, options.all_cuda)
+    targets = iter_image_targets(options.tag, cuda_versions, docker_repository=docker_repository)
     if not targets:
         raise SystemExit("No image targets matched the requested CUDA selection.")
 
     for image_key, image_reference, _display_tag, _env_path, _core_path in targets:
-        check_server_health(image_key, image_reference, args.pull, args.timeout, args.cleanup)
+        check_server_health(image_key, image_reference, options.pull, options.timeout, options.cleanup)
 
-    print(f"All server health checks succeeded for tag selection: {normalize_requested_tag(args.tag)}")
+    print(f"All server health checks succeeded for tag selection: {normalize_requested_tag(options.tag)}")
+
+
+@click.command(context_settings=CONTEXT_SETTINGS, help="Run /health smoke checks inside boileroom model images.")
+@tag_option
+@click.option("--docker-user", default=DEFAULT_DOCKER_REPOSITORY, help="Docker Hub user or namespace to check.")
+@cuda_version_option("CUDA version to validate canonically (repeatable).")
+@all_cuda_option("Validate all supported CUDA variants canonically.")
+@pull_option
+@cleanup_option
+@click.option("--timeout", type=float, default=30.0, help="Seconds to wait for each container health check.")
+def cli(
+    tag: str | None,
+    docker_user: str,
+    cuda_versions: tuple[str, ...],
+    all_cuda: bool,
+    pull: bool,
+    cleanup: bool,
+    timeout: float,
+) -> None:
+    """Run the server-health Click command."""
+
+    run_server_health_checks(
+        HealthCheckOptions(
+            tag=tag,
+            docker_user=docker_user,
+            cuda_versions=none_if_empty(cuda_versions),
+            all_cuda=all_cuda,
+            pull=pull,
+            cleanup=cleanup,
+            timeout=timeout,
+        )
+    )
 
 
 if __name__ == "__main__":
-    main()
+    cli()
