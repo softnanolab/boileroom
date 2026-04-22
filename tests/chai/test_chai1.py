@@ -10,7 +10,7 @@ from modal import enable_output
 from boileroom import Chai1
 from boileroom.models.chai.types import Chai1Output
 
-pytestmark = [pytest.mark.integration, pytest.mark.slow, pytest.mark.gpu]
+pytestmark = [pytest.mark.integration, pytest.mark.slow, pytest.mark.gpu, pytest.mark.xdist_group("chai1")]
 
 nipah_virus_sequence = "ICLQKTSNQILKPKLISYTLGQSGTCITDPLLAMDEGYFAYSHLERIGSCSRGVSKQRIIGVGEVLDRGDEVPSLFMTNVWTPPNPNTVYHCSAVYNNEFYYVLCAVSTVGDPILNSTYWSGSLMMTRLAVKPKSNGGGYNQHQLALRSIEKGRYDKVMPYGPSGIKQGDTLYFPAVGFLVRTEFKYNDSNCPITKCQYSKPENCRLSMGIRPNSHYILRSGLLKYNLSDGENPKVVFIEISDQRLSIGSPSKIYDSLGQPVFYQASFSWDTMIKFGDVLTVNPLVVNWRNNTVISRPGQSQCPRFNTCPEICWEGVYNDAFLIDRINWISAGVFLDSNQTAENPVFTVFKDNEILYRAQLASEDTNAQKTITNCFLLKNKIWCISLVEIYDTGDNVIRPKLFAVKIPEQCTH"
 
@@ -53,8 +53,8 @@ def _quick_options(include_fields: list[str] | None = None) -> dict[str, object]
     return options
 
 
-# Each test instantiates its own model; keeping function scope avoids long-lived Modal handles.
-@pytest.fixture
+# Module scope keeps a single Modal app lifecycle for the Chai integration shard.
+@pytest.fixture(scope="module")
 def chai1_model(config: dict | None = None, gpu_device: str | None = None) -> Generator[Chai1, None, None]:
     """Provide a Chai1 model instance configured to run with the Modal backend.
 
@@ -71,8 +71,8 @@ def chai1_model(config: dict | None = None, gpu_device: str | None = None) -> Ge
         A Chai1 model instance yielded by the generator for use in tests.
     """
     model_config = dict(config) if config is not None else {}
-    with enable_output():
-        yield Chai1(backend="modal", device=gpu_device, config=model_config)
+    with enable_output(), Chai1(backend="modal", device=gpu_device, config=model_config) as model:
+        yield model
 
 
 def test_chai1_minimal_output(test_sequences: dict[str, str], chai1_model: Chai1):

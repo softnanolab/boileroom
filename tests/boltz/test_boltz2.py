@@ -14,7 +14,7 @@ from boileroom import Boltz2
 from boileroom.constants import restype_3to1
 from boileroom.models.boltz.types import Boltz2Output
 
-pytestmark = [pytest.mark.integration, pytest.mark.slow, pytest.mark.gpu]
+pytestmark = [pytest.mark.integration, pytest.mark.slow, pytest.mark.gpu, pytest.mark.xdist_group("boltz2")]
 
 nipah_virus_sequence = "ICLQKTSNQILKPKLISYTLGQSGTCITDPLLAMDEGYFAYSHLERIGSCSRGVSKQRIIGVGEVLDRGDEVPSLFMTNVWTPPNPNTVYHCSAVYNNEFYYVLCAVSTVGDPILNSTYWSGSLMMTRLAVKPKSNGGGYNQHQLALRSIEKGRYDKVMPYGPSGIKQGDTLYFPAVGFLVRTEFKYNDSNCPITKCQYSKPENCRLSMGIRPNSHYILRSGLLKYNLSDGENPKVVFIEISDQRLSIGSPSKIYDSLGQPVFYQASFSWDTMIKFGDVLTVNPLVVNWRNNTVISRPGQSQCPRFNTCPEICWEGVYNDAFLIDRINWISAGVFLDSNQTAENPVFTVFKDNEILYRAQLASEDTNAQKTITNCFLLKNKIWCISLVEIYDTGDNVIRPKLFAVKIPEQCTH"
 
@@ -36,8 +36,8 @@ def boltz2_model(config: dict | None = None, gpu_device: str | None = None) -> G
         A Boltz2 instance configured with backend="modal", the specified device, and the provided configuration.
     """
     model_config = dict(config) if config is not None else {}
-    with enable_output():
-        yield Boltz2(backend="modal", device=gpu_device, config=model_config)
+    with enable_output(), Boltz2(backend="modal", device=gpu_device, config=model_config) as model:
+        yield model
 
 
 def _recover_chain_sequences(atomarray: AtomArray) -> list[str]:
@@ -63,15 +63,15 @@ def _recover_chain_sequences(atomarray: AtomArray) -> list[str]:
     return chains
 
 
-def test_boltz2_nipah_matches_reference(gpu_device: str | None):
+def test_boltz2_nipah_matches_reference(boltz2_model: Boltz2):
     """Run Boltz2 on the Nipah virus sequence and validate the predicted structure against reference data.
 
     Checks that required reference files exist, runs the model requesting all output fields, verifies an atom array was produced, compares C-alpha (CA) atoms between the predicted and reference structures, and asserts the superimposed CA RMSD is less than 0.5 Å.
 
     Parameters
     ----------
-    gpu_device : Optional[str]
-        GPU device identifier to use for the model, or `None` to run on CPU.
+    boltz2_model : Boltz2
+        Module-scoped Modal-backed Boltz2 model used for the model-family shard.
     """
     base_dir = pathlib.Path(__file__).resolve().parents[1] / "data" / "boltz"
     conf_path = base_dir / "confidence_0_model_0.json"
@@ -85,17 +85,9 @@ def test_boltz2_nipah_matches_reference(gpu_device: str | None):
     assert pae_npz.exists(), "tests/data/boltz/pae_0_model_0.npz must exist"
     assert pde_npz.exists(), "tests/data/boltz/pde_0_model_0.npz must exist"
 
-    with enable_output():
-        model = Boltz2(
-            backend="modal",
-            device=gpu_device,
-            config={
-                "include_fields": ["*"],  # Request all fields for comprehensive testing
-            },
-        )
-        # Note: we cannot guarantee fully deterministic output across different hardware
-        # Current Boltz-2 implementation also does not set CUDA-based RNG to deterministic mode
-        out = model.fold(nipah_virus_sequence, options={"seed": 42})
+    # Note: we cannot guarantee fully deterministic output across different hardware.
+    # Current Boltz-2 implementation also does not set CUDA-based RNG to deterministic mode.
+    out = boltz2_model.fold(nipah_virus_sequence, options={"seed": 42, "include_fields": ["*"]})
 
     assert isinstance(out, Boltz2Output)
 
@@ -124,11 +116,9 @@ def test_boltz2_nipah_matches_reference(gpu_device: str | None):
     # TODO: check confidence metrics within tolerance
 
 
-def test_boltz2_minimal_output(test_sequences: dict[str, str], gpu_device: str | None):
+def test_boltz2_minimal_output(test_sequences: dict[str, str], boltz2_model: Boltz2):
     """Test that Boltz2 returns minimal output by default (metadata + atom_array)."""
-    with enable_output():
-        model = Boltz2(backend="modal", device=gpu_device, config={})  # No include_fields = minimal output
-        out = model.fold(test_sequences["short"])
+    out = boltz2_model.fold(test_sequences["short"])
 
     assert isinstance(out, Boltz2Output)
     assert out.metadata is not None, "metadata should always be present"

@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 
 import modal
 
-from ...backend.modal import app
+from ...backend.modal import get_modal_app
 from ...base import ModelWrapper
 from ...images.volumes import model_weights
 from ...utils import MINUTES, MODAL_MODEL_DIR
@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from .types import ESM2Output
 
 logger = logging.getLogger(__name__)
+app = get_modal_app("esm2")
 
 ############################################################
 # MODAL-SPECIFIC WRAPPER

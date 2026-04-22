@@ -2,6 +2,15 @@ name: Integration Tests
 
 on:
   workflow_dispatch:
+    inputs:
+      execution-mode:
+        description: "Run integration tests in parallel model shards or in series"
+        required: false
+        default: "parallel"
+        type: choice
+        options:
+          - parallel
+          - series
   schedule:
     - cron: "0 2 * * 0"
   # Run after the image-build workflow succeeds on main so integration tests
@@ -67,4 +76,9 @@ jobs:
         shell: bash -l {0}
         env:
           BOILEROOM_MODAL_IMAGE_TAG: ${{ steps.resolve_tag.outputs.pep440 }}
-        run: uv run pytest -n 4 -m integration
+        run: |
+          if [ "${{ inputs.execution-mode || 'parallel' }}" = "series" ]; then
+            uv run pytest -v -m integration
+          else
+            uv run pytest -v -n 4 --dist loadgroup -m integration
+          fi

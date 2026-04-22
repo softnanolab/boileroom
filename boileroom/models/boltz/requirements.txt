@@ -1,6 +1,6 @@
 torch>=2.5.1,<2.7.0
 pytorch-lightning
-boltz==2.2.1
+boltz[cuda]==2.2.1
 biotite>=1.0.1
 fastapi
 uvicorn

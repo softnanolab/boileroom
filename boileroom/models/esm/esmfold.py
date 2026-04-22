@@ -6,7 +6,7 @@ from collections.abc import Sequence
 
 import modal
 
-from ...backend.modal import app
+from ...backend.modal import get_modal_app
 from ...base import ModelWrapper
 from ...images.volumes import model_weights
 from ...utils import MINUTES, MODAL_MODEL_DIR
@@ -15,6 +15,7 @@ from .image import esm_image
 from .types import ESMFoldOutput
 
 logger = logging.getLogger(__name__)
+app = get_modal_app("esmfold")
 
 ############################################################
 # CORE ALGORITHM

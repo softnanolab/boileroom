@@ -4,7 +4,7 @@ from collections.abc import Sequence
 
 import modal
 
-from ...backend.modal import app
+from ...backend.modal import get_modal_app
 from ...base import ModelWrapper
 from ...images.volumes import model_weights
 from ...utils import MINUTES, MODAL_MODEL_DIR
@@ -13,6 +13,7 @@ from .image import boltz_image
 from .types import Boltz2Output
 
 logger = logging.getLogger(__name__)
+app = get_modal_app("boltz2")
 
 
 ############################################################
