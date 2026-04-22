@@ -34,4 +34,16 @@ uv run pytest -q -m contract
 uv run pytest -n 4 -m "not integration"
 ```
 
+For Modal integration tests, prefer grouped parallel execution:
+
+```bash
+uv run pytest -v -n 4 --dist loadgroup -m integration
+```
+
+The integration test modules are marked with model-family `xdist_group`s, so `--dist loadgroup` keeps Boltz, Chai, ESM2, and ESMFold on separate workers and separate Modal apps. To run the same integration tests in series, use:
+
+```bash
+uv run pytest -v -m integration
+```
+
 Public-facing development pages live in the separate `bagel-docs` repo. If a code change affects public docs, update that repo in a separate docs PR.

@@ -42,6 +42,21 @@ Modal pytest uses `docker.io/jakublala` plus the current package version by defa
 uv run pytest --backend=modal --docker-user=my-dockerhub-user --image-tag=0.3.0
 ```
 
+For the Modal integration suite, use grouped xdist scheduling so each model family runs in its own worker and Modal app:
+
+```bash
+uv run pytest -v -n 4 --dist loadgroup -m integration \
+  --docker-user=my-dockerhub-user \
+  --image-tag=0.3.0 \
+  --gpu=A10
+```
+
+For serial integration execution against the same image, omit xdist:
+
+```bash
+uv run pytest -v -m integration --docker-user=my-dockerhub-user --image-tag=0.3.0 --gpu=A10
+```
+
 Single-platform non-push builds auto-load into the local Docker daemon. Multi-platform builds should generally be paired with `--push`.
 Pushed buildx builds import and export stable per-image registry caches such as `boileroom-chai1:buildcache-cuda12.6`, so GitHub Actions runners can reuse dependency layers across validation tags and releases. Pass `--no-cache` to bypass those caches.
 Pass `--verbose` to stream Docker build output and plain BuildKit progress while still writing per-image log files.

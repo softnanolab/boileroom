@@ -86,6 +86,20 @@ uv sync
 uv run pytest
 ```
 
+For Modal integration tests, run the model families in parallel shards:
+
+```bash
+uv run pytest -v -n 4 --dist loadgroup -m integration
+```
+
+This starts four pytest workers and keeps each model family on its own worker, so Boltz, Chai, ESM2, and ESMFold use separate Modal apps without registering unrelated GPU functions in the same app.
+
+To run the same integration tests in series, omit xdist:
+
+```bash
+uv run pytest -v -m integration
+```
+
 or only one test that's more verbose and shows print statements:
 
 ```bash
@@ -96,6 +110,15 @@ To specify a GPU type for Modal backend tests (defaults to T4 if not specified):
 
 ```bash
 uv run pytest --gpu A100-40GB
+```
+
+To run Modal integration tests against a specific Docker Hub namespace, image tag, and GPU type:
+
+```bash
+uv run pytest -v -n 4 --dist loadgroup -m integration \
+  --docker-user phauglin \
+  --image-tag cuda12.6-my-test-tag \
+  --gpu A10
 ```
 
 Available GPU options include `T4`, `A100-40GB`, `A100-80GB`, and other Modal-supported GPU types.
