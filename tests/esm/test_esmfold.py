@@ -1,6 +1,7 @@
 import pathlib
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from io import StringIO
+from typing import Any
 
 import numpy as np
 import pytest
@@ -248,6 +249,23 @@ def test_tokenize_sequences_with_mocker(mocker):
     # Verify the output contains the expected keys
     assert set(tokenized_input.keys()) >= {"input_ids", "attention_mask", "position_ids"}
     assert multimer_properties is not None
+
+
+def test_esmfold_rejects_empty_chain_multimer():
+    """Empty-chain multimer strings should fail with a clear error."""
+    pytest.importorskip("transformers", reason="requires transformers")
+    from boileroom.models.esm.core import ESMFoldCore
+
+    def tokenizer_sentinel(*args: Any, **kwargs: Any) -> dict:
+        return {}
+
+    tokenizer: Callable[..., dict] = tokenizer_sentinel
+    model: ESMFoldCore = ESMFoldCore(config={"device": "cpu", "glycine_linker": "GG", "position_ids_skip": 512})
+    model._device = torch.device("cpu")
+    model.tokenizer = tokenizer  # Not reached when validation works correctly
+
+    with pytest.raises(ValueError, match="empty chain"):
+        model._tokenize_sequences(["A::B"], model._merge_options(None))
 
 
 def test_sequence_validation(test_sequences: dict[str, str]):

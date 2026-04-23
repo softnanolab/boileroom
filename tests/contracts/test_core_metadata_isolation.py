@@ -71,6 +71,12 @@ def test_esm2_embed_uses_fresh_metadata(monkeypatch: pytest.MonkeyPatch) -> None
         return _FakeBatch({"input_ids": torch.zeros((len(sequences), max_length), dtype=torch.int64)})
 
     class FakeModel:
+        def to(self, _device: object) -> FakeModel:
+            return self
+
+        def eval(self) -> FakeModel:
+            return self
+
         def __call__(self, **kwargs: object) -> SimpleNamespace:
             input_ids = kwargs["input_ids"]
             assert isinstance(input_ids, torch.Tensor)
