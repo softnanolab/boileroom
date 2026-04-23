@@ -1,6 +1,23 @@
 name: Integration Tests
 
 on:
+  workflow_dispatch:
+    inputs:
+      execution-mode:
+        description: "Run integration tests in parallel model shards or in series"
+        required: false
+        default: "parallel"
+        type: choice
+        options:
+          - parallel
+          - series
+      image-tag:
+        description: "Optional explicit Docker/Modal image tag override"
+        required: false
+        default: ""
+        type: string
+  schedule:
+    - cron: "0 2 * * 0"
   # Run after the image-build workflow succeeds on main so integration tests
   # exercise the freshly-published image for the exact main commit that built it.
   workflow_run:
@@ -18,6 +35,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 240
     if: >-
+      github.event_name != 'workflow_run' ||
       github.event.workflow_run.conclusion == 'success'
     steps:
       - name: Checkout repository
@@ -42,7 +60,23 @@ jobs:
 
       - name: Resolve freshly-built image tag
         id: resolve_tag
-        run: uv run --no-project --with click python scripts/ci/derive_version.py --github-output "$GITHUB_OUTPUT"
+        env:
+          IMAGE_TAG_OVERRIDE: ${{ github.event.inputs.image-tag || '' }}
+          WORKFLOW_RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha || '' }}
+        run: |
+          if [ -n "$IMAGE_TAG_OVERRIDE" ]; then
+            echo "docker_tag=$IMAGE_TAG_OVERRIDE" >> "$GITHUB_OUTPUT"
+            echo "pep440=$IMAGE_TAG_OVERRIDE" >> "$GITHUB_OUTPUT"
+          elif [ -n "$WORKFLOW_RUN_HEAD_SHA" ]; then
+            uv run --no-project --with click python scripts/ci/derive_version.py \
+              --head-ref "$WORKFLOW_RUN_HEAD_SHA" \
+              --github-output "$GITHUB_OUTPUT"
+          else
+            git fetch origin main --tags
+            uv run --no-project --with click python scripts/ci/derive_version.py \
+              --head-ref origin/main \
+              --github-output "$GITHUB_OUTPUT"
+          fi
 
       - name: Install dependencies
         run: uv sync --extra dev
@@ -59,4 +93,8 @@ jobs:
         env:
           BOILEROOM_MODAL_IMAGE_TAG: ${{ steps.resolve_tag.outputs.docker_tag }}
         run: |
-          uv run pytest -v -n 4 --dist loadgroup -m integration
+          if [ "${{ inputs.execution-mode || 'parallel' }}" = "series" ]; then
+            uv run pytest -v -m integration
+          else
+            uv run pytest -v -n 4 --dist loadgroup -m integration
+          fi
