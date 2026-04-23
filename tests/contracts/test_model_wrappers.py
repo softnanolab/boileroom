@@ -234,3 +234,17 @@ def test_chai1_wrapper_rejects_multiple_top_level_sequences(monkeypatch: pytest.
         wrapper.fold(["AAAA", "BBBB"])
 
     assert "method" not in records
+
+
+def test_chai1_wrapper_rejects_static_option_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Chai1 should fail locally when callers try to override static config keys."""
+    records: dict[str, Any] = {}
+    _install_fake_initializer(monkeypatch, records, _make_output(CHAI1_SPEC))
+
+    wrapper_cls = resolve_object(CHAI1_SPEC.wrapper_class_path)
+    wrapper = wrapper_cls(backend="apptainer:dev", device="cuda:0")
+
+    with pytest.raises(ValueError, match="device"):
+        wrapper.fold("AAAA", options={"device": "cpu"})
+
+    assert "method" not in records

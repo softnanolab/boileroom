@@ -143,8 +143,13 @@ def test_chai1_full_output(chai1_model: Chai1):
     assert np.all(per_chain_iptm <= 1.0), "per_chain_iptm should be less than or equal to 1"
 
 
-def test_chai1_static_config_enforcement(test_sequences: dict[str, str], chai1_model: Chai1):
+def test_chai1_static_config_enforcement(test_sequences: dict[str, str]):
     """Test that static config keys cannot be overridden in options."""
+    pytest.importorskip("chai_lab", reason="requires chai_lab (backend dependency)")
+    from boileroom.models.chai.core import Chai1Core
+
+    core = Chai1Core(config={"device": "cpu"})
+
     # device is a static config key
     with pytest.raises(ValueError, match="device"):
-        chai1_model.fold(test_sequences["short"], options={"device": "cpu"})
+        core.fold(test_sequences["short"], options={"device": "cpu"})

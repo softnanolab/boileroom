@@ -14,6 +14,7 @@ from .types import Chai1Output
 
 logger = logging.getLogger(__name__)
 app = get_modal_app("chai1")
+_STATIC_CONFIG_KEYS = frozenset({"device"})
 
 
 ############################################################
@@ -53,7 +54,9 @@ class ModalChai1:
         sequences : str | Sequence[str]
             One sequence string or a one-item sequence containing a single sequence string. Use ":" inside that sequence to join multiple chains for multimer prediction.
         options : dict, optional
-            Per-call configuration overrides merged with the model's default configuration to control sampling, device, and which result fields to include.
+            Per-call configuration overrides merged with the model's default configuration to control
+            sampling and which result fields to include. Static configuration such as ``device`` must
+            be set when the model is initialized.
 
         Returns
         -------
@@ -123,4 +126,11 @@ class Chai1(ModelWrapper):
             raise ValueError(
                 "Chai-1 currently supports exactly one top-level sequence per call; use ':' to join chains."
             )
+        if options is not None:
+            conflicting_keys = sorted(set(options) & _STATIC_CONFIG_KEYS)
+            if conflicting_keys:
+                raise ValueError(
+                    "The following config keys can only be set at initialization and cannot be "
+                    f"overridden per-call: {conflicting_keys}"
+                )
         return self._call_backend_method("fold", sequences, options=options)
