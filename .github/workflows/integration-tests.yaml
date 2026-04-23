@@ -1,20 +1,8 @@
 name: Integration Tests
 
 on:
-  workflow_dispatch:
-    inputs:
-      execution-mode:
-        description: "Run integration tests in parallel model shards or in series"
-        required: false
-        default: "parallel"
-        type: choice
-        options:
-          - parallel
-          - series
-  schedule:
-    - cron: "0 2 * * 0"
   # Run after the image-build workflow succeeds on main so integration tests
-  # exercise the freshly-published image rather than the stale registry tag.
+  # exercise the freshly-published image for the exact main commit that built it.
   workflow_run:
     workflows: ["Build and Push Boileroom Images"]
     types: [completed]
@@ -29,10 +17,7 @@ jobs:
   integration-tests:
     runs-on: ubuntu-latest
     timeout-minutes: 240
-    # For workflow_run events, only proceed if the image build succeeded.
-    # For workflow_dispatch and schedule events, always proceed.
     if: >-
-      github.event_name != 'workflow_run' ||
       github.event.workflow_run.conclusion == 'success'
     steps:
       - name: Checkout repository
@@ -57,9 +42,6 @@ jobs:
 
       - name: Resolve freshly-built image tag
         id: resolve_tag
-        # Only override the tag when chained from a successful image build.
-        # Scheduled and manual runs use the default (pyproject-version-based) tag.
-        if: github.event_name == 'workflow_run'
         run: uv run --no-project --with click python scripts/ci/derive_version.py --github-output "$GITHUB_OUTPUT"
 
       - name: Install dependencies
@@ -77,8 +59,4 @@ jobs:
         env:
           BOILEROOM_MODAL_IMAGE_TAG: ${{ steps.resolve_tag.outputs.docker_tag }}
         run: |
-          if [ "${{ inputs.execution-mode || 'parallel' }}" = "series" ]; then
-            uv run pytest -v -m integration
-          else
-            uv run pytest -v -n 4 --dist loadgroup -m integration
-          fi
+          uv run pytest -v -n 4 --dist loadgroup -m integration
