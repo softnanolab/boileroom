@@ -66,7 +66,6 @@ jobs:
         run: |
           if [ -n "$IMAGE_TAG_OVERRIDE" ]; then
             echo "docker_tag=$IMAGE_TAG_OVERRIDE" >> "$GITHUB_OUTPUT"
-            echo "pep440=$IMAGE_TAG_OVERRIDE" >> "$GITHUB_OUTPUT"
           elif [ -n "$WORKFLOW_RUN_HEAD_SHA" ]; then
             uv run --no-project --with click python scripts/ci/derive_version.py \
               --head-ref "$WORKFLOW_RUN_HEAD_SHA" \

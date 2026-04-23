@@ -14,7 +14,6 @@ from .types import Chai1Output
 
 logger = logging.getLogger(__name__)
 app = get_modal_app("chai1")
-_STATIC_CONFIG_KEYS = frozenset({"device"})
 
 
 ############################################################
@@ -127,7 +126,9 @@ class Chai1(ModelWrapper):
                 "Chai-1 currently supports exactly one top-level sequence per call; use ':' to join chains."
             )
         if options is not None:
-            conflicting_keys = sorted(set(options) & _STATIC_CONFIG_KEYS)
+            from .core import Chai1Core
+
+            conflicting_keys = sorted(set(options) & Chai1Core.STATIC_CONFIG_KEYS)
             if conflicting_keys:
                 raise ValueError(
                     "The following config keys can only be set at initialization and cannot be "

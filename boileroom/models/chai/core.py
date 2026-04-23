@@ -7,17 +7,19 @@ import os
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any, ClassVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 import numpy as np
 import torch
 from biotite.structure import AtomArray
 from biotite.structure.io.pdbx import CIFFile, get_structure
-from chai_lab.chai1 import StructureCandidates, run_inference
 
 from ...base import FoldingAlgorithm, PredictionMetadata
 from ...utils import MODAL_MODEL_DIR, Timer
 from .types import Chai1Output
+
+if TYPE_CHECKING:
+    from chai_lab.chai1 import StructureCandidates
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +122,8 @@ class Chai1Core(FoldingAlgorithm):
                 constraint_path = self._write_constraint(buffer_path, effective_config)
                 output_dir = buffer_path / "outputs"
                 output_dir.mkdir(parents=True, exist_ok=True)
+            from chai_lab.chai1 import run_inference
+
             with Timer("Model Inference") as inference_timer:
                 candidate = run_inference(
                     fasta_file=fasta_path,
