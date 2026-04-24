@@ -103,6 +103,11 @@ def build_cache_reference(docker_repository: str, image_name: str, cuda_version:
     return f"{docker_repository}/{image_name}:buildcache-cuda{cuda_version}"
 
 
+def uv_cache_id(cuda_version: str) -> str:
+    """Return the shared BuildKit cache id for uv downloads in one CUDA line."""
+    return f"boileroom-uv-cu{normalize_cuda_version(cuda_version)}"
+
+
 def append_registry_cache_args(
     cmd: list[str],
     image_name: str,
@@ -385,6 +390,8 @@ def build_model(
             f"BASE_IMAGE={task.base_image_reference}",
             "--build-arg",
             f"TORCH_WHEEL_INDEX={CUDA_TORCH_WHEEL_INDEX[task.cuda_version]}",
+            "--build-arg",
+            f"UV_CACHE_ID={uv_cache_id(task.cuda_version)}",
         ]
     else:
         cmd = [
@@ -397,6 +404,8 @@ def build_model(
             f"BASE_IMAGE={task.base_image_reference}",
             "--build-arg",
             f"TORCH_WHEEL_INDEX={CUDA_TORCH_WHEEL_INDEX[task.cuda_version]}",
+            "--build-arg",
+            f"UV_CACHE_ID={uv_cache_id(task.cuda_version)}",
         ]
         append_registry_cache_args(
             cmd,

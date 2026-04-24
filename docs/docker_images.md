@@ -59,6 +59,7 @@ uv run pytest -v -m integration --docker-user=my-dockerhub-user --image-tag=0.3.
 
 Single-platform non-push builds auto-load into the local Docker daemon. Multi-platform builds should generally be paired with `--push`.
 Pushed buildx builds import and export stable per-image registry caches such as `boileroom-chai1:buildcache-cuda12.6`, so GitHub Actions runners can reuse dependency layers across validation tags and releases. Pass `--no-cache` to bypass those caches.
+Model Dockerfiles also mount a shared BuildKit uv cache for the active CUDA line, for example `boileroom-uv-cu12.6`, so parallel model builds in the same GitHub Actions matrix job can reuse downloaded wheels even when a full dependency-install layer has to run again.
 Pass `--verbose` to stream Docker build output and plain BuildKit progress while still writing per-image log files.
 In CI, the release workflow splits CUDA lines across separate GitHub-hosted runners and passes `--max-workers` within each CUDA job. That keeps the base image dependency order intact while letting model image builds and Docker Hub transfers overlap.
 For single-platform publishing, pass `--local-base` to build and tag images with `buildx --load` before pushing. This keeps dependent model builds from waiting on Docker Hub to receive and then re-serve the base image. Model builds also receive the loaded base tag as a named `docker-image://` build context so their `FROM` instruction resolves locally while preserving BuildKit registry cache import/export.
