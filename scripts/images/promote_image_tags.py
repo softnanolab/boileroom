@@ -15,7 +15,6 @@ if str(REPO_ROOT) not in sys.path:
 
 from boileroom.images.metadata import (  # noqa: E402
     BASE_IMAGE_SPEC,
-    CUDA_MICROMAMBA_BASE,
     DEFAULT_DOCKER_REPOSITORY,
     MODEL_IMAGE_SPECS,
     RuntimeImageSpec,

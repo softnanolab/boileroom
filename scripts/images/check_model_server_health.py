@@ -139,10 +139,6 @@ def check_server_health(
         "--env",
         f"{TRANSPORT_HMAC_KEY_ENV}=healthcheck-secret",
         image_reference,
-        "micromamba",
-        "run",
-        "-n",
-        "base",
         "python",
         str(SERVER_PATH),
         "--host",
@@ -188,7 +184,7 @@ def run_server_health_checks(options: HealthCheckOptions) -> None:
     if not targets:
         raise SystemExit("No image targets matched the requested CUDA selection.")
 
-    for image_key, image_reference, _display_tag, _env_path, _core_path in targets:
+    for image_key, image_reference, _display_tag, _requirements_path, _core_path in targets:
         check_server_health(image_key, image_reference, options.pull, options.timeout, options.cleanup)
 
     print(f"All server health checks succeeded for tag selection: {normalize_requested_tag(options.tag)}")

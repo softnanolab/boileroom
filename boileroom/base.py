@@ -468,7 +468,7 @@ class ModelWrapper:
     def __del__(self) -> None:
         """Clean up backend when ModelWrapper is destroyed.
 
-        This ensures that backend resources (such as conda backend subprocesses)
+        This ensures that backend resources (such as image-backed subprocesses)
         are properly shut down when the ModelWrapper instance is garbage collected.
         """
         backend = getattr(self, "_backend", None)

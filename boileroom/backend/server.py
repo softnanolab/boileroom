@@ -1,7 +1,7 @@
-"""Generic unified model server for conda backend.
+"""Generic unified model server for Apptainer and image-backed runtimes.
 
 This server dynamically loads any Core class and exposes it via HTTP endpoints.
-It runs in a separate conda environment with model-specific dependencies.
+It runs inside a model-specific runtime image with model dependencies installed.
 """
 
 import argparse
@@ -15,17 +15,15 @@ import sysconfig
 from pathlib import Path
 from typing import Any
 
-# Ensure conda library paths are in LD_LIBRARY_PATH for cuequivariance_ops_torch
-# This is needed because libcue_ops.so and libcublas.so.12 are in conda site-packages
+# Ensure Python wheel library paths are in LD_LIBRARY_PATH for CUDA extension modules.
 _site_packages = sysconfig.get_path("purelib")
-_conda_lib_paths = [
-    f"{_site_packages}/cuequivariance_ops/lib",
-    f"{_site_packages}/nvidia/cublas/lib",
-    "/opt/conda/lib",
-]
+_runtime_lib_paths = [f"{_site_packages}/cuequivariance_ops/lib", f"{_site_packages}/torch/lib"]
+_nvidia_package_dir = Path(_site_packages) / "nvidia"
+if _nvidia_package_dir.exists():
+    _runtime_lib_paths.extend(str(path) for path in _nvidia_package_dir.glob("*/lib"))
 _current_ld_path = os.environ.get("LD_LIBRARY_PATH", "")
 _ld_path_parts = [p for p in _current_ld_path.split(":") if p] if _current_ld_path else []
-for lib_path in _conda_lib_paths:
+for lib_path in _runtime_lib_paths:
     if lib_path not in _ld_path_parts:
         _ld_path_parts.insert(0, lib_path)  # Insert at beginning for priority
 if _ld_path_parts:
@@ -64,10 +62,10 @@ def _import_with_modal_fix(name, globals=None, locals=None, fromlist=(), level=0
                 # If it's our local modal.py, raise clear error
                 if "boileroom" in str(origin_path) and "backend" in str(origin_path) and origin_path.name == "modal.py":
                     raise ImportError(
-                        "The 'modal' package is not installed in this conda environment. "
-                        "The conda backend does not require modal. "
+                        "The 'modal' package is not installed in this runtime environment. "
+                        "The image-backed server does not require modal. "
                         "This error occurred because the local boileroom/backend/modal.py file "
-                        "is shadowing the modal package. The conda backend should not import modal."
+                        "is shadowing the modal package. The image-backed server should not import modal."
                     )
         except Exception:
             pass
@@ -264,7 +262,7 @@ async def fold(request: FoldRequest) -> JSONResponse:
 
 def main() -> None:
     """Main entry point for the server."""
-    parser = argparse.ArgumentParser(description="Generic model server for conda backend")
+    parser = argparse.ArgumentParser(description="Generic model server for image-backed runtimes")
     parser.add_argument("--host", default="127.0.0.1", help="Host to bind to")
     parser.add_argument("--port", type=int, default=8000, help="Port to bind to")
     args = parser.parse_args()
