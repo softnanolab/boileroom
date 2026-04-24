@@ -16,6 +16,6 @@ ENV UV_INDEX=${TORCH_WHEEL_INDEX}
 ENV UV_INDEX_STRATEGY=unsafe-best-match
 ENV PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
-RUN --mount=type=cache,id=${UV_CACHE_ID},target=/root/.cache/uv,sharing=locked \
+RUN --mount=type=cache,id=${UV_CACHE_ID},target=/root/.cache/uv \
     uv pip install --system -r /tmp/requirements.txt \
     && rm /tmp/requirements.txt
