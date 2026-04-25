@@ -100,9 +100,7 @@ def pytest_configure(config: pytest.Config) -> None:
     if family not in ("modal", "apptainer"):
         raise pytest.UsageError(f"--backend must be 'modal' or 'apptainer[:<tag>]'; got {backend!r}")
     if family == "modal" and ":" in backend:
-        raise pytest.UsageError(
-            "--backend 'modal' does not accept a ':<tag>' suffix; set BOILEROOM_IMAGE_TAG instead."
-        )
+        raise pytest.UsageError("--backend 'modal' does not accept a ':<tag>' suffix; set BOILEROOM_IMAGE_TAG instead.")
 
     gpu = config.getoption("--gpu")
     device = config.getoption("--device")
