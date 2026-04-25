@@ -7,7 +7,7 @@ import re
 
 import pytest
 
-from boileroom.images.metadata import DOCKER_REPOSITORY_ENV, IMAGE_TAG_ENV, normalize_docker_repository
+from boileroom.images.metadata import DOCKER_REPOSITORY_ENV, normalize_docker_repository
 from boileroom.utils import GPUS_AVAIL_ON_MODAL
 
 _APPTAINER_DEVICE_RE = re.compile(r"^(cpu|cuda(:\d+)?)$")
@@ -47,11 +47,15 @@ def pytest_report_header(config: pytest.Config) -> list[str]:
 def pytest_addoption(parser):
     """Register pytest CLI options used by the test suite.
 
-    Adds two command-line options:
-    - --backend: selects the execution backend for tests; allowed values are "modal" and "apptainer", defaults to "modal".
-    - --gpu: specifies the GPU type for Modal backend tests (examples: "A100-40GB", "A100-80GB", "T4"); defaults to None which uses the test-suite default.
-    - --docker-user: overrides the default Docker Hub user or namespace for Modal image lookup; defaults to None, which uses the package default.
-    - --image-tag: selects the runtime image tag for Modal image lookup; defaults to None, which uses the current package version.
+    Adds the following command-line options:
+    - --backend: selects the execution backend ("modal" or "apptainer[:<tag>]"); defaults to "modal".
+    - --gpu: Modal-only GPU class (e.g. "T4", "A100-80GB").
+    - --device: Apptainer-only CUDA device (e.g. "cuda:0", "cpu"). Defaults to cuda:0.
+    - --docker-user: overrides the Docker Hub user or namespace for image lookup.
+
+    Set the runtime image tag via the ``BOILEROOM_IMAGE_TAG`` environment variable
+    (e.g. ``BOILEROOM_IMAGE_TAG=sha-abc1234 uv run pytest``). Both Modal and
+    Apptainer backends honor it.
 
     Parameters
     ----------
@@ -84,28 +88,21 @@ def pytest_addoption(parser):
         "--docker-user",
         action="store",
         default=None,
-        help="Docker Hub user or namespace for Modal image lookup.",
-    )
-    parser.addoption(
-        "--image-tag",
-        action="store",
-        default=None,
-        help="Runtime image tag for Modal image lookup.",
+        help="Docker Hub user or namespace for image lookup (sets BOILEROOM_DOCKER_REPOSITORY).",
     )
 
 
 def pytest_configure(config: pytest.Config) -> None:
-    """Validate CLI options and apply image lookup overrides before test modules import wrappers."""
+    """Validate CLI options and apply Docker repository overrides before test modules import wrappers."""
     backend = config.getoption("--backend")
-    family, _, backend_tag = backend.partition(":")
+    family, _, _ = backend.partition(":")
     family = family.strip()
     if family not in ("modal", "apptainer"):
         raise pytest.UsageError(f"--backend must be 'modal' or 'apptainer[:<tag>]'; got {backend!r}")
     if family == "modal" and ":" in backend:
-        raise pytest.UsageError("--backend 'modal' does not accept a ':<tag>' suffix; use --image-tag instead.")
-    image_tag = config.getoption("--image-tag")
-    if family == "apptainer" and backend_tag.strip() and image_tag:
-        raise pytest.UsageError("Pass the apptainer image tag via --backend apptainer:<tag> OR --image-tag, not both.")
+        raise pytest.UsageError(
+            "--backend 'modal' does not accept a ':<tag>' suffix; set BOILEROOM_IMAGE_TAG instead."
+        )
 
     gpu = config.getoption("--gpu")
     device = config.getoption("--device")
@@ -126,8 +123,6 @@ def pytest_configure(config: pytest.Config) -> None:
 
     if docker_user := config.getoption("--docker-user"):
         os.environ[DOCKER_REPOSITORY_ENV] = normalize_docker_repository(docker_user)
-    if image_tag:
-        os.environ[IMAGE_TAG_ENV] = image_tag
 
 
 @pytest.fixture(autouse=True, scope="session")
