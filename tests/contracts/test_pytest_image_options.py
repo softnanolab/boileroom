@@ -20,9 +20,12 @@ def _load_test_conftest() -> Any:
     return module
 
 
+_BACKEND_DEFAULTS: dict[str, str | None] = {"--backend": "modal", "--gpu": None, "--device": None}
+
+
 class FakeConfig:
     def __init__(self, options: dict[str, str | None]) -> None:
-        self.options = options
+        self.options = {**_BACKEND_DEFAULTS, **options}
 
     def getoption(self, name: str) -> str | None:
         return self.options.get(name)
