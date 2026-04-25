@@ -22,6 +22,7 @@
 - Use f-strings.
 - Use NumPy-style docstrings.
 - Keep the high-level public API stable unless a breaking change is intentional and documented.
+- While the project is on a prerelease (no matching `vX.Y.Z` GitHub release for the pyproject version), back-compat shims are not required — make the breaking change cleanly and call it out in the PR.
 
 ## Testing
 - Prefer pytest functions and fixtures.
@@ -46,6 +47,7 @@
 - Canonical published tags are CUDA-qualified, for example `cuda12.6-0.3.0` or `cuda12.6-0.3.1-alpha.1`.
 - The default CUDA line `12.6` also gets an unqualified alias for the same version, for example `0.3.0` or `0.3.1-alpha.1`.
 - Temporary validation tags such as `sha-<commit>` are allowed and should be deleted after use.
+- Renames of runtime-facing env vars (e.g. `BOILEROOM_*`) bake into Modal images at build time. After such a rename, Modal images may need to be rebuilt before consumers can rely on the new name; verify before assuming the override propagates.
 
 ## Release Flow
 - Merging to `main` publishes Docker Hub images for an automatically derived alpha prerelease tag such as `0.3.1-alpha.1`.
