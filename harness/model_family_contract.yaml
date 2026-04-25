@@ -7,7 +7,6 @@ model_family:
     - types.py
     - image.py
     - Dockerfile
-    - environment.yml
     - requirements.txt
     - config.yaml
 

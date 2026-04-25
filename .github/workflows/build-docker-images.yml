@@ -108,9 +108,9 @@ jobs:
           uv run --no-project --with pyyaml python - <<'PY' >> "$GITHUB_OUTPUT"
           import json
 
-          from boileroom.images.metadata import CUDA_MICROMAMBA_BASE, DEFAULT_CUDA_VERSION
+          from boileroom.images.metadata import DEFAULT_CUDA_VERSION, SUPPORTED_CUDA_VERSIONS
 
-          print(f"cuda_versions={json.dumps(sorted(CUDA_MICROMAMBA_BASE))}")
+          print(f"cuda_versions={json.dumps(sorted(SUPPORTED_CUDA_VERSIONS))}")
           print(f"default_cuda_version={DEFAULT_CUDA_VERSION}")
           PY
 

@@ -70,6 +70,11 @@ def test_build_cache_reference_uses_explicit_repository() -> None:
     )
 
 
+def test_uv_cache_id_is_scoped_by_cuda_version() -> None:
+    """Model builds should share uv downloads within a CUDA matrix job."""
+    assert build_model_images.uv_cache_id("12.6") == "boileroom-uv-cu12.6"
+
+
 def test_cli_exposes_documented_flags(monkeypatch: MonkeyPatch) -> None:
     """The build helper should accept the documented flags."""
 
@@ -259,6 +264,8 @@ def test_build_model_local_base_uses_buildx_cache_context_then_push(monkeypatch:
     assert "--push" not in build_cmd
     assert "--cache-from" in build_cmd
     assert "--cache-to" in build_cmd
+    assert "--build-arg" in build_cmd
+    assert f"UV_CACHE_ID=boileroom-uv-cu{DEFAULT_CUDA_VERSION}" in build_cmd
     assert "--build-context" in build_cmd
     assert f"{base_image_reference}=docker-image://{base_image_reference}" in build_cmd
     assert push_cmds == [

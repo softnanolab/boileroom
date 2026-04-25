@@ -8,9 +8,9 @@ from pathlib import Path
 from typing import Final
 
 from .metadata import (
-    CUDA_MICROMAMBA_BASE,
     DEFAULT_DOCKER_REPOSITORY,
     MODEL_IMAGE_SPECS,
+    SUPPORTED_CUDA_VERSIONS,
     RuntimeImageSpec,
     format_image_reference,
     get_supported_cuda,
@@ -37,7 +37,7 @@ Add entries here when a package name does not map cleanly to
 def compute_cuda_versions(requested: list[str] | None, all_cuda: bool) -> list[str]:
     """Resolve CUDA versions requested by the caller."""
     if all_cuda:
-        return sorted(normalize_cuda_version(cuda_version) for cuda_version in CUDA_MICROMAMBA_BASE)
+        return sorted(normalize_cuda_version(cuda_version) for cuda_version in SUPPORTED_CUDA_VERSIONS)
     if not requested:
         return []
     return [normalize_cuda_version(cuda_version) for cuda_version in requested]
@@ -57,7 +57,7 @@ def iter_image_targets(
 ) -> list[tuple[str, str, str, Path, Path]]:
     """Return model-image targets for smoke checks.
 
-    Returns tuples of ``(image_key, image_reference, display_tag, env_path, core_path)``.
+    Returns tuples of ``(image_key, image_reference, display_tag, requirements_path, core_path)``.
     """
     normalized_tag = normalize_requested_tag(tag)
     if cuda_versions and _CUDA_TAG_PATTERN.fullmatch(normalized_tag):
@@ -66,7 +66,7 @@ def iter_image_targets(
     specs = MODEL_IMAGE_SPECS if image_specs is None else image_specs
     targets: list[tuple[str, str, str, Path, Path]] = []
     for spec in specs:
-        env_path = spec.context_path / "environment.yml"
+        requirements_path = spec.context_path / "requirements.txt"
         core_path = spec.context_path / "core.py"
         if cuda_versions:
             for cuda_version in cuda_versions:
@@ -76,9 +76,9 @@ def iter_image_targets(
                     spec.image_name, cuda_version, normalized_tag, docker_repository
                 )[0]
                 display_tag = canonical_ref.rsplit(":", 1)[1]
-                targets.append((spec.key, canonical_ref, display_tag, env_path, core_path))
+                targets.append((spec.key, canonical_ref, display_tag, requirements_path, core_path))
             continue
 
         image_reference = format_image_reference(spec.image_name, normalized_tag, docker_repository)
-        targets.append((spec.key, image_reference, normalized_tag, env_path, core_path))
+        targets.append((spec.key, image_reference, normalized_tag, requirements_path, core_path))
     return targets

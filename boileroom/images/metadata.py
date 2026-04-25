@@ -17,10 +17,7 @@ DEFAULT_CUDA_VERSION: Final = "12.6"
 DOCKER_REPOSITORY_ENV: Final = "BOILEROOM_DOCKER_REPOSITORY"
 MODAL_IMAGE_TAG_ENV: Final = "BOILEROOM_MODAL_IMAGE_TAG"
 
-CUDA_MICROMAMBA_BASE: Final[dict[str, str]] = {
-    "11.8": "mambaorg/micromamba:2.5-cuda11.8.0-ubuntu22.04",
-    "12.6": "mambaorg/micromamba:2.5-cuda12.6.3-ubuntu22.04",
-}
+SUPPORTED_CUDA_VERSIONS: Final[tuple[str, ...]] = ("11.8", "12.6")
 
 CUDA_TORCH_WHEEL_INDEX: Final[dict[str, str]] = {
     "11.8": "https://download.pytorch.org/whl/cu118",
@@ -125,8 +122,8 @@ def normalize_requested_tag(tag: str | None) -> str:
 def normalize_cuda_version(cuda_version: str) -> str:
     """Validate and normalize a CUDA version string."""
     normalized = cuda_version.strip()
-    if normalized not in CUDA_MICROMAMBA_BASE:
-        supported = ", ".join(sorted(CUDA_MICROMAMBA_BASE))
+    if normalized not in SUPPORTED_CUDA_VERSIONS:
+        supported = ", ".join(SUPPORTED_CUDA_VERSIONS)
         raise ValueError(f"Unsupported CUDA version: {cuda_version}. Supported values: {supported}")
     return normalized
 
@@ -243,11 +240,11 @@ def get_model_image_spec(identifier: str) -> RuntimeImageSpec:
 def get_supported_cuda(spec: RuntimeImageSpec) -> tuple[str, ...]:
     """Return supported CUDA versions for a runtime image spec."""
     if spec.config_relative_path is None:
-        return tuple(sorted(CUDA_MICROMAMBA_BASE))
+        return SUPPORTED_CUDA_VERSIONS
 
     config_path = get_repo_root() / spec.config_relative_path
     if not config_path.exists():
-        return tuple(sorted(CUDA_MICROMAMBA_BASE))
+        return SUPPORTED_CUDA_VERSIONS
 
     import yaml
 
@@ -261,7 +258,7 @@ def get_supported_cuda(spec: RuntimeImageSpec) -> tuple[str, ...]:
         supported_cuda = []
 
     if not supported_cuda:
-        return tuple(sorted(CUDA_MICROMAMBA_BASE))
+        return SUPPORTED_CUDA_VERSIONS
     return tuple(supported_cuda)
 
 

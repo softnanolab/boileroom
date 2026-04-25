@@ -76,7 +76,7 @@ def _remove_image(image_reference: str) -> None:
 def check_image(
     image_key: str,
     image_reference: str,
-    env_path: Path,
+    requirements_path: Path,
     core_path: Path,
     pull: bool,
     cleanup: bool = False,
@@ -87,8 +87,8 @@ def check_image(
     if pull:
         subprocess.run(["docker", "pull", image_reference], check=True)
 
-    if not env_path.exists():
-        raise FileNotFoundError(f"Missing environment file: {env_path}")
+    if not requirements_path.exists():
+        raise FileNotFoundError(f"Missing requirements file: {requirements_path}")
     if not core_path.exists():
         raise FileNotFoundError(f"Missing core module: {core_path}")
 
@@ -112,35 +112,20 @@ import re
 import sys
 from pathlib import Path
 
-env_yml = Path({str(env_path)!r})
-requirements_txt = env_yml.with_name('requirements.txt')
+requirements_txt = Path({str(requirements_path)!r})
 core_file = Path({str(core_path)!r})
 import_name_overrides = {IMPORT_NAME_OVERRIDES!r}
 
 deps = []
-requirements_files = [requirements_txt] if requirements_txt.exists() else [env_yml]
-for requirements_file in requirements_files:
-    in_pip_section = requirements_file.suffix in {{'.txt', '.in'}}
-    with requirements_file.open(encoding="utf-8") as handle:
-        for line in handle:
-            stripped = line.strip()
-            if stripped == '- pip:' or stripped == 'pip:':
-                in_pip_section = True
-                continue
-            if not in_pip_section:
-                continue
-            if requirements_file == env_yml:
-                if not stripped or (not line.startswith(' ') and not line.startswith('\\t')):
-                    in_pip_section = False
-                    if not stripped:
-                        continue
-                    break
-            if not stripped or stripped.startswith('#'):
-                continue
-            pkg_name = re.split(r'[>=<!=;\\[]', stripped.lstrip('- '))[0].strip()
-            import_name = import_name_overrides.get(pkg_name, pkg_name.replace('-', '_'))
-            if import_name:
-                deps.append(import_name)
+with requirements_txt.open(encoding="utf-8") as handle:
+    for line in handle:
+        stripped = line.strip()
+        if not stripped or stripped.startswith('#'):
+            continue
+        pkg_name = re.split(r'[>=<!=;\\[]', stripped)[0].strip()
+        import_name = import_name_overrides.get(pkg_name, pkg_name.replace('-', '_'))
+        if import_name:
+            deps.append(import_name)
 
 deps.append('numpy')
 
@@ -170,10 +155,6 @@ for dep in deps:
             "-e",
             f"PYTHONPATH={REPO_ROOT}",
             image_reference,
-            "micromamba",
-            "run",
-            "-n",
-            "base",
             "python",
             "-c",
             script,
@@ -195,8 +176,8 @@ def run_import_checks(options: ImportCheckOptions) -> None:
     if not targets:
         raise SystemExit("No image targets matched the requested CUDA selection.")
 
-    for image_key, image_reference, _display_tag, env_path, core_path in targets:
-        check_image(image_key, image_reference, env_path, core_path, options.pull, options.cleanup)
+    for image_key, image_reference, _display_tag, requirements_path, core_path in targets:
+        check_image(image_key, image_reference, requirements_path, core_path, options.pull, options.cleanup)
 
     print(f"All module imports succeeded for tag selection: {normalize_requested_tag(options.tag)}")
 

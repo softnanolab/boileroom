@@ -1,4 +1,4 @@
-# Lazy imports to avoid importing modal when not needed (e.g., in conda backend)
+# Lazy imports to avoid importing modal when not needed (e.g., in image-backed runtimes)
 def __getattr__(name: str):
     """Lazy import for model classes to avoid importing modal dependencies."""
     if name == "ESMFold":

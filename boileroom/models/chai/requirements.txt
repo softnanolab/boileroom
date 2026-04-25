@@ -1,3 +1,5 @@
+numpy<2.0
+rdkit
 torch>=2.5.1,<2.7.0
 chai_lab==0.6.1
 hf_transfer==0.1.8

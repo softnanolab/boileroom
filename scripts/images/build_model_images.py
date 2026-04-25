@@ -18,11 +18,11 @@ if str(REPO_ROOT) not in sys.path:
 
 from boileroom.images.metadata import (  # noqa: E402
     BASE_IMAGE_SPEC,
-    CUDA_MICROMAMBA_BASE,
     CUDA_TORCH_WHEEL_INDEX,
     DEFAULT_DOCKER_REPOSITORY,
     MODEL_IMAGE_SPECS,
     RuntimeImageSpec,
+    SUPPORTED_CUDA_VERSIONS,
     get_supported_cuda,
     normalize_docker_repository,
     normalize_cuda_version,
@@ -101,6 +101,11 @@ def build_cache_reference(docker_repository: str, image_name: str, cuda_version:
     """Return the stable registry cache reference for a build output."""
     docker_repository = normalize_docker_repository(docker_repository)
     return f"{docker_repository}/{image_name}:buildcache-cuda{cuda_version}"
+
+
+def uv_cache_id(cuda_version: str) -> str:
+    """Return the shared BuildKit cache id for uv downloads in one CUDA line."""
+    return f"boileroom-uv-cu{normalize_cuda_version(cuda_version)}"
 
 
 def append_registry_cache_args(
@@ -253,7 +258,7 @@ def resolve_publish_tag(tag: str | None) -> str:
 def compute_cuda_versions(requested: list[str] | None, all_cuda: bool) -> list[str]:
     """Resolve the CUDA versions to build."""
     if all_cuda:
-        return sorted(CUDA_MICROMAMBA_BASE)
+        return sorted(SUPPORTED_CUDA_VERSIONS)
     if not requested:
         raise ValueError("Specify at least one --cuda-version or use --all-cuda.")
     return [normalize_cuda_version(cuda_version) for cuda_version in requested]
@@ -305,11 +310,9 @@ def build_base(
     """Build the shared base image and return its canonical reference."""
     references = published_image_references(BASE_IMAGE_SPEC.image_name, cuda_version, tag, docker_repository)
     canonical_reference = references[0]
-    micromamba_base = CUDA_MICROMAMBA_BASE[cuda_version]
 
     log_info("")
     log_info(Colors.wrap(f"=== Building base image for CUDA {cuda_version}: {canonical_reference}", Colors.bold))
-    log_info(f"Using micromamba base: {micromamba_base}")
     log_info(f"Publishing tags: {', '.join(references)}")
 
     log_file = Path.cwd() / f"{canonical_reference.replace('/', '_').replace(':', '_')}.log"
@@ -320,8 +323,6 @@ def build_base(
             "build",
             "--platform",
             platform,
-            "--build-arg",
-            f"MICROMAMBA_BASE={micromamba_base}",
         ]
     else:
         cmd = [
@@ -330,8 +331,6 @@ def build_base(
             "build",
             "--platform",
             platform,
-            "--build-arg",
-            f"MICROMAMBA_BASE={micromamba_base}",
         ]
         append_registry_cache_args(
             cmd,
@@ -391,6 +390,8 @@ def build_model(
             f"BASE_IMAGE={task.base_image_reference}",
             "--build-arg",
             f"TORCH_WHEEL_INDEX={CUDA_TORCH_WHEEL_INDEX[task.cuda_version]}",
+            "--build-arg",
+            f"UV_CACHE_ID={uv_cache_id(task.cuda_version)}",
         ]
     else:
         cmd = [
@@ -403,6 +404,8 @@ def build_model(
             f"BASE_IMAGE={task.base_image_reference}",
             "--build-arg",
             f"TORCH_WHEEL_INDEX={CUDA_TORCH_WHEEL_INDEX[task.cuda_version]}",
+            "--build-arg",
+            f"UV_CACHE_ID={uv_cache_id(task.cuda_version)}",
         ]
         append_registry_cache_args(
             cmd,

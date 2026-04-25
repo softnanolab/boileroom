@@ -202,11 +202,11 @@ def _check_architecture_compatibility(host_arch: str, image_arch: str) -> bool:
 
 
 def _build_ld_library_path() -> str:
-    """Build LD_LIBRARY_PATH for CUDA libraries in conda environments.
+    """Build LD_LIBRARY_PATH for CUDA libraries in the container.
 
     Includes paths for:
     - cuequivariance_ops (libcue_ops.so)
-    - NVIDIA conda packages (libcublas.so.12)
+    - NVIDIA Python wheel packages (libcublas.so.12)
     - PyTorch CUDA libraries (libnvrtc.so.12)
     - System CUDA toolkit paths
     - NVIDIA driver libraries (added by --nv flag)
@@ -216,20 +216,17 @@ def _build_ld_library_path() -> str:
     str
         Colon-separated LD_LIBRARY_PATH string.
     """
-    conda_base = "/opt/conda/lib"
     python_version = "3.12"
-    site_packages = f"{conda_base}/python{python_version}/site-packages"
+    site_packages = f"/usr/local/lib/python{python_version}/site-packages"
 
-    # Conda package-specific library paths (highest priority)
-    conda_lib_paths = [
+    python_lib_paths = [
         f"{site_packages}/cuequivariance_ops/lib",  # libcue_ops.so
         f"{site_packages}/nvidia/cublas/lib",  # libcublas.so.12
         f"{site_packages}/torch/lib",  # libnvrtc.so.12 and other PyTorch CUDA libs
-        f"{site_packages}/nvidia",  # Other NVIDIA conda packages
-        conda_base,  # Base conda lib directory
+        f"{site_packages}/nvidia",  # Other NVIDIA Python wheel packages
     ]
 
-    # System CUDA toolkit paths (fallback if not in conda)
+    # System CUDA toolkit paths (fallback if provided by the container)
     cuda_toolkit_paths = [
         "/usr/local/cuda/lib64",
         "/usr/local/cuda/lib",
@@ -245,7 +242,7 @@ def _build_ld_library_path() -> str:
     ]
 
     # Combine all paths in priority order
-    ld_path_parts = conda_lib_paths + cuda_toolkit_paths + nvidia_driver_paths
+    ld_path_parts = python_lib_paths + cuda_toolkit_paths + nvidia_driver_paths
 
     # Append host LD_LIBRARY_PATH if present (lowest priority)
     if "LD_LIBRARY_PATH" in os.environ:
@@ -481,7 +478,6 @@ class ApptainerBackend(Backend):
             "PYTHONPATH": container_boileroom,
             # Override temp directory variables to use container's /tmp
             # This prevents issues when host TMPDIR points to a path that doesn't exist in container
-            # CRITICAL: Must override TMPDIR before micromamba runs, otherwise it fails
             "TMPDIR": "/tmp",
             "TMP": "/tmp",
             "TEMP": "/tmp",
@@ -490,9 +486,7 @@ class ApptainerBackend(Backend):
             "CXX": "g++",
         }
 
-        # Build LD_LIBRARY_PATH to include all necessary CUDA library paths
-        # This ensures conda-installed CUDA libraries (libcue_ops.so, libcublas.so.12, libnvrtc.so.12)
-        # and system CUDA toolkit libraries are accessible
+        # Build LD_LIBRARY_PATH to include Python wheel CUDA libraries and driver paths.
         env_vars["LD_LIBRARY_PATH"] = _build_ld_library_path()
 
         if device_number is not None:
@@ -517,10 +511,6 @@ class ApptainerBackend(Backend):
         cmd.append(str(self._sif_path))
         cmd.extend(
             [
-                "micromamba",
-                "run",
-                "-n",
-                "base",
                 "python",
                 container_server_path,
                 "--host",

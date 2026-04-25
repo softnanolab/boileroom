@@ -1,12 +1,12 @@
 ## Boileroom Docker images
 
 ### What exists today
-- **base**: `boileroom/images/Dockerfile` → CUDA-enabled micromamba base with Python 3.12. Tag: `docker.io/jakublala/boileroom-base`.
-- **boltz**: `boileroom/models/boltz/Dockerfile` → copies `environment.yml` and installs the Boltz env. Tag: `docker.io/jakublala/boileroom-boltz`.
-- **chai1**: `boileroom/models/chai/Dockerfile` → copies `environment.yml`, installs chai-specific deps, sets HF env vars. Tag: `docker.io/jakublala/boileroom-chai1`.
-- **esm**: `boileroom/models/esm/Dockerfile` → copies `environment.yml` shared by esm2/esmfold. Tag: `docker.io/jakublala/boileroom-esm`.
+- **base**: `boileroom/images/Dockerfile` → Python 3.12 slim base with shared OS build/runtime tools. Tag: `docker.io/jakublala/boileroom-base`.
+- **boltz**: `boileroom/models/boltz/Dockerfile` → installs Boltz runtime dependencies from `requirements.txt`. Tag: `docker.io/jakublala/boileroom-boltz`.
+- **chai1**: `boileroom/models/chai/Dockerfile` → installs Chai runtime dependencies from `requirements.txt`, sets HF env vars. Tag: `docker.io/jakublala/boileroom-chai1`.
+- **esm**: `boileroom/models/esm/Dockerfile` → installs ESM runtime dependencies from `requirements.txt` shared by esm2/esmfold. Tag: `docker.io/jakublala/boileroom-esm`.
 
-Dockerfiles are the canonical image definition for all runtimes. Docker/Apptainer images are built from these Dockerfiles, and Modal pulls the corresponding published model image from Docker Hub instead of maintaining a separate handwritten dependency stack.
+Dockerfiles are the canonical image definition for all runtimes. Docker/Apptainer images are built from these Dockerfiles, and Modal pulls the corresponding published model image from Docker Hub instead of maintaining a separate handwritten dependency stack. CUDA variants select the PyTorch wheel index; the runtime images rely on PyTorch/NVIDIA wheels for user-space CUDA libraries and on Docker/Apptainer GPU integration for host driver libraries.
 
 ### Tag scheme
 - Canonical published tags are CUDA-qualified, for example `cuda12.6-0.3.0`, `cuda11.8-0.3.0`, `cuda12.6-0.3.1-alpha.1`, or `cuda12.6-sha-abc1234`.
@@ -59,6 +59,7 @@ uv run pytest -v -m integration --docker-user=my-dockerhub-user --image-tag=0.3.
 
 Single-platform non-push builds auto-load into the local Docker daemon. Multi-platform builds should generally be paired with `--push`.
 Pushed buildx builds import and export stable per-image registry caches such as `boileroom-chai1:buildcache-cuda12.6`, so GitHub Actions runners can reuse dependency layers across validation tags and releases. Pass `--no-cache` to bypass those caches.
+Model Dockerfiles also mount a shared BuildKit uv cache for the active CUDA line, for example `boileroom-uv-cu12.6`, so parallel model builds in the same GitHub Actions matrix job can reuse downloaded wheels even when a full dependency-install layer has to run again.
 Pass `--verbose` to stream Docker build output and plain BuildKit progress while still writing per-image log files.
 In CI, the release workflow splits CUDA lines across separate GitHub-hosted runners and passes `--max-workers` within each CUDA job. That keeps the base image dependency order intact while letting model image builds and Docker Hub transfers overlap.
 For single-platform publishing, pass `--local-base` to build and tag images with `buildx --load` before pushing. This keeps dependent model builds from waiting on Docker Hub to receive and then re-serve the base image. Model builds also receive the loaded base tag as a named `docker-image://` build context so their `FROM` instruction resolves locally while preserving BuildKit registry cache import/export.
