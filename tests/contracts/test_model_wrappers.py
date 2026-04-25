@@ -204,11 +204,19 @@ def test_public_wrapper_dispatch_uses_shared_initializer(monkeypatch: pytest.Mon
     assert records["call_kwargs"] == {"options": None}
 
 
-def test_parse_backend_apptainer_tag_handling() -> None:
-    """Apptainer backend tags should keep the explicit tag or default to the package version."""
+def test_parse_backend_apptainer_tag_handling(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Apptainer tag resolution: explicit suffix > BOILEROOM_IMAGE_TAG env var > package default."""
+    monkeypatch.delenv("BOILEROOM_IMAGE_TAG", raising=False)
     assert ModelWrapper.parse_backend("modal") == ("modal", None)
     assert ModelWrapper.parse_backend("modal:dev") == ("modal", None)
+    # Without an env var or explicit suffix, fall back to package default.
     assert ModelWrapper.parse_backend("apptainer") == ("apptainer", get_default_image_tag())
+    # Explicit suffix wins.
+    assert ModelWrapper.parse_backend("apptainer:dev") == ("apptainer", "dev")
+    # Env var is honored when no explicit suffix is given.
+    monkeypatch.setenv("BOILEROOM_IMAGE_TAG", "sha-test")
+    assert ModelWrapper.parse_backend("apptainer") == ("apptainer", "sha-test")
+    # Explicit suffix still wins over env var.
     assert ModelWrapper.parse_backend("apptainer:dev") == ("apptainer", "dev")
 
 
