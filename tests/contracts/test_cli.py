@@ -7,7 +7,13 @@ from pytest import MonkeyPatch
 
 from scripts.ci import derive_version
 from scripts.harness import check_repo
-from scripts.images import build_model_images, check_model_imports, check_model_server_health, promote_image_tags
+from scripts.images import (
+    build_model_images,
+    check_model_imports,
+    check_model_server_health,
+    cleanup_dockerhub_tags,
+    promote_image_tags,
+)
 
 
 def test_click_commands_support_help_aliases() -> None:
@@ -17,6 +23,7 @@ def test_click_commands_support_help_aliases() -> None:
         check_repo.cli,
         derive_version.cli,
         promote_image_tags.cli,
+        cleanup_dockerhub_tags.cli,
         check_model_imports.cli,
         check_model_server_health.cli,
         build_model_images.cli,
