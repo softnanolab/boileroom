@@ -160,8 +160,11 @@ def dockerhub_request(
         body = json.dumps(payload).encode("utf-8")
 
     req = request.Request(url, data=body, headers=headers, method=method)
-    with request.urlopen(req, timeout=30) as response:
-        raw = response.read()
+    try:
+        with request.urlopen(req, timeout=30) as response:
+            raw = response.read()
+    except (error.URLError, TimeoutError) as exc:
+        raise RuntimeError(f"Docker Hub API request failed for {method} {url}: {exc}") from exc
     if not raw:
         return None
     return json.loads(raw.decode("utf-8"))
