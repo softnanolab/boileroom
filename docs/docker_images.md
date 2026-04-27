@@ -85,6 +85,7 @@ The build helper also supports `--skip-existing` and `--force-rebuild` for regis
 - Docker Hub is kept clean for users. The long-lived public tags are stable version tags such as `0.3.0`, alpha prerelease tags such as `0.3.1-alpha.1`, and the corresponding CUDA-qualified tags such as `cuda12.6-0.3.0` and `cuda11.8-0.3.0`.
 - Short-lived validation tags such as `sha-<shortsha>` are fine when you need to test a branch through Docker Hub or Modal before promoting a version tag.
 - Validation tags should be deleted once the validation pass is complete.
+- The `.github/workflows/cleanup-dockerhub-tags.yml` workflow enforces retention weekly by keeping the latest 3 alpha versions, deleting `sha-*` tags older than 7 days, and preserving stable and `buildcache-*` tags.
 
 For example, a temporary validation push on the default CUDA line:
 ```bash
