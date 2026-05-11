@@ -6,43 +6,55 @@ from boileroom import ESM2
 pytestmark = [pytest.mark.integration, pytest.mark.slow, pytest.mark.gpu, pytest.mark.xdist_group("esm2")]
 
 
-# Each test instantiates its own model; keeping function scope avoids long-lived Modal handles.
+# Each test instantiates its own model; keeping function scope avoids long-lived backend handles.
 @pytest.fixture
-def esm2_model_factory(gpu_device: str | None):
+def esm2_model_factory(backend_option: str, gpu_device: str | None, device_option: str | None):
     """Create a factory that builds configured ESM2 model instances.
 
     Parameters
     ----------
+    backend_option : str
+        Backend selector as provided via ``--backend`` ("modal" or "apptainer[:<tag>]").
     gpu_device : Optional[str]
-        If provided, forces the model device to this value; otherwise the device is inferred from the provided model_name in the factory call:
+        Modal GPU class from ``--gpu`` (e.g. ``T4``, ``A100-80GB``). When not
+        provided, the Modal device is inferred from model_name:
         - model_name containing "15B" → "A100-80GB"
         - model_name containing "3B" → "A100-40GB"
         - otherwise → "T4"
+    device_option : Optional[str]
+        Backend-resolved device string. For apptainer this is ``--device``
+        (defaulting to ``cuda:0``).
 
     Returns
     -------
     Callable[..., ESM2]
-        A function that accepts model configuration kwargs (must include `model_name`) and returns an ESM2 instance with backend "modal" and device chosen as described above.
+        A function that accepts model configuration kwargs (must include `model_name`) and returns an ESM2 instance with the chosen backend and resolved device.
     """
+    is_modal = backend_option.split(":", 1)[0].strip() == "modal"
 
     def _make_model(**kwargs):
         config = {**kwargs}
+        device: str | None
 
-        # Use gpu_device from command line if provided, otherwise fall back to model-name-based selection
-        if gpu_device is not None:
-            gpu_type = gpu_device
-        else:
-            model_name = config.get("model_name")
-            if model_name is None:
-                raise ValueError("model_name is required when gpu_device is not provided")
-            if "15B" in model_name:
-                gpu_type = "A100-80GB"
-            elif "3B" in model_name:
-                gpu_type = "A100-40GB"
+        if is_modal:
+            # Modal: pick a GPU class. Honor --gpu if set, else infer from model size.
+            if gpu_device is not None:
+                device = gpu_device
             else:
-                gpu_type = "T4"
+                model_name = config.get("model_name")
+                if model_name is None:
+                    raise ValueError("model_name is required when --gpu is not provided")
+                if "15B" in model_name:
+                    device = "A100-80GB"
+                elif "3B" in model_name:
+                    device = "A100-40GB"
+                else:
+                    device = "T4"
+        else:
+            # Apptainer: device is whichever local CUDA index the user picked.
+            device = device_option
 
-        return ESM2(backend="modal", device=gpu_type, config=config)
+        return ESM2(backend=backend_option, device=device, config=config)
 
     return _make_model
 

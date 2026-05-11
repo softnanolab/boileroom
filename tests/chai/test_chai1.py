@@ -5,7 +5,6 @@ import numpy as np
 import pytest
 from biotite.structure import AtomArray, rmsd, superimpose
 from biotite.structure.io.pdbx import CIFFile, get_structure
-from modal import enable_output
 
 from boileroom import Chai1
 from boileroom.models.chai.types import Chai1Output
@@ -53,17 +52,26 @@ def _quick_options(include_fields: list[str] | None = None) -> dict[str, object]
     return options
 
 
-# Module scope keeps a single Modal app lifecycle for the Chai integration shard.
+# Module scope keeps a single backend lifecycle for the Chai integration shard.
 @pytest.fixture(scope="module")
-def chai1_model(config: dict | None = None, gpu_device: str | None = None) -> Generator[Chai1, None, None]:
-    """Provide a Chai1 model instance configured to run with the Modal backend.
+def chai1_model(
+    backend_option: str,
+    device_option: str | None,
+    output_ctx,
+    config: dict | None = None,
+) -> Generator[Chai1, None, None]:
+    """Provide a Chai1 model instance configured to run with the selected backend.
 
     Parameters
     ----------
+    backend_option : str
+        Backend selector ("modal" or "apptainer[:<tag>]").
+    device_option : Optional[str]
+        Backend-resolved device string.
+    output_ctx : Callable
+        Factory yielding a backend-appropriate context manager.
     config : Optional[dict]
         Optional model configuration mapping used when creating the model.
-    gpu_device : Optional[str]
-        Optional device identifier passed to the model (e.g., "cpu" or a CUDA device string).
 
     Yields
     ------
@@ -71,7 +79,7 @@ def chai1_model(config: dict | None = None, gpu_device: str | None = None) -> Ge
         A Chai1 model instance yielded by the generator for use in tests.
     """
     model_config = dict(config) if config is not None else {}
-    with enable_output(), Chai1(backend="modal", device=gpu_device, config=model_config) as model:
+    with output_ctx(), Chai1(backend=backend_option, device=device_option, config=model_config) as model:
         yield model
 
 

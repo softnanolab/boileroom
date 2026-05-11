@@ -90,7 +90,7 @@ jobs:
       - name: Run integration tests
         shell: bash -l {0}
         env:
-          BOILEROOM_MODAL_IMAGE_TAG: ${{ steps.resolve_tag.outputs.docker_tag }}
+          BOILEROOM_IMAGE_TAG: ${{ steps.resolve_tag.outputs.docker_tag }}
         run: |
           if [ "${{ inputs.execution-mode || 'parallel' }}" = "series" ]; then
             uv run pytest -v -m integration

@@ -15,7 +15,7 @@ DEFAULT_DOCKER_REPOSITORY: Final = "docker.io/jakublala"
 PACKAGE_NAME: Final = "boileroom"
 DEFAULT_CUDA_VERSION: Final = "12.6"
 DOCKER_REPOSITORY_ENV: Final = "BOILEROOM_DOCKER_REPOSITORY"
-MODAL_IMAGE_TAG_ENV: Final = "BOILEROOM_MODAL_IMAGE_TAG"
+IMAGE_TAG_ENV: Final = "BOILEROOM_IMAGE_TAG"
 
 SUPPORTED_CUDA_VERSIONS: Final[tuple[str, ...]] = ("11.8", "12.6")
 
@@ -101,7 +101,7 @@ def get_default_image_tag() -> str:
     except importlib.metadata.PackageNotFoundError:
         raise RuntimeError(
             "Unable to determine the default boileroom image tag. "
-            f"Install {PACKAGE_NAME} or set {MODAL_IMAGE_TAG_ENV} explicitly."
+            f"Install {PACKAGE_NAME} or set {IMAGE_TAG_ENV} explicitly."
         ) from None
 
 
@@ -217,14 +217,18 @@ def published_image_references(
     return tuple(f"{repository}/{image_name}:{published_tag}" for published_tag in published_tags(cuda_version, tag))
 
 
-def get_modal_image_tag() -> str:
-    """Return the tag Modal should pull from the registry."""
-    return resolve_registry_tag(os.environ.get(MODAL_IMAGE_TAG_ENV))
+def get_image_tag() -> str:
+    """Return the runtime image tag for both Modal and Apptainer backends.
+
+    Reads the ``BOILEROOM_IMAGE_TAG`` env var if set; otherwise falls back to
+    the package-default tag derived from ``pyproject.toml``.
+    """
+    return resolve_registry_tag(os.environ.get(IMAGE_TAG_ENV))
 
 
 def get_modal_base_image_reference() -> str:
     """Return the base image Modal should use for the shared runtime layer."""
-    return format_image_reference(BASE_IMAGE_SPEC.image_name, get_modal_image_tag())
+    return format_image_reference(BASE_IMAGE_SPEC.image_name, get_image_tag())
 
 
 def get_model_image_spec(identifier: str) -> RuntimeImageSpec:
@@ -267,7 +271,7 @@ def render_modal_runtime_env(spec: RuntimeImageSpec, model_dir: str) -> dict[str
     env = {
         "MODEL_DIR": model_dir,
         DOCKER_REPOSITORY_ENV: get_docker_repository(),
-        MODAL_IMAGE_TAG_ENV: get_modal_image_tag(),
+        IMAGE_TAG_ENV: get_image_tag(),
     }
     for key, value in spec.modal_runtime_env:
         env[key] = value.replace("{MODEL_DIR}", model_dir)

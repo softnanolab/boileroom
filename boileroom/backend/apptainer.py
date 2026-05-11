@@ -241,13 +241,12 @@ def _build_ld_library_path() -> str:
         "/.singularity.d/libs",
     ]
 
-    # Combine all paths in priority order
+    # Combine all paths in priority order. Host LD_LIBRARY_PATH is intentionally
+    # NOT appended: the container has its own torch wheel and `--nv` provides
+    # driver libs, while host paths can drag in libs (including a host libpython)
+    # that collide with the container's, producing
+    # `Fatal Python error: _PyImport_Init: global import state already initialized`.
     ld_path_parts = python_lib_paths + cuda_toolkit_paths + nvidia_driver_paths
-
-    # Append host LD_LIBRARY_PATH if present (lowest priority)
-    if "LD_LIBRARY_PATH" in os.environ:
-        host_paths = [p for p in os.environ["LD_LIBRARY_PATH"].split(":") if p and p not in ld_path_parts]
-        ld_path_parts.extend(host_paths)
 
     return ":".join(ld_path_parts)
 
@@ -435,16 +434,30 @@ class ApptainerBackend(Backend):
         container_boileroom = str(project_root)
         container_server_path = str(server_path)
 
-        # Build apptainer exec command
-        cmd = ["apptainer", "exec"]
+        # Build apptainer exec command.
+        # --cleanenv: container starts with only the env we explicitly pass via --env.
+        #   Without this, host PATH (with .venv/bin first under `uv run`), VIRTUAL_ENV,
+        #   PYTHONHOME, and LD_LIBRARY_PATH leak into the container, allowing the host
+        #   libpython to be loaded alongside the container's libpython and triggering
+        #   `Fatal Python error: _PyImport_Init: global import state already initialized`.
+        # --home /tmp: set the container's HOME to /tmp (writable, auto-mounted) and
+        #   suppress the auto-mount of the host $HOME. `HOME` cannot be set via --env
+        #   (apptainer ignores APPTAINERENV_HOME and warns); --home is the supported way.
+        #   xet writes its logs/chunks under $HOME/.cache/huggingface, so HOME must
+        #   resolve to a writable path inside the container.
+        cmd = ["apptainer", "exec", "--cleanenv", "--home", "/tmp"]
 
         # Enable NVIDIA GPU support if device is CUDA
         device_number = _extract_device_number(self._device)
         if self._device.startswith("cuda"):
             cmd.append("--nv")
 
-        # Bind mount boileroom source code (read-only)
-        cmd.extend(["-B", f"{container_boileroom}:{container_boileroom}:ro"])
+        # Bind mount only the boileroom package directory, read-only.
+        # Binding the full project root would expose the host .venv/ inside the
+        # container; the resulting host-built C extensions on the import path can
+        # load a second libpython and crash interpreter startup.
+        host_pkg_dir = project_root / "boileroom"
+        cmd.extend(["-B", f"{host_pkg_dir}:{host_pkg_dir}:ro"])
 
         # Bind mount MODEL_DIR if present
         if model_dir:
@@ -469,13 +482,18 @@ class ApptainerBackend(Backend):
             cmd.extend(["-B", f"{model_dir_path}:{container_model_dir}"])
             logger.info(f"Bind mounting MODEL_DIR: {model_dir_path} -> {container_model_dir}")
 
-        # Set environment variables
+        # Set environment variables. With --cleanenv, these are the *only* vars
+        # the container sees, so we must set everything the server needs (PATH,
+        # HOME, locale) ourselves rather than relying on inheritance.
         env_vars = {
             "MODEL_CLASS": self._core_class_path,
             "MODEL_CONFIG": json.dumps(self._config),
             "DEVICE": self._device,
             TRANSPORT_HMAC_KEY_ENV: self._transport_secret,
             "PYTHONPATH": container_boileroom,
+            "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            "LANG": "C.UTF-8",
+            "LC_ALL": "C.UTF-8",
             # Override temp directory variables to use container's /tmp
             # This prevents issues when host TMPDIR points to a path that doesn't exist in container
             "TMPDIR": "/tmp",
@@ -507,11 +525,13 @@ class ApptainerBackend(Backend):
         for key, value in env_vars.items():
             cmd.extend(["--env", f"{key}={value}"])
 
-        # Add image and command
+        # Add image and command. Use the absolute path to the container's
+        # python so PATH-based resolution can never reach a host binary that
+        # leaked through the bind mounts.
         cmd.append(str(self._sif_path))
         cmd.extend(
             [
-                "python",
+                "/usr/local/bin/python3.12",
                 container_server_path,
                 "--host",
                 "0.0.0.0",

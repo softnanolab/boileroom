@@ -12,7 +12,7 @@ from typing import Any, ClassVar, Literal, Protocol, cast
 import numpy as np
 import torch
 
-from .images.metadata import format_image_reference, get_default_image_tag
+from .images.metadata import format_image_reference, get_image_tag
 from .models.registry import ModelSpec, resolve_object
 from .utils import validate_sequence
 
@@ -450,8 +450,9 @@ class ModelWrapper:
             A tuple of ``(backend_type, backend_tag)`` where ``backend_type`` is
             the base backend identifier (for example ``\"modal\"`` or
             ``\"apptainer\"``) and ``backend_tag`` is either the tag string for
-            ``\"apptainer\"`` backends (defaulting to the installed package version
-            when no tag is provided) or ``None`` for all other backends.
+            ``\"apptainer\"`` backends (the explicit suffix wins, otherwise it
+            falls back to ``BOILEROOM_IMAGE_TAG`` env var, otherwise the
+            installed package version) or ``None`` for all other backends.
         """
         if ":" in backend:
             backend_type, backend_tag = backend.split(":", 1)
@@ -460,7 +461,8 @@ class ModelWrapper:
 
         backend_type = backend_type.strip()
         if backend_type == "apptainer":
-            backend_tag = (backend_tag or get_default_image_tag()).strip() or get_default_image_tag()
+            explicit = (backend_tag or "").strip()
+            backend_tag = explicit if explicit else get_image_tag()
             return backend_type, backend_tag
 
         return backend_type, None

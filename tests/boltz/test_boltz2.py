@@ -8,7 +8,6 @@ import numpy as np
 import pytest
 from biotite.structure import AtomArray, rmsd, superimpose
 from biotite.structure.io.pdbx import CIFFile, get_structure
-from modal import enable_output
 
 from boileroom import Boltz2
 from boileroom.constants import restype_3to1
@@ -20,23 +19,32 @@ nipah_virus_sequence = "ICLQKTSNQILKPKLISYTLGQSGTCITDPLLAMDEGYFAYSHLERIGSCSRGVSK
 
 
 @pytest.fixture(scope="module")
-def boltz2_model(config: dict | None = None, gpu_device: str | None = None) -> Generator[Boltz2, None, None]:
-    """Provide a Boltz2 model instance configured for the Modal backend.
+def boltz2_model(
+    backend_option: str,
+    device_option: str | None,
+    output_ctx,
+    config: dict | None = None,
+) -> Generator[Boltz2, None, None]:
+    """Provide a Boltz2 model instance configured for the selected backend.
 
     Parameters
     ----------
+    backend_option : str
+        Backend selector ("modal" or "apptainer[:<tag>]").
+    device_option : Optional[str]
+        Backend-resolved device string.
+    output_ctx : Callable
+        Factory yielding a backend-appropriate context manager.
     config : Optional[dict]
         Optional model configuration overrides to apply when constructing the Boltz2 instance.
-    gpu_device : Optional[str]
-        Optional device identifier to run the model on (for example, "cuda:0" or similar).
 
     Yields
     ------
     Boltz2
-        A Boltz2 instance configured with backend="modal", the specified device, and the provided configuration.
+        A Boltz2 instance configured for the chosen backend.
     """
     model_config = dict(config) if config is not None else {}
-    with enable_output(), Boltz2(backend="modal", device=gpu_device, config=model_config) as model:
+    with output_ctx(), Boltz2(backend=backend_option, device=device_option, config=model_config) as model:
         yield model
 
 
