@@ -8,6 +8,7 @@ import pytest
 import torch
 from biotite.structure import AtomArray, rmsd
 from biotite.structure.io.pdb import PDBFile
+from modal import enable_output
 
 from boileroom import ESMFold
 from boileroom.constants import restype_3to1
@@ -18,19 +19,15 @@ from boileroom.models.esm.types import ESMFoldOutput
 pytestmark = [pytest.mark.integration, pytest.mark.slow, pytest.mark.gpu, pytest.mark.xdist_group("esmfold")]
 
 
-# Module scope keeps a single backend container alive for the duration of the suite.
+# Module scope keeps a single Modal container alive for the duration of the suite.
 @pytest.fixture(scope="module")
-def esmfold_model(backend_option: str, device_option: str | None, output_ctx) -> Generator[ESMFold, None, None]:
+def esmfold_model(gpu_device: str | None = None) -> Generator[ESMFold, None, None]:
     """Provide a configured ESMFold model instance for tests.
 
     Parameters
     ----------
-    backend_option : str
-        Backend selector ("modal" or "apptainer[:<tag>]").
-    device_option : Optional[str]
-        Backend-resolved device string (e.g. "T4" for Modal, "cuda:0" for Apptainer).
-    output_ctx : Callable
-        Factory yielding a backend-appropriate context manager.
+    gpu_device : Optional[str]
+        Optional device identifier (e.g., "cuda:0" or "cpu") to initialize the model on.
 
     Yields
     ------
@@ -38,8 +35,8 @@ def esmfold_model(backend_option: str, device_option: str | None, output_ctx) ->
         A configured ESMFold instance ready for use in tests.
     """
     model_config: dict[str, object] = {}
-    with output_ctx():
-        yield ESMFold(backend=backend_option, device=device_option, config=model_config)
+    with enable_output():
+        yield ESMFold(backend="modal", device=gpu_device, config=model_config)
 
 
 def test_esmfold_basic(test_sequences: dict[str, str], esmfold_model: ESMFold):
@@ -55,15 +52,10 @@ def test_esmfold_basic(test_sequences: dict[str, str], esmfold_model: ESMFold):
     assert result.plddt is None, "plddt should be None in minimal output"
 
 
-def test_esmfold_full_output(
-    test_sequences: dict[str, str],
-    backend_option: str,
-    device_option: str | None,
-    output_ctx,
-):
+def test_esmfold_full_output(test_sequences: dict[str, str], gpu_device: str | None):
     """Test ESMFold with full output requested."""
-    with output_ctx():
-        model = ESMFold(backend=backend_option, device=device_option, config={"include_fields": ["*"]})
+    with enable_output():
+        model = ESMFold(backend="modal", device=gpu_device, config={"include_fields": ["*"]})
         result = model.fold(test_sequences["short"])
 
     assert isinstance(result, ESMFoldOutput), "Result should be an ESMFoldOutput"
@@ -73,12 +65,10 @@ def test_esmfold_full_output(
     assert np.all(result.plddt <= 100), "pLDDT scores should be less than or equal to 100"
 
 
-def test_esmfold_multimer(test_sequences, backend_option: str, device_option: str | None, output_ctx):
+def test_esmfold_multimer(test_sequences, gpu_device: str | None):
     """Test ESMFold multimer functionality."""
-    with output_ctx():
-        model = ESMFold(
-            backend=backend_option, device=device_option, config={"include_fields": ["*"]}
-        )  # Request all fields
+    with enable_output():  # TODO: make this better with a fixture, re-using the logic
+        model = ESMFold(backend="modal", device=gpu_device, config={"include_fields": ["*"]})  # Request all fields
         result = model.fold(test_sequences["multimer"])
 
     assert result.pdb is not None, "PDB output should be generated"
@@ -151,23 +141,18 @@ def test_esmfold_linker_map():
     assert torch.all(linker_map == gt_map), "Linker map mismatch"
 
 
-def test_esmfold_no_glycine_linker(
-    test_sequences,
-    backend_option: str,
-    device_option: str | None,
-    output_ctx,
-):
+def test_esmfold_no_glycine_linker(test_sequences, gpu_device: str | None):
     """Test ESMFold no glycine linker."""
     model = ESMFold(
-        backend=backend_option,
-        device=device_option,
+        backend="modal",
+        device=gpu_device,
         config={
             "glycine_linker": "",
             "include_fields": ["*"],  # Request all fields
         },
     )
 
-    with output_ctx():
+    with enable_output():
         result = model.fold(test_sequences["multimer"])
 
     assert result.residue_index is not None, "Residue index should be generated"
@@ -204,17 +189,10 @@ def test_esmfold_chain_indices():
     assert np.array_equal(chain_indices[0], expected_chain_indices), "Chain indices mismatch"
 
 
-def test_esmfold_batch(
-    test_sequences: dict[str, str],
-    backend_option: str,
-    device_option: str | None,
-    output_ctx,
-):
+def test_esmfold_batch(test_sequences: dict[str, str], gpu_device: str | None):
     """Test ESMFold batch prediction."""
-    with output_ctx():
-        model = ESMFold(
-            backend=backend_option, device=device_option, config={"include_fields": ["*"]}
-        )  # Request all fields
+    with enable_output():
+        model = ESMFold(backend="modal", device=gpu_device, config={"include_fields": ["*"]})  # Request all fields
         # Define input sequences
         sequences = [test_sequences["short"], test_sequences["medium"]]
         # Make prediction
@@ -328,13 +306,7 @@ def test_esmfold_static_config_enforcement(test_sequences: dict[str, str]):
         esmfold_core.fold(test_sequences["short"], options={"device": "cuda:0"})
 
 
-def test_esmfold_output_pdb_cif(
-    data_dir: pathlib.Path,
-    test_sequences: dict[str, str],
-    backend_option: str,
-    device_option: str | None,
-    output_ctx,
-):
+def test_esmfold_output_pdb_cif(data_dir: pathlib.Path, test_sequences: dict[str, str], gpu_device: str | None):
     """
     Validate that ESMFold produces consistent PDB and AtomArray outputs and matches saved reference PDB files.
 
@@ -365,9 +337,9 @@ def test_esmfold_output_pdb_cif(
         one_letter_codes = [restype_3to1[three_letter_code] for three_letter_code in three_letter_codes]
         return "".join(one_letter_codes)
 
-    with output_ctx():
+    with enable_output():
         model = ESMFold(
-            backend=backend_option, device=device_option, config={"include_fields": ["pdb", "atom_array"]}
+            backend="modal", device=gpu_device, config={"include_fields": ["pdb", "atom_array"]}
         )  # Request PDB and atom_array
         # Define input sequences
         sequences = [test_sequences["short"], test_sequences["medium"]]
