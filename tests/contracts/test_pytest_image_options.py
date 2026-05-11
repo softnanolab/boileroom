@@ -1,4 +1,4 @@
-"""Contract tests for the ``--docker-user`` pytest option."""
+"""Contract tests for pytest image lookup options."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from boileroom.images.metadata import DOCKER_REPOSITORY_ENV
+from boileroom.images.metadata import DOCKER_REPOSITORY_ENV, MODAL_IMAGE_TAG_ENV
 
 
 def _load_test_conftest() -> Any:
@@ -20,7 +20,12 @@ def _load_test_conftest() -> Any:
     return module
 
 
-_BACKEND_DEFAULTS: dict[str, str | None] = {"--backend": "modal", "--gpu": None, "--device": None}
+_BACKEND_DEFAULTS: dict[str, str | None] = {
+    "--backend": "modal",
+    "--gpu": None,
+    "--device": None,
+    "--image-tag": None,
+}
 
 
 class FakeConfig:
@@ -51,3 +56,41 @@ def test_docker_user_absent_leaves_repository_env_unset(monkeypatch) -> None:
     conftest.pytest_configure(FakeConfig({"--docker-user": None}))
 
     assert DOCKER_REPOSITORY_ENV not in os.environ
+
+
+def test_image_tag_sets_modal_lookup_env(monkeypatch) -> None:
+    """``--image-tag`` should write the Modal image tag env var."""
+    monkeypatch.delenv(MODAL_IMAGE_TAG_ENV, raising=False)
+    conftest = _load_test_conftest()
+
+    try:
+        conftest.pytest_configure(FakeConfig({"--image-tag": "sha-test"}))
+        assert os.environ[MODAL_IMAGE_TAG_ENV] == "sha-test"
+    finally:
+        os.environ.pop(MODAL_IMAGE_TAG_ENV, None)
+
+
+class FakeRequest:
+    def __init__(self, config: FakeConfig) -> None:
+        self.config = config
+
+
+def test_image_tag_applies_to_apptainer_backend_option(monkeypatch) -> None:
+    """``--image-tag`` should make ``--backend apptainer`` use that tag."""
+    monkeypatch.delenv(MODAL_IMAGE_TAG_ENV, raising=False)
+    conftest = _load_test_conftest()
+    config = FakeConfig({"--backend": "apptainer", "--image-tag": "sha-test"})
+
+    try:
+        conftest.pytest_configure(config)
+        assert conftest.backend_option.__wrapped__(FakeRequest(config)) == "apptainer:sha-test"
+    finally:
+        os.environ.pop(MODAL_IMAGE_TAG_ENV, None)
+
+
+def test_apptainer_inline_tag_wins_over_image_tag() -> None:
+    """An explicit Apptainer backend suffix should take precedence over ``--image-tag``."""
+    conftest = _load_test_conftest()
+    config = FakeConfig({"--backend": "apptainer:inline", "--image-tag": "sha-test"})
+
+    assert conftest.backend_option.__wrapped__(FakeRequest(config)) == "apptainer:inline"
