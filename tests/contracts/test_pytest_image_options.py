@@ -7,6 +7,8 @@ import os
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from boileroom.images.metadata import DOCKER_REPOSITORY_ENV, IMAGE_TAG_ENV
 
 
@@ -36,7 +38,7 @@ class FakeConfig:
         return self.options.get(name)
 
 
-def test_docker_user_sets_repository_env(monkeypatch) -> None:
+def test_docker_user_sets_repository_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """``--docker-user`` should write the normalized repository to the env var."""
     monkeypatch.delenv(DOCKER_REPOSITORY_ENV, raising=False)
     conftest = _load_test_conftest()
@@ -48,7 +50,7 @@ def test_docker_user_sets_repository_env(monkeypatch) -> None:
         os.environ.pop(DOCKER_REPOSITORY_ENV, None)
 
 
-def test_docker_user_absent_leaves_repository_env_unset(monkeypatch) -> None:
+def test_docker_user_absent_leaves_repository_env_unset(monkeypatch: pytest.MonkeyPatch) -> None:
     """Without ``--docker-user``, the repository env var should not be touched."""
     monkeypatch.delenv(DOCKER_REPOSITORY_ENV, raising=False)
     conftest = _load_test_conftest()
@@ -58,7 +60,7 @@ def test_docker_user_absent_leaves_repository_env_unset(monkeypatch) -> None:
     assert DOCKER_REPOSITORY_ENV not in os.environ
 
 
-def test_image_tag_sets_runtime_lookup_env(monkeypatch) -> None:
+def test_image_tag_sets_runtime_lookup_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """``--image-tag`` should write the shared runtime image tag env var."""
     monkeypatch.delenv(IMAGE_TAG_ENV, raising=False)
     conftest = _load_test_conftest()
@@ -75,7 +77,7 @@ class FakeRequest:
         self.config = config
 
 
-def test_image_tag_applies_to_apptainer_backend_option(monkeypatch) -> None:
+def test_image_tag_applies_to_apptainer_backend_option(monkeypatch: pytest.MonkeyPatch) -> None:
     """``--image-tag`` should make ``--backend apptainer`` use that tag."""
     monkeypatch.delenv(IMAGE_TAG_ENV, raising=False)
     conftest = _load_test_conftest()

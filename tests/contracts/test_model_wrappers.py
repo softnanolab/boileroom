@@ -204,7 +204,7 @@ def test_public_wrapper_dispatch_uses_shared_initializer(monkeypatch: pytest.Mon
     assert records["call_kwargs"] == {"options": None}
 
 
-def test_parse_backend_apptainer_tag_handling(monkeypatch) -> None:
+def test_parse_backend_apptainer_tag_handling(monkeypatch: pytest.MonkeyPatch) -> None:
     """Apptainer tag resolution should use an explicit suffix, env override, or package default."""
     monkeypatch.delenv(IMAGE_TAG_ENV, raising=False)
     assert ModelWrapper.parse_backend("modal") == ("modal", None)
