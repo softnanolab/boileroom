@@ -7,7 +7,7 @@ import pytest
 
 from boileroom.backend.modal import ModalBackend, modal_app_of
 from boileroom.base import ModelWrapper, PredictionMetadata
-from boileroom.images.metadata import get_default_image_tag
+from boileroom.images.metadata import IMAGE_TAG_ENV, get_default_image_tag
 from boileroom.models.boltz.types import Boltz2Output
 from boileroom.models.chai.types import Chai1Output
 from boileroom.models.esm.types import ESM2Output, ESMFoldOutput
@@ -204,12 +204,16 @@ def test_public_wrapper_dispatch_uses_shared_initializer(monkeypatch: pytest.Mon
     assert records["call_kwargs"] == {"options": None}
 
 
-def test_parse_backend_apptainer_tag_handling() -> None:
-    """Apptainer tag resolution should use an explicit suffix or package default."""
+def test_parse_backend_apptainer_tag_handling(monkeypatch) -> None:
+    """Apptainer tag resolution should use an explicit suffix, env override, or package default."""
+    monkeypatch.delenv(IMAGE_TAG_ENV, raising=False)
     assert ModelWrapper.parse_backend("modal") == ("modal", None)
     assert ModelWrapper.parse_backend("modal:dev") == ("modal", None)
     # Without an explicit suffix, fall back to package default.
     assert ModelWrapper.parse_backend("apptainer") == ("apptainer", get_default_image_tag())
+    # The shared runtime image tag override applies to Apptainer defaults.
+    monkeypatch.setenv(IMAGE_TAG_ENV, "env-tag")
+    assert ModelWrapper.parse_backend("apptainer") == ("apptainer", "env-tag")
     # Explicit suffix wins.
     assert ModelWrapper.parse_backend("apptainer:dev") == ("apptainer", "dev")
 

@@ -7,7 +7,7 @@ import re
 
 import pytest
 
-from boileroom.images.metadata import DOCKER_REPOSITORY_ENV, MODAL_IMAGE_TAG_ENV, normalize_docker_repository
+from boileroom.images.metadata import DOCKER_REPOSITORY_ENV, IMAGE_TAG_ENV, normalize_docker_repository
 from boileroom.utils import GPUS_AVAIL_ON_MODAL
 
 _APPTAINER_DEVICE_RE = re.compile(r"^(cpu|cuda(:\d+)?)$")
@@ -31,26 +31,23 @@ def pytest_report_header(config: pytest.Config) -> list[str]:
         One-line-per-entry header additions.
     """
     try:
-        from boileroom.images.metadata import get_docker_repository, get_modal_image_tag, resolve_registry_tag
+        from boileroom.images.metadata import get_docker_repository, get_image_tag, resolve_registry_tag
     except ImportError as exc:  # pragma: no cover - defensive; keep pytest running if the module is missing
         return [f"boileroom image: <unresolved: {exc!s}>"]
 
     image_tag = config.getoption("--image-tag")
     raw_backend = config.getoption("--backend")
-    backend = _backend_with_image_tag(raw_backend, image_tag)
-    family, _, backend_tag = backend.partition(":")
     raw_family, raw_sep, raw_backend_tag = raw_backend.partition(":")
-    has_inline_backend_tag = raw_family.strip() == "apptainer" and bool(raw_sep) and bool(raw_backend_tag.strip())
-    if family.strip() == "apptainer" and backend_tag.strip() and has_inline_backend_tag:
-        tag = resolve_registry_tag(backend_tag)
+    if raw_family.strip() == "apptainer" and raw_sep and raw_backend_tag.strip():
+        tag = resolve_registry_tag(raw_backend_tag)
         source = "from --backend tag"
     elif image_tag:
         tag = resolve_registry_tag(image_tag)
         source = "from --image-tag"
     else:
-        tag = get_modal_image_tag()
-        override = os.environ.get(MODAL_IMAGE_TAG_ENV)
-        source = f"override via {MODAL_IMAGE_TAG_ENV}" if override else "from pyproject.toml"
+        tag = get_image_tag()
+        override = os.environ.get(IMAGE_TAG_ENV)
+        source = f"override via {IMAGE_TAG_ENV}" if override else "from pyproject.toml"
     repository = get_docker_repository()
     return [f"boileroom image: {repository}/boileroom-<family>:{tag} ({source})"]
 
@@ -149,7 +146,7 @@ def pytest_configure(config: pytest.Config) -> None:
     if docker_user := config.getoption("--docker-user"):
         os.environ[DOCKER_REPOSITORY_ENV] = normalize_docker_repository(docker_user)
     if image_tag := config.getoption("--image-tag"):
-        os.environ[MODAL_IMAGE_TAG_ENV] = image_tag
+        os.environ[IMAGE_TAG_ENV] = image_tag
 
 
 @pytest.fixture(autouse=True, scope="session")

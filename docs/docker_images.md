@@ -59,6 +59,8 @@ uv run pytest -v -m integration --docker-user=my-dockerhub-user --image-tag=0.3.
 
 `--image-tag` is honored by both the Modal and Apptainer test backends. The Apptainer backend additionally accepts an inline tag via `--backend apptainer:<tag>`, which wins over `--image-tag`.
 
+For lower-level runtime configuration outside pytest, `BOILEROOM_IMAGE_TAG` is the shared image-tag override used by both Modal image lookup and Apptainer's default image tag. Prefer pytest's `--image-tag` option for test runs so the selected image is explicit in the test command and report header.
+
 Single-platform non-push builds auto-load into the local Docker daemon. Multi-platform builds should generally be paired with `--push`.
 Pushed buildx builds import and export stable per-image registry caches such as `boileroom-chai1:buildcache-cuda12.6`, so GitHub Actions runners can reuse dependency layers across validation tags and releases. Pass `--no-cache` to bypass those caches.
 Model Dockerfiles also mount a shared BuildKit uv cache for the active CUDA line, for example `boileroom-uv-cu12.6`, so parallel model builds in the same GitHub Actions matrix job can reuse downloaded wheels even when a full dependency-install layer has to run again.
