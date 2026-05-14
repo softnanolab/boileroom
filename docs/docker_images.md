@@ -12,7 +12,7 @@ Dockerfiles are the canonical image definition for all runtimes. Docker/Apptaine
 - Canonical published tags are CUDA-qualified, for example `cuda12.6-0.3.0`, `cuda11.8-0.3.0`, `cuda12.6-0.3.1-alpha.1`, or `cuda12.6-sha-abc1234`.
 - The default CUDA line is `12.6`. That line also gets an unqualified alias for the exact package version, alpha prerelease, or temporary validation tag, for example `0.3.0`, `0.3.1-alpha.1`, or `sha-abc1234`.
 - `latest` is not published.
-- Runtime shorthands such as `backend="apptainer"` resolve to the installed boileroom package version on the default `12.6` CUDA line.
+- Runtime shorthands such as `backend="apptainer"` resolve through `BOILEROOM_IMAGE_TAG` when set, otherwise through the installed boileroom package version on the default `12.6` CUDA line.
 
 ### 🚀 Quick start
 Use the Python helper to build all images (base + models) with a single global worker limit.
@@ -59,7 +59,7 @@ uv run pytest -v -m integration --docker-user=my-dockerhub-user --image-tag=0.3.
 
 `--image-tag` is honored by both the Modal and Apptainer test backends. The Apptainer backend additionally accepts an inline tag via `--backend apptainer:<tag>`, which wins over `--image-tag`.
 
-For lower-level runtime configuration outside pytest, `BOILEROOM_IMAGE_TAG` is the shared image-tag override used by both Modal image lookup and Apptainer's default image tag. Prefer pytest's `--image-tag` option for test runs so the selected image is explicit in the test command and report header.
+For lower-level runtime configuration outside pytest, `BOILEROOM_IMAGE_TAG` is the shared image-tag override used by both Modal image lookup and Apptainer's default image tag. An explicit Apptainer suffix such as `backend="apptainer:<tag>"` wins over the env override. Prefer pytest's `--image-tag` option for test runs so the selected image is explicit in the test command and report header.
 
 Single-platform non-push builds auto-load into the local Docker daemon. Multi-platform builds should generally be paired with `--push`.
 Pushed buildx builds import and export stable per-image registry caches such as `boileroom-chai1:buildcache-cuda12.6`, so GitHub Actions runners can reuse dependency layers across validation tags and releases. Pass `--no-cache` to bypass those caches.
