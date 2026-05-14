@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 
 from .linker import compute_position_ids, replace_glycine_linkers, store_multimer_properties
 from .parsing import ESMSequenceTokens, parse_esm2_sequences
-from .types import ESM2Output, ESMFoldOutput
+from .types import ESM2Output, ESMFoldOutput, _normalize_esmfold_plddt
 
 logger = logging.getLogger(__name__)
 
@@ -963,6 +963,7 @@ class ESMFoldCore(FoldingAlgorithm):
         # change name of predicted_aligned_error to pae
         outputs["pae"] = outputs.pop("predicted_aligned_error")
         outputs["max_pae"] = outputs.pop("max_predicted_aligned_error")
+        outputs["plddt"] = _normalize_esmfold_plddt(outputs.get("plddt"), metadata.sequence_lengths)
 
         # Build full output with all fields (exclude positions as it's only used internally)
         outputs_without_positions = {k: v for k, v in outputs.items() if k != "positions"}

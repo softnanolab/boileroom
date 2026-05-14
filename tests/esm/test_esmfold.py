@@ -69,8 +69,10 @@ def test_esmfold_full_output(
     assert isinstance(result, ESMFoldOutput), "Result should be an ESMFoldOutput"
 
     assert result.plddt is not None, "plddt should be present in full output"
-    assert np.all(result.plddt >= 0), "pLDDT scores should be non-negative"
-    assert np.all(result.plddt <= 100), "pLDDT scores should be less than or equal to 100"
+    plddt = np.asarray(result.plddt[0], dtype=float)
+    assert plddt.ndim == 1, "pLDDT should be a per-residue vector"
+    assert np.all(plddt >= 0), "pLDDT scores should be non-negative"
+    assert np.all(plddt <= 1), "pLDDT scores should be less than or equal to 1"
 
 
 def test_esmfold_multimer(test_sequences, backend_option: str, device_option: str | None, output_ctx):
@@ -118,7 +120,9 @@ def test_esmfold_multimer(test_sequences, backend_option: str, device_option: st
     assert result.lm_logits is not None, "lm_logits should be generated"
     assert result.lddt_head is not None, "lddt_head should be generated"
     assert result.pae.shape == (1, n_residues, n_residues), "PAE matrix shape mismatch"
-    assert result.plddt.shape == (1, n_residues, 37), "pLDDT matrix shape mismatch"
+    assert len(result.plddt) == 1, "pLDDT batch size mismatch"
+    assert result.plddt[0] is not None
+    assert result.plddt[0].shape == (n_residues,), "pLDDT vector shape mismatch"
     assert result.ptm_logits.shape == (1, n_residues, n_residues, 64), "pTM matrix shape mismatch"
     assert result.aligned_confidence_probs.shape == (1, n_residues, n_residues, 64), "aligned confidence shape mismatch"
     assert result.s_z.shape == (1, n_residues, n_residues, 128), "s_z matrix shape mismatch"
@@ -126,7 +130,7 @@ def test_esmfold_multimer(test_sequences, backend_option: str, device_option: st
     assert result.distogram_logits.shape == (1, n_residues, n_residues, 64), "distogram logits matrix shape mismatch"
     assert result.lm_logits.shape == (1, n_residues, 23), "lm logits matrix shape mismatch"
     assert result.lddt_head.shape == (8, 1, n_residues, 37, 50), "lddt head matrix shape mismatch"
-    assert result.plddt.shape == (1, n_residues, 37), "pLDDT matrix shape mismatch"
+    assert result.plddt[0].shape == (n_residues,), "pLDDT vector shape mismatch"
 
 
 def test_esmfold_linker_map():
@@ -226,7 +230,10 @@ def test_esmfold_batch(
     assert result.ptm_logits is not None, "ptm_logits should be present in full output"
     assert result.pae is not None, "pae should be present in full output"
     assert result.aatype.shape[0] == len(sequences), "Batch size mismatch in aatype"
-    assert result.plddt.shape[0] == len(sequences), "Batch size mismatch in plddt"
+    assert len(result.plddt) == len(sequences), "Batch size mismatch in plddt"
+    assert [sample.shape for sample in result.plddt if sample is not None] == [
+        (len(sequence),) for sequence in sequences
+    ], "pLDDT samples should be trimmed to input sequence lengths"
     assert result.ptm_logits.shape[0] == len(sequences), "Batch size mismatch in ptm_logits"
     assert result.pae.shape[0] == len(sequences), "Batch size mismatch in pae"
 

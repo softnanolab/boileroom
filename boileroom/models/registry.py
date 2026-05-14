@@ -167,7 +167,7 @@ BOLTZ2_SPEC = ModelSpec(
             }
         ),
         minimal_output_fields=("metadata", "atom_array"),
-        optional_output_fields=("confidence", "plddt", "pae", "pde", "pdb", "cif"),
+        optional_output_fields=("confidence", "plddt", "ptm", "iptm", "pae", "pde", "pdb", "cif"),
         supports_multimer=True,
     ),
 )
