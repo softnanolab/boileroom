@@ -115,13 +115,14 @@ uv run pytest --gpu A100-40GB
 To run Modal integration tests against a specific Docker Hub namespace, image tag, and GPU type:
 
 ```bash
-BOILEROOM_IMAGE_TAG=cuda12.6-my-test-tag uv run pytest -v -n 4 --dist loadgroup -m integration \
+uv run pytest -v -n 4 --dist loadgroup -m integration \
   --docker-user <your-dockerhub-user> \
+  --image-tag cuda12.6-my-test-tag \
   --gpu A10
 ```
 
-The same env var works for the Apptainer backend; for Apptainer you can also pass the tag inline as
-`--backend apptainer:<tag>` (the inline suffix wins over the env var).
+The same `--image-tag` option works for the Apptainer backend. For Apptainer you can also pass the tag inline as
+`--backend apptainer:<tag>` (the inline suffix wins over `--image-tag`).
 
 Available GPU options include `T4`, `A100-40GB`, `A100-80GB`, and other Modal-supported GPU types.
 

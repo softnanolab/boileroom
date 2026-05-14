@@ -7,7 +7,7 @@ import re
 
 import pytest
 
-from boileroom.images.metadata import DOCKER_REPOSITORY_ENV, normalize_docker_repository
+from boileroom.images.metadata import DOCKER_REPOSITORY_ENV, IMAGE_TAG_ENV, normalize_docker_repository
 from boileroom.utils import GPUS_AVAIL_ON_MODAL
 
 _APPTAINER_DEVICE_RE = re.compile(r"^(cpu|cuda(:\d+)?)$")
@@ -17,15 +17,13 @@ def pytest_report_header(config: pytest.Config) -> list[str]:
     """Report the runtime image tag and Docker repository at the top of every pytest run.
 
     Both Modal and Apptainer backends pull the boileroom package from a prebuilt
-    Docker image whose tag is resolved by
-    ``boileroom.images.metadata.get_image_tag``. Surfacing that tag in the pytest
-    header avoids ambiguity about which image the integration tests are actually
-    exercising.
+    Docker image. Surfacing the selected tag in the pytest header avoids ambiguity
+    about which image the integration tests are actually exercising.
 
     Parameters
     ----------
     config : pytest.Config
-        The active pytest configuration (unused, required by the hook signature).
+        The active pytest configuration.
 
     Returns
     -------
@@ -33,14 +31,24 @@ def pytest_report_header(config: pytest.Config) -> list[str]:
         One-line-per-entry header additions.
     """
     try:
-        from boileroom.images.metadata import IMAGE_TAG_ENV, get_docker_repository, get_image_tag
+        from boileroom.images.metadata import get_docker_repository, get_image_tag, resolve_registry_tag
     except ImportError as exc:  # pragma: no cover - defensive; keep pytest running if the module is missing
         return [f"boileroom image: <unresolved: {exc!s}>"]
 
-    tag = get_image_tag()
+    image_tag = config.getoption("--image-tag")
+    raw_backend = config.getoption("--backend")
+    raw_family, raw_sep, raw_backend_tag = raw_backend.partition(":")
+    if raw_family.strip() == "apptainer" and raw_sep and raw_backend_tag.strip():
+        tag = resolve_registry_tag(raw_backend_tag)
+        source = "from --backend tag"
+    elif image_tag:
+        tag = resolve_registry_tag(image_tag)
+        source = "from --image-tag"
+    else:
+        tag = get_image_tag()
+        override = os.environ.get(IMAGE_TAG_ENV)
+        source = f"override via {IMAGE_TAG_ENV}" if override else "from pyproject.toml"
     repository = get_docker_repository()
-    override = os.environ.get(IMAGE_TAG_ENV)
-    source = f"override via {IMAGE_TAG_ENV}" if override else "from pyproject.toml"
     return [f"boileroom image: {repository}/boileroom-<family>:{tag} ({source})"]
 
 
@@ -52,10 +60,7 @@ def pytest_addoption(parser):
     - --gpu: Modal-only GPU class (e.g. "T4", "A100-80GB").
     - --device: Apptainer-only CUDA device (e.g. "cuda:0", "cpu"). Defaults to cuda:0.
     - --docker-user: overrides the Docker Hub user or namespace for image lookup.
-
-    Set the runtime image tag via the ``BOILEROOM_IMAGE_TAG`` environment variable
-    (e.g. ``BOILEROOM_IMAGE_TAG=sha-abc1234 uv run pytest``). Both Modal and
-    Apptainer backends honor it.
+    - --image-tag: overrides the runtime image tag for both Modal and Apptainer tests.
 
     Parameters
     ----------
@@ -90,6 +95,25 @@ def pytest_addoption(parser):
         default=None,
         help="Docker Hub user or namespace for image lookup (sets BOILEROOM_DOCKER_REPOSITORY).",
     )
+    parser.addoption(
+        "--image-tag",
+        action="store",
+        default=None,
+        help="Runtime image tag for Modal and Apptainer image lookup.",
+    )
+
+
+def _backend_with_image_tag(backend: str, image_tag: str | None) -> str:
+    """Return the backend selector after applying the pytest image-tag option."""
+    family, sep, tag = backend.partition(":")
+    if family.strip() == "apptainer":
+        inline_tag = tag.strip() if sep else ""
+        if inline_tag:
+            return f"apptainer:{inline_tag}"
+        if image_tag:
+            return f"apptainer:{image_tag}"
+        return "apptainer"
+    return backend
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -100,7 +124,7 @@ def pytest_configure(config: pytest.Config) -> None:
     if family not in ("modal", "apptainer"):
         raise pytest.UsageError(f"--backend must be 'modal' or 'apptainer[:<tag>]'; got {backend!r}")
     if family == "modal" and ":" in backend:
-        raise pytest.UsageError("--backend 'modal' does not accept a ':<tag>' suffix; set BOILEROOM_IMAGE_TAG instead.")
+        raise pytest.UsageError("--backend 'modal' does not accept a ':<tag>' suffix; use --image-tag instead.")
 
     gpu = config.getoption("--gpu")
     device = config.getoption("--device")
@@ -121,6 +145,8 @@ def pytest_configure(config: pytest.Config) -> None:
 
     if docker_user := config.getoption("--docker-user"):
         os.environ[DOCKER_REPOSITORY_ENV] = normalize_docker_repository(docker_user)
+    if image_tag := config.getoption("--image-tag"):
+        os.environ[IMAGE_TAG_ENV] = image_tag
 
 
 @pytest.fixture(autouse=True, scope="session")
@@ -147,7 +173,7 @@ def backend_option(request):
     str
         The backend string as provided via `--backend` (defaults to "modal").
     """
-    return request.config.getoption("--backend")
+    return _backend_with_image_tag(request.config.getoption("--backend"), request.config.getoption("--image-tag"))
 
 
 @pytest.fixture(scope="session")

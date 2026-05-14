@@ -218,11 +218,7 @@ def published_image_references(
 
 
 def get_image_tag() -> str:
-    """Return the runtime image tag for both Modal and Apptainer backends.
-
-    Reads the ``BOILEROOM_IMAGE_TAG`` env var if set; otherwise falls back to
-    the package-default tag derived from ``pyproject.toml``.
-    """
+    """Return the shared runtime Docker image tag."""
     return resolve_registry_tag(os.environ.get(IMAGE_TAG_ENV))
 
 

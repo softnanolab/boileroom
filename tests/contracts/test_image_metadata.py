@@ -6,6 +6,7 @@ import pytest
 
 from boileroom.images.import_checks import compute_cuda_versions, iter_image_targets, package_name_to_import_name
 from boileroom.images.metadata import (
+    IMAGE_TAG_ENV,
     format_image_reference,
     get_default_image_tag,
     get_docker_repository,
@@ -50,21 +51,21 @@ def test_model_specs_report_supported_cuda_from_config() -> None:
 
 
 def test_image_tag_uses_env_override(monkeypatch) -> None:
-    """Image lookups should respect an optional tag override via BOILEROOM_IMAGE_TAG."""
-    monkeypatch.delenv("BOILEROOM_IMAGE_TAG", raising=False)
+    """Runtime image lookups should respect an optional tag override."""
+    monkeypatch.delenv(IMAGE_TAG_ENV, raising=False)
     assert get_image_tag() == get_default_image_tag()
 
-    monkeypatch.setenv("BOILEROOM_IMAGE_TAG", "0.3.0")
+    monkeypatch.setenv(IMAGE_TAG_ENV, "0.3.0")
     assert get_image_tag() == "0.3.0"
 
-    monkeypatch.setenv("BOILEROOM_IMAGE_TAG", "cuda12.6")
+    monkeypatch.setenv(IMAGE_TAG_ENV, "cuda12.6")
     assert get_image_tag() == f"cuda12.6-{get_default_image_tag()}"
 
 
 def test_modal_base_image_reference_uses_repository_and_tag(monkeypatch) -> None:
     """Modal base image lookups should use the same repository and tag as model images."""
     monkeypatch.setenv("BOILEROOM_DOCKER_REPOSITORY", "docker.io/example")
-    monkeypatch.setenv("BOILEROOM_IMAGE_TAG", "0.3.0.1")
+    monkeypatch.setenv(IMAGE_TAG_ENV, "0.3.0.1")
 
     assert get_modal_base_image_reference() == "docker.io/example/boileroom-base:0.3.0.1"
 
@@ -72,13 +73,13 @@ def test_modal_base_image_reference_uses_repository_and_tag(monkeypatch) -> None
 def test_modal_runtime_env_carries_image_lookup_overrides(monkeypatch) -> None:
     """Modal containers should re-import wrappers with the same resolved image lookup settings."""
     monkeypatch.setenv("BOILEROOM_DOCKER_REPOSITORY", "docker.io/example")
-    monkeypatch.setenv("BOILEROOM_IMAGE_TAG", "0.3.0.1")
+    monkeypatch.setenv(IMAGE_TAG_ENV, "0.3.0.1")
 
     env = render_modal_runtime_env(get_model_image_spec("boltz"), "/mnt/models")
 
     assert env["BOILEROOM_DOCKER_REPOSITORY"] == "docker.io/example"
-    assert env["BOILEROOM_IMAGE_TAG"] == "0.3.0.1"
-    assert set(env) == {"MODEL_DIR", "BOILEROOM_DOCKER_REPOSITORY", "BOILEROOM_IMAGE_TAG"}
+    assert env[IMAGE_TAG_ENV] == "0.3.0.1"
+    assert set(env) == {"MODEL_DIR", "BOILEROOM_DOCKER_REPOSITORY", IMAGE_TAG_ENV}
 
 
 def test_docker_repository_uses_env_override(monkeypatch) -> None:

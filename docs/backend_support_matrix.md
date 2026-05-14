@@ -44,4 +44,4 @@ model = Boltz2(backend="apptainer")
 model = Boltz2(backend="apptainer:cuda11.8-0.3.0")
 ```
 
-`backend="apptainer"` resolves through the installed boileroom package version on the default `12.6` image line.
+`backend="apptainer"` resolves through `BOILEROOM_IMAGE_TAG` when set, otherwise through the installed boileroom package version on the default `12.6` image line. An explicit suffix such as `backend="apptainer:cuda11.8-0.3.0"` wins over the shared env override.

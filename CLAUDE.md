@@ -42,8 +42,9 @@
 - Runtime image lookup defaults to the installed boileroom package version.
 - `latest` is not published or used as a runtime default.
 - Explicit image-tag overrides still work:
-  - Both backends honor `BOILEROOM_IMAGE_TAG`
-  - Apptainer also accepts an inline tag via `backend="apptainer:<tag>"`, which wins over the env var
+  - Pytest accepts `--image-tag <tag>` for both Modal and Apptainer test backends
+  - Modal and Apptainer both honor `BOILEROOM_IMAGE_TAG` as the shared runtime image-tag override
+  - Apptainer also accepts an inline tag via `backend="apptainer:<tag>"`, which wins over `BOILEROOM_IMAGE_TAG` and `--image-tag` in tests
 - Canonical published tags are CUDA-qualified, for example `cuda12.6-0.3.0` or `cuda12.6-0.3.1-alpha.1`.
 - The default CUDA line `12.6` also gets an unqualified alias for the same version, for example `0.3.0` or `0.3.1-alpha.1`.
 - Temporary validation tags such as `sha-<commit>` are allowed and should be deleted after use.
