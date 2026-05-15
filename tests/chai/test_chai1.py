@@ -124,7 +124,7 @@ def test_chai1_full_output(chai1_model: Chai1):
     assert plddt.shape == (len(nipah_virus_sequence),)
     assert np.all(np.isfinite(plddt)), "pLDDT values should be finite"
     assert np.all(plddt >= 0), "pLDDT scores should be non-negative"
-    assert np.all(plddt <= 100), "pLDDT scores should be less than or equal to 100"
+    assert np.all(plddt <= 1), "pLDDT scores should be less than or equal to 1"
 
     assert result.cif is not None and len(result.cif) > 0, "CIF string should be returned when requested"
     predicted_cif_structure = get_structure(CIFFile.read(StringIO(result.cif[0])), model=1)
@@ -144,6 +144,8 @@ def test_chai1_full_output(chai1_model: Chai1):
     iptm = _scalar(result.iptm[0])
     per_chain_iptm = np.atleast_1d(np.asarray(result.per_chain_iptm[0], dtype=float))
 
+    assert np.asarray(result.ptm[0]).shape == (1,), "ptm should be a shape-(1,) array"
+    assert np.asarray(result.iptm[0]).shape == (1,), "iptm should be a shape-(1,) array"
     assert 0.0 <= ptm <= 1.0, "ptm should be a probability-like score"
     assert 0.0 <= iptm <= 1.0, "iptm should be a probability-like score"
     assert np.all(np.isfinite(per_chain_iptm)), "per_chain_iptm values should be finite"

@@ -54,6 +54,11 @@ coordinates = atom_array.coord
 confidence = result.plddt[0]  # Requested explicitly via include_fields above
 ```
 
+Confidence metrics returned by structure wrappers use a consistent public shape: `plddt` entries are unit-scale
+per-residue arrays on `[0, 1]`, and scalar scores such as `ptm` and `iptm` are returned as shape-`(1,)` arrays.
+In `0.3.1`, this replaces ESMFold's old padded pLDDT batch array and moves Boltz `ptm`/`iptm` from nested
+`confidence` dictionaries to top-level fields.
+
 ## Available Models
 
 | Model      | Status | Description                                    | Reference                                              |

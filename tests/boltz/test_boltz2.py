@@ -591,6 +591,8 @@ def test_boltz2_fold_preserves_per_sample_alignment_for_optional_outputs(monkeyp
         {
             "sample_atom_coords": np.array([[4.0, 5.0, 6.0]], dtype=np.float32),
             "confidence_score": 0.9,
+            "ptm": 0.7,
+            "iptm": np.asarray(0.5, dtype=np.float32),
             "plddt": sample_plddt,
             "pae": sample_pae,
         },
@@ -601,6 +603,12 @@ def test_boltz2_fold_preserves_per_sample_alignment_for_optional_outputs(monkeyp
 
     assert out.atom_array == ["atom-0", "atom-1"]
     assert out.confidence == [None, {"confidence_score": 0.9}]
+    assert out.ptm is not None
+    assert out.ptm[0] is None
+    np.testing.assert_allclose(out.ptm[1], np.array([0.7], dtype=np.float32))
+    assert out.iptm is not None
+    assert out.iptm[0] is None
+    np.testing.assert_allclose(out.iptm[1], np.array([0.5], dtype=np.float32))
     assert out.plddt is not None
     assert out.plddt[0] is None
     assert np.array_equal(out.plddt[1], sample_plddt)
