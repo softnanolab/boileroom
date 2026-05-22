@@ -1,3 +1,5 @@
+from collections.abc import Sequence
+
 import numpy as np
 import pytest
 import torch
@@ -61,7 +63,23 @@ def esm2_model_factory(backend_option: str, gpu_device: str | None, device_optio
     return _make_model
 
 
-def _make_arange_position_ids(sequences, glycine_linker: str, add_special_tokens: bool) -> torch.Tensor:
+def _make_arange_position_ids(sequences: Sequence[str], glycine_linker: str, add_special_tokens: bool) -> torch.Tensor:
+    """Return padded arange-style position ids for each parsed sequence input.
+
+    Parameters
+    ----------
+    sequences : Sequence[str]
+        Input sequences passed to ``parse_esm2_sequences``.
+    glycine_linker : str
+        Linker inserted when replacing chain separators.
+    add_special_tokens : bool
+        Whether tokenizer special tokens are accounted for in the position count.
+
+    Returns
+    -------
+    torch.Tensor
+        Padded position-id tensor with shape ``(batch, max_length)``.
+    """
     parsed_sequences = parse_esm2_sequences(sequences)
     lengths = []
     for parsed_sequence in parsed_sequences:
@@ -240,9 +258,10 @@ def test_esm2_position_ids_compat_arange_is_noop(esm2_model_factory, mocker):
     mocker.patch.object(
         esm_core,
         "compute_position_ids",
-        side_effect=lambda sequences, glycine_linker, position_ids_skip, add_special_tokens=False: _make_arange_position_ids(
-            sequences, glycine_linker, add_special_tokens
-        ),
+        side_effect=lambda sequences,
+        glycine_linker,
+        position_ids_skip,
+        add_special_tokens=False: _make_arange_position_ids(sequences, glycine_linker, add_special_tokens),
     )
 
     model = esm2_model_factory(model_name="esm2_t6_8M_UR50D", include_fields=["hidden_states"])
@@ -263,14 +282,28 @@ def test_esm2_position_ids_compat_skip_change(esm2_model_factory):
     )
 
     result_skip0 = model.embed([sequence], options={"enable_position_ids_compat": True, "position_ids_skip": 0})
-    result_skip1024 = model.embed(
-        [sequence], options={"enable_position_ids_compat": True, "position_ids_skip": 1024}
-    )
+    result_skip1024 = model.embed([sequence], options={"enable_position_ids_compat": True, "position_ids_skip": 1024})
 
     max_diff = np.max(np.abs(result_skip0.embeddings - result_skip1024.embeddings))
     assert max_diff > 0.0
     max_hidden_diff = np.max(np.abs(result_skip0.hidden_states - result_skip1024.hidden_states))
     assert max_hidden_diff > 0.0
+
+
+def test_esm2_maybe_build_position_ids_rotary_cache_shape_mismatch_noop():
+    """Shape-mismatched position ids must skip custom RoPE cache generation."""
+    pytest.importorskip("transformers", reason="requires transformers")
+    from boileroom.models.esm import core as esm_core
+
+    class _DummyRotary:
+        inv_freq = torch.tensor([0.1, 0.2], dtype=torch.float32)
+
+    dummy = _DummyRotary()
+    k = torch.zeros(1, 3, 4, dtype=torch.float32)
+    malformed_position_ids = torch.tensor([[0, 1, 0, 2]], dtype=torch.long)
+
+    cache = esm_core._maybe_build_position_ids_rotary_cache(dummy, k, malformed_position_ids)
+    assert cache is None
 
 
 def test_esm2_embed_with_all_optional_fields(esm2_model_factory):

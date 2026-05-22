@@ -1,5 +1,5 @@
 import pathlib
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Generator, Sequence
 from io import StringIO
 from typing import Any
 
@@ -43,7 +43,23 @@ def esmfold_model(backend_option: str, device_option: str | None, output_ctx) ->
         yield ESMFold(backend=backend_option, device=device_option, config=model_config)
 
 
-def _make_arange_position_ids(sequences, glycine_linker: str, add_special_tokens: bool) -> torch.Tensor:
+def _make_arange_position_ids(sequences: Sequence[str], glycine_linker: str, add_special_tokens: bool) -> torch.Tensor:
+    """Return padded arange-style position ids for mocked multimer tokenization.
+
+    Parameters
+    ----------
+    sequences : Sequence[str]
+        Input sequences parsed by ``parse_esm2_sequences``.
+    glycine_linker : str
+        Linker inserted when replacing chain separators.
+    add_special_tokens : bool
+        Whether special tokens should be counted in the generated sequence length.
+
+    Returns
+    -------
+    torch.Tensor
+        Padded position-id tensor with shape ``(batch, max_length)``.
+    """
     parsed_sequences = parse_esm2_sequences(sequences)
     lengths = []
     for parsed_sequence in parsed_sequences:
@@ -309,15 +325,20 @@ def test_esmfold_position_ids_compat_arange_is_noop(test_sequences, esmfold_mode
     mocker.patch.object(
         esm_core,
         "compute_position_ids",
-        side_effect=lambda sequences, glycine_linker, position_ids_skip, add_special_tokens=False: _make_arange_position_ids(
-            sequences, glycine_linker, add_special_tokens
-        ),
+        side_effect=lambda sequences,
+        glycine_linker,
+        position_ids_skip,
+        add_special_tokens=False: _make_arange_position_ids(sequences, glycine_linker, add_special_tokens),
     )
 
     sequence = test_sequences["multimer"]
 
-    result_without = esmfold_model.fold(sequence, options={"include_fields": ["lm_logits"], "enable_position_ids_compat": False})
-    result_with = esmfold_model.fold(sequence, options={"include_fields": ["lm_logits"], "enable_position_ids_compat": True})
+    result_without = esmfold_model.fold(
+        sequence, options={"include_fields": ["lm_logits"], "enable_position_ids_compat": False}
+    )
+    result_with = esmfold_model.fold(
+        sequence, options={"include_fields": ["lm_logits"], "enable_position_ids_compat": True}
+    )
 
     assert result_without.lm_logits is not None
     assert result_with.lm_logits is not None
@@ -340,6 +361,22 @@ def test_esmfold_position_ids_compat_skip_change(test_sequences, esmfold_model):
     assert result_skip0.lm_logits is not None
     assert result_skip1024.lm_logits is not None
     assert np.max(np.abs(result_skip0.lm_logits - result_skip1024.lm_logits)) > 0.0
+
+
+def test_esmfold_position_ids_shape_mismatch_noop_fallback():
+    """Shape-mismatched position ids should fall back instead of forcing custom LM ids."""
+    pytest.importorskip("transformers", reason="requires transformers")
+    from boileroom.models.esm import core as esm_core
+
+    state = esm_core._PositionIdsCompatState(
+        enabled=True,
+        position_ids=torch.tensor([[0, 1, 0, 2]], dtype=torch.long),
+        attention_mask=None,
+    )
+    esmaa = torch.ones((1, 3), dtype=torch.long)
+
+    computed = esm_core._compute_esmfold_position_ids(esmaa, state)
+    assert computed is None
 
 
 def test_esmfold_rejects_empty_chain_multimer():

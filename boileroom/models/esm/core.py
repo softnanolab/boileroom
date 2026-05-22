@@ -1,9 +1,9 @@
 """Core ESM2 and ESMFold algorithm implementations without modal dependencies."""
 
 import dataclasses
+import inspect
 import logging
 import os
-import inspect
 from collections.abc import Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -189,12 +189,10 @@ def _install_esm_position_ids_compat_patches() -> None:
     global _POSITION_IDS_COMPAT_PATCHES_INSTALLED
     if _POSITION_IDS_COMPAT_PATCHES_INSTALLED:
         return
-    _POSITION_IDS_COMPAT_PATCHES_INSTALLED = True
 
     try:
-        from transformers.models.esm import modeling_esm
-        from transformers.models.esm import modeling_esmfold
-    except Exception:
+        from transformers.models.esm import modeling_esm, modeling_esmfold
+    except (ImportError, ModuleNotFoundError):
         logger.debug("Skipping ESM position-id compatibility patch: transformers not importable at import-time.")
         return
 
@@ -250,11 +248,10 @@ def _install_esm_position_ids_compat_patches() -> None:
                 if position_ids is None:
                     return original_compute_language_model_representations(self, esmaa)
 
-                device = next(self.parameters()).device
                 B, L = esmaa.shape  # B = batch size, L = sequence length.
 
                 if self.config.esmfold_config.bypass_lm:
-                    return torch.zeros(B, L, self.esm_s_combine.size[0], -1, self.esm_feats, device=device)
+                    return original_compute_language_model_representations(self, esmaa)
 
                 bosi, eosi = self.esm_dict_cls_idx, self.esm_dict_eos_idx
                 bos = esmaa.new_full((B, 1), bosi)
@@ -276,18 +273,19 @@ def _install_esm_position_ids_compat_patches() -> None:
             compat_compute_language_model_representations.__name__ = (
                 "position_ids_compat_compute_language_model_representations"
             )
-            modeling_esmfold.EsmForProteinFolding._position_ids_compat_original_compute_language_model_representations = (
-                original_compute_language_model_representations
-            )
+            modeling_esmfold.EsmForProteinFolding._position_ids_compat_original_compute_language_model_representations = original_compute_language_model_representations
             modeling_esmfold.EsmForProteinFolding.compute_language_model_representations = (
                 compat_compute_language_model_representations
             )
+
     else:
         logger.warning(
             "Skipping ESMFold compatibility patch: signature mismatch for "
             "transformers.models.esmfold.EsmForProteinFolding.compute_language_model_representations: %s",
             compute_lm_sig,
         )
+
+    _POSITION_IDS_COMPAT_PATCHES_INSTALLED = True
 
 
 ############################################################
@@ -565,10 +563,14 @@ class ESM2Core(EmbeddingAlgorithm):
             tokenized = tokenized.to(self._device)
             tokenized["output_hidden_states"] = compute_hidden_states
 
-        with Timer("Model Inference") as inference_timer, torch.inference_mode(), _position_ids_compat_context(
-            bool(effective_config["enable_position_ids_compat"]),
-            tokenized.get("position_ids"),
-            tokenized.get("attention_mask"),
+        with (
+            Timer("Model Inference") as inference_timer,
+            torch.inference_mode(),
+            _position_ids_compat_context(
+                bool(effective_config["enable_position_ids_compat"]),
+                tokenized.get("position_ids"),
+                tokenized.get("attention_mask"),
+            ),
         ):
             if self._model_mode == "masked_lm":
                 masked_lm_model = cast(EsmForMaskedLM, self.model)
@@ -922,10 +924,14 @@ class ESMFoldCore(FoldingAlgorithm):
         with Timer("ESMFold preprocessing") as preprocess_timer:
             tokenized_input, multimer_properties = self._tokenize_sequences(validated_sequences, effective_config)
 
-        with Timer("Model Inference") as inference_timer, torch.inference_mode(), _position_ids_compat_context(
-            bool(effective_config["enable_position_ids_compat"]),
-            tokenized_input.get("position_ids"),
-            tokenized_input.get("attention_mask"),
+        with (
+            Timer("Model Inference") as inference_timer,
+            torch.inference_mode(),
+            _position_ids_compat_context(
+                bool(effective_config["enable_position_ids_compat"]),
+                tokenized_input.get("position_ids"),
+                tokenized_input.get("attention_mask"),
+            ),
         ):
             outputs = self.model(**tokenized_input)
 
