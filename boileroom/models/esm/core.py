@@ -3,7 +3,10 @@
 import dataclasses
 import logging
 import os
+import inspect
 from collections.abc import Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 
 import numpy as np
@@ -23,6 +26,268 @@ from .parsing import ESMSequenceTokens, parse_esm2_sequences
 from .types import ESM2Output, ESMFoldOutput, _normalize_esmfold_plddt
 
 logger = logging.getLogger(__name__)
+
+
+@dataclasses.dataclass(frozen=True)
+class _PositionIdsCompatState:
+    """Per-call state for position-id compatibility mode."""
+
+    enabled: bool
+    position_ids: torch.Tensor | None = None
+    attention_mask: torch.Tensor | None = None
+
+
+_POSITION_IDS_COMPAT_STATE: ContextVar[_PositionIdsCompatState | None] = ContextVar(
+    "boileroom_esm_position_ids_compat", default=None
+)
+_POSITION_IDS_COMPAT_PATCHES_INSTALLED = False
+_POSITION_IDS_COMPAT_WARNING_EMITTED = False
+
+
+def _position_ids_compat_state() -> _PositionIdsCompatState | None:
+    """Return the current position-id compatibility state, if active."""
+
+    return _POSITION_IDS_COMPAT_STATE.get()
+
+
+def _is_default_arange_position_ids(position_ids: torch.Tensor) -> bool:
+    """Return ``True`` when ``position_ids`` is equivalent to ``arange`` per row."""
+
+    if position_ids.ndim != 2:
+        return False
+    position_ids = position_ids.to(dtype=torch.long)
+
+    for row in position_ids:
+        non_zero_idx = torch.nonzero(row, as_tuple=False).view(-1)
+        if non_zero_idx.numel() == 0:
+            continue
+
+        last_non_zero = int(non_zero_idx[-1].item()) + 1
+        prefix = row[:last_non_zero]
+        if not torch.all(prefix == torch.arange(last_non_zero, device=row.device, dtype=row.dtype)):
+            return False
+
+        if last_non_zero < row.shape[0] and torch.any(row[last_non_zero:] != 0):
+            return False
+
+    return True
+
+
+@contextmanager
+def _position_ids_compat_context(
+    enabled: bool,
+    position_ids: torch.Tensor | None,
+    attention_mask: torch.Tensor | None,
+):
+    """Scope position-id compatibility context for a single inference call."""
+
+    if not enabled:
+        yield
+        return
+
+    state = _PositionIdsCompatState(
+        enabled=enabled,
+        position_ids=None if position_ids is None else position_ids,
+        attention_mask=None if attention_mask is None else attention_mask,
+    )
+    token = _POSITION_IDS_COMPAT_STATE.set(state)
+    try:
+        yield
+    finally:
+        _POSITION_IDS_COMPAT_STATE.reset(token)
+
+
+def _maybe_build_position_ids_rotary_cache(
+    rotary_embedding: Any,
+    k: torch.Tensor,
+    position_ids: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor] | None:
+    """Build custom RoPE caches from ``position_ids`` when available."""
+
+    if _is_default_arange_position_ids(position_ids):
+        return None
+
+    if position_ids.shape[0] != k.shape[0] or position_ids.shape[1] != k.shape[-2]:
+        global _POSITION_IDS_COMPAT_WARNING_EMITTED
+        if not _POSITION_IDS_COMPAT_WARNING_EMITTED:
+            logger.warning(
+                "ESM position-id compatibility disabled for rotary embedding due to incompatible shape: "
+                "position_ids=%s, key_shape=%s",
+                tuple(position_ids.shape),
+                tuple(k.shape),
+            )
+            _POSITION_IDS_COMPAT_WARNING_EMITTED = True
+        return None
+
+    if not torch.is_floating_point(position_ids):
+        position_ids = position_ids.to(dtype=torch.long)
+    if position_ids.device != k.device:
+        position_ids = position_ids.to(device=k.device)
+
+    seq_len = k.shape[-2]
+    if seq_len <= 0:
+        return None
+
+    max_position = int(torch.max(position_ids).item()) + 1
+    max_position = max(max_position, seq_len)
+    t = torch.arange(max_position, device=k.device, dtype=rotary_embedding.inv_freq.dtype)
+    freqs = torch.outer(t, rotary_embedding.inv_freq.to(dtype=rotary_embedding.inv_freq.dtype, device=k.device))
+    emb = torch.cat((freqs, freqs), dim=-1)
+
+    cos = emb.cos()[None, :, :]
+    sin = emb.sin()[None, :, :]
+
+    indices = position_ids.reshape(-1).clamp(min=0, max=cos.shape[1] - 1).to(torch.long)
+    batch, _seq_len = position_ids.shape
+
+    cos = cos.index_select(1, indices).reshape(batch, _seq_len, -1).unsqueeze(1)
+    sin = sin.index_select(1, indices).reshape(batch, _seq_len, -1).unsqueeze(1)
+    return cos, sin
+
+
+def _compute_esmfold_position_ids(
+    esmaa: torch.Tensor,
+    state: _PositionIdsCompatState,
+) -> torch.Tensor | None:
+    """Build LM stem position ids for ESMFold from wrapped context state."""
+
+    if state.position_ids is None:
+        return None
+    position_ids = state.position_ids
+    if not torch.is_floating_point(position_ids):
+        position_ids = position_ids.to(dtype=torch.long)
+
+    if position_ids.device != esmaa.device:
+        position_ids = position_ids.to(device=esmaa.device)
+
+    if _is_default_arange_position_ids(position_ids):
+        return None
+
+    if position_ids.shape[0] != esmaa.shape[0]:
+        return None
+
+    if position_ids.shape[1] == esmaa.shape[1]:
+        return position_ids
+
+    if position_ids.shape[1] == esmaa.shape[1] - 2:
+        if state.attention_mask is not None and state.attention_mask.shape == position_ids.shape:
+            attention_mask = state.attention_mask.to(device=esmaa.device)
+            lengths = attention_mask.sum(dim=1).to(torch.long).clamp(min=1)
+            eos_position = position_ids.gather(1, (lengths - 1).unsqueeze(1)) + 1
+        else:
+            eos_position = position_ids[:, -1:].clone() + 1
+
+        bos_position = position_ids[:, :1]
+        return torch.cat([bos_position, position_ids, eos_position], dim=1)
+
+    return None
+
+
+def _install_esm_position_ids_compat_patches() -> None:
+    """Install guarded compatibility patches into Transformer ESM internals."""
+
+    global _POSITION_IDS_COMPAT_PATCHES_INSTALLED
+    if _POSITION_IDS_COMPAT_PATCHES_INSTALLED:
+        return
+    _POSITION_IDS_COMPAT_PATCHES_INSTALLED = True
+
+    try:
+        from transformers.models.esm import modeling_esm
+        from transformers.models.esm import modeling_esmfold
+    except Exception:
+        logger.debug("Skipping ESM position-id compatibility patch: transformers not importable at import-time.")
+        return
+
+    # ESM rotary compatibility layer
+    rotary_forward_sig = inspect.signature(modeling_esm.RotaryEmbedding.forward)
+    if len(rotary_forward_sig.parameters) == 3:
+        original_forward = modeling_esm.RotaryEmbedding.forward
+
+        if not hasattr(original_forward, "__wrapped__"):
+
+            def compat_rotary_forward(self: Any, q: torch.Tensor, k: torch.Tensor):
+                state = _position_ids_compat_state()
+                if state is None or not state.enabled or state.position_ids is None:
+                    return original_forward(self, q, k)
+
+                cache = _maybe_build_position_ids_rotary_cache(self, k, state.position_ids.to(device=k.device))
+                if cache is None:
+                    return original_forward(self, q, k)
+
+                cos, sin = cache
+                from transformers.models.esm.modeling_esm import apply_rotary_pos_emb
+
+                return (
+                    apply_rotary_pos_emb(q, cos, sin).to(dtype=q.dtype),
+                    apply_rotary_pos_emb(k, cos, sin).to(dtype=k.dtype),
+                )
+
+            compat_rotary_forward.__name__ = "position_ids_compat_forward"
+            modeling_esm.RotaryEmbedding._position_ids_compat_original_forward = original_forward
+            modeling_esm.RotaryEmbedding.forward = compat_rotary_forward
+    else:
+        logger.warning(
+            "Skipping ESM rotary compatibility patch: signature mismatch for "
+            "transformers.models.esm.RotaryEmbedding.forward: %s",
+            rotary_forward_sig,
+        )
+
+    # ESMFold LM stem compatibility layer
+    compute_lm_sig = inspect.signature(modeling_esmfold.EsmForProteinFolding.compute_language_model_representations)
+    if len(compute_lm_sig.parameters) == 2:
+        original_compute_language_model_representations = (
+            modeling_esmfold.EsmForProteinFolding.compute_language_model_representations
+        )
+
+        if not hasattr(original_compute_language_model_representations, "__wrapped__"):
+
+            def compat_compute_language_model_representations(self: Any, esmaa: torch.Tensor):
+                state = _position_ids_compat_state()
+                if state is None or not state.enabled or state.position_ids is None:
+                    return original_compute_language_model_representations(self, esmaa)
+
+                position_ids = _compute_esmfold_position_ids(esmaa, state)
+                if position_ids is None:
+                    return original_compute_language_model_representations(self, esmaa)
+
+                device = next(self.parameters()).device
+                B, L = esmaa.shape  # B = batch size, L = sequence length.
+
+                if self.config.esmfold_config.bypass_lm:
+                    return torch.zeros(B, L, self.esm_s_combine.size[0], -1, self.esm_feats, device=device)
+
+                bosi, eosi = self.esm_dict_cls_idx, self.esm_dict_eos_idx
+                bos = esmaa.new_full((B, 1), bosi)
+                eos = esmaa.new_full((B, 1), self.esm_dict_padding_idx)
+                esmaa = torch.cat([bos, esmaa, eos], dim=1)
+                esmaa[range(B), (esmaa != 1).sum(1)] = eosi
+
+                # position_ids is passed to the stem when compatibility mode is active.
+                esm_hidden_states = self.esm(
+                    esmaa,
+                    attention_mask=esmaa != 1,
+                    position_ids=position_ids,
+                    output_hidden_states=True,
+                )["hidden_states"]
+                esm_s = torch.stack(esm_hidden_states, dim=2)
+                esm_s = esm_s[:, 1:-1]  # B, L, nLayers, C
+                return esm_s
+
+            compat_compute_language_model_representations.__name__ = (
+                "position_ids_compat_compute_language_model_representations"
+            )
+            modeling_esmfold.EsmForProteinFolding._position_ids_compat_original_compute_language_model_representations = (
+                original_compute_language_model_representations
+            )
+            modeling_esmfold.EsmForProteinFolding.compute_language_model_representations = (
+                compat_compute_language_model_representations
+            )
+    else:
+        logger.warning(
+            "Skipping ESMFold compatibility patch: signature mismatch for "
+            "transformers.models.esmfold.EsmForProteinFolding.compute_language_model_representations: %s",
+            compute_lm_sig,
+        )
 
 
 ############################################################
@@ -100,6 +365,9 @@ def always_no_grad_forward(self, seq_feats, pair_feats, true_aa, residx, mask, n
 EsmFoldingTrunk.forward = always_no_grad_forward
 
 
+_install_esm_position_ids_compat_patches()
+
+
 class ESM2Core(EmbeddingAlgorithm):
     """ESM2 protein language model."""
 
@@ -110,6 +378,7 @@ class ESM2Core(EmbeddingAlgorithm):
         # Chain linking and positioning config
         "glycine_linker": "",
         "position_ids_skip": 512,
+        "enable_position_ids_compat": False,
     }
     # Static config keys that can only be set at initialization
     STATIC_CONFIG_KEYS: ClassVar[frozenset[str]] = frozenset({"device", "model_name"})
@@ -234,7 +503,10 @@ class ESM2Core(EmbeddingAlgorithm):
         sequences : str | Sequence[str]
             A single protein sequence string or an iterable of sequence strings. Sequence strings may contain one-letter residues, inline ``<mask>`` tokens, and optional ``:`` chain separators for multimers.
         options : dict | None, optional
-            Per-call configuration that is merged with the core config; can control glycine_linker, position_ids_skip, `include_fields`, and other runtime options. Request `include_fields=["lm_logits"]` for full-vocabulary masked-language-model logits or `include_fields=["hidden_states", "lm_logits"]` / `["*"]` to return both optional outputs.
+            Per-call configuration that is merged with the core config; can control glycine_linker, position_ids_skip,
+            `enable_position_ids_compat`, `include_fields`, and other runtime options. Request `include_fields=["lm_logits"]`
+            for full-vocabulary masked-language-model logits or `include_fields=["hidden_states", "lm_logits"]` / `["*"]` to
+            return both optional outputs.
 
         Returns
         -------
@@ -293,7 +565,11 @@ class ESM2Core(EmbeddingAlgorithm):
             tokenized = tokenized.to(self._device)
             tokenized["output_hidden_states"] = compute_hidden_states
 
-        with Timer("Model Inference") as inference_timer, torch.inference_mode():
+        with Timer("Model Inference") as inference_timer, torch.inference_mode(), _position_ids_compat_context(
+            bool(effective_config["enable_position_ids_compat"]),
+            tokenized.get("position_ids"),
+            tokenized.get("attention_mask"),
+        ):
             if self._model_mode == "masked_lm":
                 masked_lm_model = cast(EsmForMaskedLM, self.model)
                 outputs = masked_lm_model.esm(**tokenized)
@@ -559,6 +835,7 @@ class ESMFoldCore(FoldingAlgorithm):
         # Chain linking and positioning config
         "glycine_linker": "",
         "position_ids_skip": 512,
+        "enable_position_ids_compat": False,
         "include_fields": None,  # Optional[List[str]] - controls which fields to include in output
     }
     # Static config keys that can only be set at initialization
@@ -620,7 +897,8 @@ class ESMFoldCore(FoldingAlgorithm):
         sequences : str | Sequence[str]
             A single amino acid sequence or an iterable of sequences to predict.
         options : dict, optional
-            Per-call configuration merged with the instance's static config (for example, `include_fields` to select which output fields to return).
+            Per-call configuration merged with the instance's static config (for example, `include_fields` to select which output
+            fields to return, or `enable_position_ids_compat` to route multimer `position_ids` through LM rotary embeddings).
 
         Returns
         -------
@@ -644,7 +922,11 @@ class ESMFoldCore(FoldingAlgorithm):
         with Timer("ESMFold preprocessing") as preprocess_timer:
             tokenized_input, multimer_properties = self._tokenize_sequences(validated_sequences, effective_config)
 
-        with Timer("Model Inference") as inference_timer, torch.inference_mode():
+        with Timer("Model Inference") as inference_timer, torch.inference_mode(), _position_ids_compat_context(
+            bool(effective_config["enable_position_ids_compat"]),
+            tokenized_input.get("position_ids"),
+            tokenized_input.get("attention_mask"),
+        ):
             outputs = self.model(**tokenized_input)
 
         with Timer("ESMFold postprocessing") as postprocess_timer:

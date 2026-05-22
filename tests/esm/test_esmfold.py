@@ -13,6 +13,7 @@ from boileroom import ESMFold
 from boileroom.constants import restype_3to1
 from boileroom.convert import pdb_string_to_atomarray
 from boileroom.models.esm.linker import store_multimer_properties
+from boileroom.models.esm.parsing import parse_esm2_sequences
 from boileroom.models.esm.types import ESMFoldOutput
 
 pytestmark = [pytest.mark.integration, pytest.mark.slow, pytest.mark.gpu, pytest.mark.xdist_group("esmfold")]
@@ -40,6 +41,26 @@ def esmfold_model(backend_option: str, device_option: str | None, output_ctx) ->
     model_config: dict[str, object] = {}
     with output_ctx():
         yield ESMFold(backend=backend_option, device=device_option, config=model_config)
+
+
+def _make_arange_position_ids(sequences, glycine_linker: str, add_special_tokens: bool) -> torch.Tensor:
+    parsed_sequences = parse_esm2_sequences(sequences)
+    lengths = []
+    for parsed_sequence in parsed_sequences:
+        base_length = sum(len(chain.tokens) for chain in parsed_sequence.chains)
+        base_length += max(len(parsed_sequence.chains) - 1, 0) * len(glycine_linker)
+        if add_special_tokens:
+            base_length += 2
+        lengths.append(base_length)
+
+    max_length = max(lengths)
+    position_ids = []
+    for length in lengths:
+        row = torch.arange(length, dtype=torch.long)
+        if length < max_length:
+            row = torch.cat([row, torch.zeros(max_length - length, dtype=torch.long)])
+        position_ids.append(row)
+    return torch.stack(position_ids, dim=0)
 
 
 def test_esmfold_basic(test_sequences: dict[str, str], esmfold_model: ESMFold):
@@ -278,6 +299,47 @@ def test_tokenize_sequences_with_mocker(mocker):
     # Verify the output contains the expected keys
     assert set(tokenized_input.keys()) >= {"input_ids", "attention_mask", "position_ids"}
     assert multimer_properties is not None
+
+
+def test_esmfold_position_ids_compat_arange_is_noop(test_sequences, esmfold_model, mocker):
+    """Default-arange position ids remain a strict no-op in compatibility mode."""
+    pytest.importorskip("transformers", reason="requires transformers")
+    from boileroom.models.esm import core as esm_core
+
+    mocker.patch.object(
+        esm_core,
+        "compute_position_ids",
+        side_effect=lambda sequences, glycine_linker, position_ids_skip, add_special_tokens=False: _make_arange_position_ids(
+            sequences, glycine_linker, add_special_tokens
+        ),
+    )
+
+    sequence = test_sequences["multimer"]
+
+    result_without = esmfold_model.fold(sequence, options={"include_fields": ["lm_logits"], "enable_position_ids_compat": False})
+    result_with = esmfold_model.fold(sequence, options={"include_fields": ["lm_logits"], "enable_position_ids_compat": True})
+
+    assert result_without.lm_logits is not None
+    assert result_with.lm_logits is not None
+    assert np.array_equal(result_without.lm_logits, result_with.lm_logits)
+
+
+def test_esmfold_position_ids_compat_skip_change(test_sequences, esmfold_model):
+    """Compatibility mode routes multimer skips to different LM representations."""
+    sequence = test_sequences["multimer"]
+
+    result_skip0 = esmfold_model.fold(
+        sequence,
+        options={"include_fields": ["lm_logits"], "enable_position_ids_compat": True, "position_ids_skip": 0},
+    )
+    result_skip1024 = esmfold_model.fold(
+        sequence,
+        options={"include_fields": ["lm_logits"], "enable_position_ids_compat": True, "position_ids_skip": 1024},
+    )
+
+    assert result_skip0.lm_logits is not None
+    assert result_skip1024.lm_logits is not None
+    assert np.max(np.abs(result_skip0.lm_logits - result_skip1024.lm_logits)) > 0.0
 
 
 def test_esmfold_rejects_empty_chain_multimer():

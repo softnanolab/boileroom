@@ -1,7 +1,9 @@
 import numpy as np
 import pytest
+import torch
 
 from boileroom import ESM2
+from boileroom.models.esm.parsing import parse_esm2_sequences
 
 pytestmark = [pytest.mark.integration, pytest.mark.slow, pytest.mark.gpu, pytest.mark.xdist_group("esm2")]
 
@@ -57,6 +59,26 @@ def esm2_model_factory(backend_option: str, gpu_device: str | None, device_optio
         return ESM2(backend=backend_option, device=device, config=config)
 
     return _make_model
+
+
+def _make_arange_position_ids(sequences, glycine_linker: str, add_special_tokens: bool) -> torch.Tensor:
+    parsed_sequences = parse_esm2_sequences(sequences)
+    lengths = []
+    for parsed_sequence in parsed_sequences:
+        base_length = sum(len(chain.tokens) for chain in parsed_sequence.chains)
+        base_length += max(len(parsed_sequence.chains) - 1, 0) * len(glycine_linker)
+        if add_special_tokens:
+            base_length += 2
+        lengths.append(base_length)
+
+    max_length = max(lengths)
+    position_ids = []
+    for length in lengths:
+        row = torch.arange(length, dtype=torch.long)
+        if length < max_length:
+            row = torch.cat([row, torch.zeros(max_length - length, dtype=torch.long)])
+        position_ids.append(row)
+    return torch.stack(position_ids, dim=0)
 
 
 @pytest.mark.parametrize(
@@ -199,6 +221,56 @@ def test_esm2_embed_with_hidden_states_and_lm_logits(esm2_model_factory):
     assert result.lm_logits is not None
     assert result.lm_logits.shape == (1, len(sequence), 33)
     del model
+
+
+def test_esm2_position_ids_compat_default_is_false():
+    """The compatibility flag must remain opt-in by default."""
+    pytest.importorskip("transformers", reason="requires transformers")
+    from boileroom.models.esm.core import ESM2Core
+
+    core = ESM2Core(config={"device": "cpu", "model_name": "esm2_t6_8M_UR50D"})
+    assert core.config["enable_position_ids_compat"] is False
+
+
+def test_esm2_position_ids_compat_arange_is_noop(esm2_model_factory, mocker):
+    """When callers provide arange-compatible ids, compatibility mode keeps outputs unchanged."""
+    pytest.importorskip("transformers", reason="requires transformers")
+    from boileroom.models.esm import core as esm_core
+
+    mocker.patch.object(
+        esm_core,
+        "compute_position_ids",
+        side_effect=lambda sequences, glycine_linker, position_ids_skip, add_special_tokens=False: _make_arange_position_ids(
+            sequences, glycine_linker, add_special_tokens
+        ),
+    )
+
+    model = esm2_model_factory(model_name="esm2_t6_8M_UR50D", include_fields=["hidden_states"])
+    sequence = "AC:DEFG"
+
+    result_without = model.embed([sequence], options={"enable_position_ids_compat": False})
+    result_with = model.embed([sequence], options={"enable_position_ids_compat": True})
+
+    assert np.array_equal(result_without.embeddings, result_with.embeddings)
+    assert np.array_equal(result_without.hidden_states, result_with.hidden_states)
+
+
+def test_esm2_position_ids_compat_skip_change(esm2_model_factory):
+    """Compatibility mode wires custom multimer position ids for non-default skips."""
+    sequence = "AC:DEFG"
+    model = esm2_model_factory(
+        model_name="esm2_t6_8M_UR50D", include_fields=["hidden_states"], enable_position_ids_compat=True
+    )
+
+    result_skip0 = model.embed([sequence], options={"enable_position_ids_compat": True, "position_ids_skip": 0})
+    result_skip1024 = model.embed(
+        [sequence], options={"enable_position_ids_compat": True, "position_ids_skip": 1024}
+    )
+
+    max_diff = np.max(np.abs(result_skip0.embeddings - result_skip1024.embeddings))
+    assert max_diff > 0.0
+    max_hidden_diff = np.max(np.abs(result_skip0.hidden_states - result_skip1024.hidden_states))
+    assert max_hidden_diff > 0.0
 
 
 def test_esm2_embed_with_all_optional_fields(esm2_model_factory):
