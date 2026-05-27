@@ -1,0 +1,6 @@
+numpy
+torch>=2.6.0,<2.7.0
+esm @ git+https://github.com/Biohub/esm.git@c94ed8d
+fastapi
+uvicorn
+pydantic

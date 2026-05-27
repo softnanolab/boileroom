@@ -57,3 +57,39 @@ result.lm_logits.shape   # (1, 4, tokenizer.vocab_size)
 top_token_ids = result.lm_logits[0].argmax(axis=-1)
 top_tokens = [id_to_token[token_id] for token_id in top_token_ids]
 ```
+
+### ESMFold2
+- ESMFold2 uses Biohub's ESMFold2 model family through the `esm` package and Biohub's Transformers fork, so it has its own runtime image instead of sharing the ESMFold/ESM-2 image.
+- String inputs follow the existing BoilerRoom convention: `model.fold("AAA:BBB")` predicts one multichain complex, while `model.fold(["AAA", "BBB"])` predicts a batch of independent proteins.
+- For all-atom complexes, pass lightweight input dataclasses from `boileroom.models.esmfold2.types` such as `ProteinInput`, `DNAInput`, `RNAInput`, `LigandInput`, and `StructurePredictionInput`.
+
+Example usage:
+```python
+from boileroom import ESMFold2
+from boileroom.models.esmfold2.types import DNAInput, LigandInput, ProteinInput, StructurePredictionInput
+
+model = ESMFold2(
+    backend="modal",
+    device="L4",
+    config={"model_name": "biohub/ESMFold2-Fast"},
+)
+
+result = model.fold(
+    "MQIFVKTLTGKTITLEVEPSDTIENVKAKIQDKEGIPPDQQRLIFAGKQLEDGRTLSDYNIQKESTLHLVLRLRGG",
+    options={"include_fields": ["plddt", "ptm", "cif"], "num_sampling_steps": 50, "seed": 0},
+)
+
+result.atom_array[0]
+result.plddt[0]
+result.ptm[0]
+result.cif[0]
+
+complex_input = StructurePredictionInput(
+    sequences=[
+        ProteinInput(id="A", sequence="MIEIKDKQLTGLRFIDLFAGLGGFRLALESCGAECVYSNEWDKYAQEVYEMNFGEKPEG"),
+        DNAInput(id="B", sequence="GATAGCGCTATC"),
+        LigandInput(id="L", ccd=["SAH"]),
+    ]
+)
+complex_result = model.fold(complex_input, options={"include_fields": ["cif", "iptm"]})
+```

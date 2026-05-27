@@ -115,6 +115,7 @@ from pathlib import Path
 requirements_txt = Path({str(requirements_path)!r})
 core_file = Path({str(core_path)!r})
 import_name_overrides = {IMPORT_NAME_OVERRIDES!r}
+from boileroom.images.import_checks import requirement_line_to_package_name
 
 deps = []
 with requirements_txt.open(encoding="utf-8") as handle:
@@ -122,7 +123,7 @@ with requirements_txt.open(encoding="utf-8") as handle:
         stripped = line.strip()
         if not stripped or stripped.startswith('#'):
             continue
-        pkg_name = re.split(r'[>=<!=;\\[]', stripped)[0].strip()
+        pkg_name = requirement_line_to_package_name(stripped)
         import_name = import_name_overrides.get(pkg_name, pkg_name.replace('-', '_'))
         if import_name:
             deps.append(import_name)
