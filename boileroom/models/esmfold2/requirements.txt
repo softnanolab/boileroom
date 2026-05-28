@@ -1,6 +1,6 @@
-numpy
+numpy==2.4.6
 torch>=2.6.0,<2.7.0
 esm @ git+https://github.com/Biohub/esm.git@c94ed8d
-fastapi
-uvicorn
-pydantic
+fastapi==0.136.3
+uvicorn==0.48.0
+pydantic==2.13.4

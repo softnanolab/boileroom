@@ -21,6 +21,7 @@ model_family:
       - typing
     allowed_import_modules:
       - boileroom.base
+      - boileroom.inputs
     forbidden_import_roots:
       - biotite
       - boltz

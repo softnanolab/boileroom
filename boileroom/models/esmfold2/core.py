@@ -402,12 +402,19 @@ class ESMFold2Core(FoldingAlgorithm):
         """Convert lightweight or native MSA inputs to Biohub's MSA object."""
         if msa is None:
             return None
+        if isinstance(msa, MSAInput):
+            if msa.sequences is None:
+                raise ValueError(
+                    "ESMFold2 currently requires in-memory MSA sequences; "
+                    "file-backed MSA paths are reserved for other model adapters."
+                )
+            from esm.models.esmfold2 import MSA
+
+            return MSA.from_sequences(msa.sequences, remove_insertions=msa.remove_insertions)
         from esm.models.esmfold2 import MSA
 
         if isinstance(msa, MSA):
             return msa
-        if isinstance(msa, MSAInput):
-            return MSA.from_sequences(msa.sequences, remove_insertions=msa.remove_insertions)
         if isinstance(msa, list):
             return MSA.from_sequences(msa)
         return msa
