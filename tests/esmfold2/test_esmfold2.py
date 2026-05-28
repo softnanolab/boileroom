@@ -3,8 +3,8 @@
 import pytest
 
 from boileroom.base import ModelWrapper
-from boileroom.models.esmfold2.esmfold2 import ESMFold2
 from boileroom.models.esmfold2.core import ESMFold2Core
+from boileroom.models.esmfold2.esmfold2 import ESMFold2
 from boileroom.models.esmfold2.payloads import decode_structure_input, encode_fold_input
 from boileroom.models.esmfold2.types import DNAInput, LigandInput, ProteinInput, StructurePredictionInput
 

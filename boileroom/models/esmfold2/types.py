@@ -102,7 +102,7 @@ class ESMFold2Output(StructurePrediction):
     """Output from ESMFold2 prediction."""
 
     metadata: PredictionMetadata
-    atom_array: list["AtomArray"] | None = None
+    atom_array: list[AtomArray] | None = None
 
     plddt: list[np.ndarray | None] | None = None
     ptm: list[np.ndarray | None] | None = None

@@ -9,11 +9,11 @@ import numpy as np
 
 from .types import (
     CovalentBond,
-    DNAInput,
     DistogramConditioning,
+    DNAInput,
     LigandInput,
-    MSAInput,
     Modification,
+    MSAInput,
     ProteinInput,
     RNAInput,
     StructurePredictionInput,

@@ -2,12 +2,12 @@
 
 from .types import (
     CovalentBond,
-    DNAInput,
     DistogramConditioning,
+    DNAInput,
     ESMFold2Output,
     LigandInput,
-    MSAInput,
     Modification,
+    MSAInput,
     ProteinInput,
     RNAInput,
     StructurePredictionInput,

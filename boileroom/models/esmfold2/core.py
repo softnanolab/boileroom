@@ -15,19 +15,19 @@ import numpy as np
 
 from ...base import FoldingAlgorithm, PredictionMetadata
 from ...utils import MODAL_MODEL_DIR, Timer, safe_mkdir, validate_sequence
+from .payloads import decode_structure_input
 from .types import (
     CovalentBond,
-    DNAInput,
     DistogramConditioning,
+    DNAInput,
     ESMFold2Output,
     LigandInput,
-    MSAInput,
     Modification,
+    MSAInput,
     ProteinInput,
     RNAInput,
     StructurePredictionInput,
 )
-from .payloads import decode_structure_input
 
 logger = logging.getLogger(__name__)
 
@@ -188,16 +188,15 @@ class ESMFold2Core(FoldingAlgorithm):
             features, chain_infos = self.input_builder.prepare_input(esm_input, seed=seed, device=self.model.device)
 
         sampler_kwargs = self._sampler_kwargs(config)
-        with Timer("ESMFold2 inference") as inference_timer, torch.no_grad():
-            with _seed_context(seed):
-                output = self.model(
-                    **features,
-                    num_loops=int(config["num_loops"]),
-                    num_sampling_steps=int(config["num_sampling_steps"]),
-                    num_diffusion_samples=num_diffusion_samples,
-                    early_exit=bool(config["early_exit"]),
-                    **sampler_kwargs,
-                )
+        with Timer("ESMFold2 inference") as inference_timer, torch.no_grad(), _seed_context(seed):
+            output = self.model(
+                **features,
+                num_loops=int(config["num_loops"]),
+                num_sampling_steps=int(config["num_sampling_steps"]),
+                num_diffusion_samples=num_diffusion_samples,
+                early_exit=bool(config["early_exit"]),
+                **sampler_kwargs,
+            )
 
         with Timer("ESMFold2 postprocessing") as postprocess_timer:
             decoded = self.input_builder.decode(
@@ -274,10 +273,7 @@ class ESMFold2Core(FoldingAlgorithm):
         for chain in chains:
             validate_sequence(chain)
         structure_input = StructurePredictionInput(
-            sequences=[
-                ProteinInput(id=self._chain_id(index), sequence=chain)
-                for index, chain in enumerate(chains)
-            ]
+            sequences=[ProteinInput(id=self._chain_id(index), sequence=chain) for index, chain in enumerate(chains)]
         )
         return _FoldRequest(input=structure_input, sequence_length=sum(len(chain) for chain in chains))
 
