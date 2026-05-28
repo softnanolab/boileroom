@@ -263,18 +263,21 @@ def decode_covalent_bond(value: Mapping[str, Any]) -> CovalentBond:
 
 
 def _decode_id(value: Any) -> str | list[str]:
+    """Decode a chain identifier that may name one or many copies."""
     if isinstance(value, list):
         return [str(item) for item in value]
     return str(value)
 
 
 def _decode_pocket_contact(value: Any) -> tuple[str, int]:
+    """Decode one pocket contact pair as ``(chain_id, residue_index)``."""
     if not isinstance(value, Sequence) or isinstance(value, str) or len(value) != 2:
         raise TypeError("Encoded ESMFold2 pocket contacts must be [chain_id, residue_index] pairs.")
     return str(value[0]), int(value[1])
 
 
 def _mapping_sequence(value: Any, field_name: str) -> list[Mapping[str, Any]]:
+    """Validate and cast an encoded list-of-mappings field."""
     if not isinstance(value, list) or not all(isinstance(item, Mapping) for item in value):
         raise TypeError(f"Encoded ESMFold2 {field_name} must be a list of mappings.")
     return [cast(Mapping[str, Any], item) for item in value]

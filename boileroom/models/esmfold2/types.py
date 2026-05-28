@@ -137,6 +137,7 @@ class ESMFold2Output(StructurePrediction):
 
 
 def _normalize_array_list(values: Any, unit_scale: bool = False) -> list[np.ndarray | None] | None:
+    """Normalize scalar, vector, matrix, or list values into per-sample arrays."""
     if values is None:
         return None
 
@@ -151,6 +152,7 @@ def _normalize_array_list(values: Any, unit_scale: bool = False) -> list[np.ndar
 
 
 def _normalize_array(value: Any, unit_scale: bool = False) -> np.ndarray:
+    """Convert one confidence/geometry value to an array, optionally scaling percentages."""
     array = np.asarray(value, dtype=np.float32 if unit_scale else None)
     if unit_scale and array.size and np.nanmax(array) > 1.0:
         array = array / 100.0
@@ -158,6 +160,7 @@ def _normalize_array(value: Any, unit_scale: bool = False) -> np.ndarray:
 
 
 def _normalize_scalar_list(values: Any) -> list[np.ndarray | None] | None:
+    """Normalize scalar metrics into one length-one array per sample."""
     if values is None:
         return None
 
@@ -170,4 +173,5 @@ def _normalize_scalar_list(values: Any) -> list[np.ndarray | None] | None:
 
 
 def _normalize_scalar(value: Any) -> np.ndarray:
+    """Return a single scalar metric as a float32 length-one array."""
     return np.asarray([value], dtype=np.float32).reshape(1)

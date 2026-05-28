@@ -47,6 +47,8 @@ ESMFold2FoldInput = (
 
 @dataclass(frozen=True)
 class _FoldRequest:
+    """One normalized fold request plus its sequence-length metadata."""
+
     input: StructurePredictionInput
     sequence_length: int
 
@@ -92,6 +94,7 @@ class ESMFold2Core(FoldingAlgorithm):
         self._load()
 
     def _resolve_cache_dir(self, config_key: str, default_subdir: str) -> Path:
+        """Resolve and create a configured or model-volume cache directory."""
         configured = self.config.get(config_key)
         if configured is not None:
             cache_dir = Path(str(configured))
@@ -220,6 +223,7 @@ class ESMFold2Core(FoldingAlgorithm):
 
     @staticmethod
     def _validate_effective_config(config: dict[str, Any]) -> None:
+        """Validate dynamic inference options before launching expensive model work."""
         for key in ("num_loops", "num_sampling_steps", "num_diffusion_samples"):
             value = config[key]
             if not isinstance(value, int) or isinstance(value, bool) or value < 1:
@@ -238,6 +242,7 @@ class ESMFold2Core(FoldingAlgorithm):
 
     @staticmethod
     def _sampler_kwargs(config: dict[str, Any]) -> dict[str, Any]:
+        """Return optional sampler controls accepted by the Biohub model call."""
         kwargs = {}
         for key in ("noise_scale", "step_scale", "max_inference_sigma"):
             if config.get(key) is not None:
@@ -285,9 +290,11 @@ class ESMFold2Core(FoldingAlgorithm):
 
     @staticmethod
     def _is_sequence_input(value: object) -> bool:
+        """Return whether a value is one lightweight molecule input dataclass."""
         return isinstance(value, ProteinInput | RNAInput | DNAInput | LigandInput)
 
     def _request_from_protein_string(self, sequence: str) -> _FoldRequest:
+        """Convert a colon-delimited protein string into one structure request."""
         chains = sequence.replace("|", ":").split(":")
         if any(chain == "" for chain in chains):
             raise ValueError(f"Invalid ESMFold2 protein sequence {sequence!r}: empty chain near ':'.")
@@ -299,6 +306,7 @@ class ESMFold2Core(FoldingAlgorithm):
         return _FoldRequest(input=structure_input, sequence_length=sum(len(chain) for chain in chains))
 
     def _request_from_structure_input(self, prediction_input: StructurePredictionInput) -> _FoldRequest:
+        """Validate a rich structure input and attach sequence-length metadata."""
         if not prediction_input.sequences:
             raise ValueError("StructurePredictionInput.sequences must not be empty.")
         return _FoldRequest(input=prediction_input, sequence_length=self._structure_input_length(prediction_input))
@@ -314,9 +322,11 @@ class ESMFold2Core(FoldingAlgorithm):
         return "".join(reversed(parts))
 
     def _structure_input_length(self, prediction_input: StructurePredictionInput) -> int:
+        """Return the metadata length for all sequence-like entities in an input."""
         return sum(self._sequence_input_length(item) for item in prediction_input.sequences)
 
     def _sequence_input_length(self, item: SequenceInput) -> int:
+        """Return the metadata length contribution for one chain or ligand input."""
         multiplier = self._id_count(item.id)
         if isinstance(item, ProteinInput | RNAInput | DNAInput):
             sequence = item.sequence.replace("|", ":")
@@ -333,9 +343,11 @@ class ESMFold2Core(FoldingAlgorithm):
 
     @staticmethod
     def _id_count(value: str | list[str]) -> int:
+        """Return how many entity copies an ESMFold2 id represents."""
         return len(value) if isinstance(value, list) else 1
 
     def _to_esm_structure_prediction_input(self, prediction_input: StructurePredictionInput) -> Any:
+        """Convert a lightweight structure input to Biohub's native dataclass."""
         from esm.models.esmfold2 import StructurePredictionInput as ESMStructurePredictionInput
 
         return ESMStructurePredictionInput(
@@ -346,6 +358,7 @@ class ESMFold2Core(FoldingAlgorithm):
         )
 
     def _to_esm_sequence_input(self, item: SequenceInput) -> Any:
+        """Convert one lightweight chain or ligand input to Biohub's native type."""
         from esm.models.esmfold2 import DNAInput as ESMDNAInput
         from esm.models.esmfold2 import LigandInput as ESMLigandInput
         from esm.models.esmfold2 import ProteinInput as ESMProteinInput
@@ -374,6 +387,7 @@ class ESMFold2Core(FoldingAlgorithm):
 
     @staticmethod
     def _to_esm_modifications(modifications: list[Modification] | None) -> list[Any] | None:
+        """Convert optional lightweight residue modifications to Biohub objects."""
         if modifications is None:
             return None
         from esm.models.esmfold2 import Modification as ESMModification
@@ -385,6 +399,7 @@ class ESMFold2Core(FoldingAlgorithm):
 
     @staticmethod
     def _to_esm_msa(msa: MSAInput | Any | None) -> Any | None:
+        """Convert lightweight or native MSA inputs to Biohub's MSA object."""
         if msa is None:
             return None
         from esm.models.esmfold2 import MSA
@@ -399,6 +414,7 @@ class ESMFold2Core(FoldingAlgorithm):
 
     @staticmethod
     def _to_esm_pocket_conditioning(pocket: PocketConditioning | None) -> Any | None:
+        """Convert optional pocket conditioning to Biohub's native dataclass."""
         if pocket is None:
             return None
         from esm.utils.structure.input_builder import PocketConditioning as ESMPocketConditioning
@@ -409,6 +425,7 @@ class ESMFold2Core(FoldingAlgorithm):
     def _to_esm_distogram_conditioning(
         distograms: list[DistogramConditioning] | None,
     ) -> list[Any] | None:
+        """Convert optional distogram conditioning entries to Biohub objects."""
         if distograms is None:
             return None
         from esm.models.esmfold2 import DistogramConditioning as ESMDistogramConditioning
@@ -420,6 +437,7 @@ class ESMFold2Core(FoldingAlgorithm):
 
     @staticmethod
     def _to_esm_covalent_bonds(bonds: list[CovalentBond] | None) -> list[Any] | None:
+        """Convert optional covalent-bond constraints to Biohub objects."""
         if bonds is None:
             return None
         from esm.models.esmfold2 import CovalentBond as ESMCovalentBond
@@ -442,6 +460,7 @@ class ESMFold2Core(FoldingAlgorithm):
         metadata: PredictionMetadata,
         config: dict[str, Any],
     ) -> ESMFold2Output:
+        """Convert Biohub decoded outputs to BoilerRoom's normalized output type."""
         include_fields = cast(list[str] | None, config.get("include_fields"))
         atom_arrays: list[Any] = []
         cif_values: list[str] | None = [] if self._wants_field(include_fields, "cif") else None
@@ -505,10 +524,12 @@ class ESMFold2Core(FoldingAlgorithm):
 
     @staticmethod
     def _wants_field(include_fields: list[str] | None, field: str) -> bool:
+        """Return whether a named optional output field was requested."""
         return include_fields is not None and ("*" in include_fields or field in include_fields)
 
     @staticmethod
     def _tensor_to_numpy(value: Any) -> np.ndarray | None:
+        """Detach a tensor-like value and return it as a NumPy array."""
         if value is None:
             return None
         if hasattr(value, "detach"):
@@ -517,12 +538,14 @@ class ESMFold2Core(FoldingAlgorithm):
 
     @staticmethod
     def _cif_to_atom_array(cif_string: str) -> Any:
+        """Parse an mmCIF string into a Biotite atom array."""
         from biotite.structure.io.pdbx import CIFFile, get_structure
 
         return get_structure(CIFFile.read(StringIO(cif_string)), model=1)
 
     @staticmethod
     def _atom_array_to_pdb(atom_array: Any) -> str:
+        """Serialize a Biotite atom array to PDB text."""
         from biotite.structure.io.pdb import PDBFile, set_structure
 
         pdb_file = PDBFile()
