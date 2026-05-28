@@ -37,3 +37,5 @@ class MSAInput:
             raise TypeError("MSAInput sequences must be a list of strings.")
         if self.path is not None and not isinstance(self.path, str | Path):
             raise TypeError("MSAInput path must be a string or pathlib.Path.")
+        if not isinstance(self.remove_insertions, bool):
+            raise TypeError("MSAInput remove_insertions must be a bool.")

@@ -131,6 +131,28 @@ def test_esmfold2_msa_input_uses_shared_type_and_round_trips() -> None:
     assert decoded.sequences[0].msa == MSAInput(sequences=["ACD", "ACE"], remove_insertions=True)
 
 
+def test_esmfold2_path_msa_input_round_trips_through_payloads() -> None:
+    """Path-backed MSA payloads should round-trip before model-specific rejection."""
+    payloads = _payloads()
+    structure_input = StructurePredictionInput(
+        sequences=[ProteinInput(id="A", sequence="ACD", msa=MSAInput(path="some/path"))]
+    )
+
+    payload = payloads.encode_fold_input(structure_input)
+
+    assert isinstance(payload, dict)
+    assert payload["sequences"][0]["msa"] == {"path": "some/path", "remove_insertions": False}
+    decoded = payloads.decode_structure_input(payload)
+    assert isinstance(decoded.sequences[0], ProteinInput)
+    assert decoded.sequences[0].msa == MSAInput(path="some/path")
+
+
+def test_shared_msa_input_rejects_non_boolean_remove_insertions() -> None:
+    """The shared MSAInput should reject ambiguous truthy/falsy flag values."""
+    with pytest.raises(TypeError, match="remove_insertions"):
+        MSAInput(sequences=["ACD"], remove_insertions="false")  # type: ignore[arg-type]
+
+
 def test_esmfold2_payload_decode_rejects_silent_coercions() -> None:
     """Encoded Apptainer payloads should reject malformed scalar types."""
     payloads = _payloads()
@@ -167,6 +189,21 @@ def test_esmfold2_payload_decode_rejects_silent_coercions() -> None:
     }
     with pytest.raises(TypeError, match="remove_insertions"):
         payloads.decode_structure_input(invalid_msa_payload)
+
+    invalid_msa_path_payload = {
+        **base_payload,
+        "sequences": [
+            {
+                "kind": "protein",
+                "id": "A",
+                "sequence": "ACD",
+                "modifications": None,
+                "msa": {"path": 123, "remove_insertions": False},
+            }
+        ],
+    }
+    with pytest.raises(TypeError, match="path"):
+        payloads.decode_structure_input(invalid_msa_path_payload)
 
 
 def test_esmfold2_rejects_file_backed_msa_until_supported() -> None:
