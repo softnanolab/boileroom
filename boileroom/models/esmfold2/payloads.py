@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Any, cast
 
 import numpy as np
@@ -131,28 +132,28 @@ def decode_sequence_input(value: Mapping[str, Any]) -> SequenceInput:
     if kind == _PROTEIN_KIND:
         return ProteinInput(
             id=_decode_id(value.get("id")),
-            sequence=str(value.get("sequence", "")),
+            sequence=_decode_sequence(value.get("sequence"), "protein.sequence"),
             modifications=decode_modifications(value.get("modifications")),
             msa=decode_msa(value.get("msa")),
         )
     if kind == _RNA_KIND:
         return RNAInput(
             id=_decode_id(value.get("id")),
-            sequence=str(value.get("sequence", "")),
+            sequence=_decode_sequence(value.get("sequence"), "rna.sequence"),
             modifications=decode_modifications(value.get("modifications")),
         )
     if kind == _DNA_KIND:
         return DNAInput(
             id=_decode_id(value.get("id")),
-            sequence=str(value.get("sequence", "")),
+            sequence=_decode_sequence(value.get("sequence"), "dna.sequence"),
             modifications=decode_modifications(value.get("modifications")),
         )
     if kind == _LIGAND_KIND:
         ccd = value.get("ccd")
         return LigandInput(
             id=_decode_id(value.get("id")),
-            smiles=cast(str | None, value.get("smiles")),
-            ccd=[str(item) for item in ccd] if isinstance(ccd, list) else None,
+            smiles=_decode_optional_str(value.get("smiles"), "ligand.smiles"),
+            ccd=_decode_optional_str_list(ccd, "ligand.ccd"),
         )
     raise ValueError(f"Unsupported ESMFold2 sequence payload kind: {kind!r}")
 
@@ -181,12 +182,19 @@ def encode_msa(value: MSAInput | Any | None) -> dict[str, Any] | list[str] | Non
     """Encode lightweight MSA inputs.
 
     Biohub-native MSA objects are Modal-only because the Apptainer bridge uses
-    JSON. Use ``MSAInput`` for portable Modal/Apptainer calls.
+    JSON. Use ``MSAInput`` for portable Modal/Apptainer calls. ESMFold2 currently
+    consumes in-memory MSA sequences; path-backed MSA values are preserved in the
+    payload so model adapters can reject unsupported sources clearly.
     """
     if value is None:
         return None
     if isinstance(value, MSAInput):
-        return {"sequences": value.sequences, "remove_insertions": value.remove_insertions}
+        payload: dict[str, Any] = {"remove_insertions": value.remove_insertions}
+        if value.sequences is not None:
+            payload["sequences"] = value.sequences
+        if value.path is not None:
+            payload["path"] = str(value.path)
+        return payload
     if isinstance(value, list) and all(isinstance(item, str) for item in value):
         return [cast(str, item) for item in value]
     raise TypeError("Apptainer ESMFold2 inputs must use MSAInput or list[str] for protein MSA values.")
@@ -198,9 +206,21 @@ def decode_msa(value: Any) -> MSAInput | list[str] | None:
         return None
     if isinstance(value, Mapping):
         sequences = value.get("sequences")
-        if not isinstance(sequences, list) or not all(isinstance(item, str) for item in sequences):
-            raise TypeError("Encoded ESMFold2 MSA payload requires a string sequence list.")
-        return MSAInput(sequences=sequences, remove_insertions=bool(value.get("remove_insertions", False)))
+        path = value.get("path")
+        remove_insertions = value.get("remove_insertions", False)
+        if sequences is not None and (
+            not isinstance(sequences, list) or not all(isinstance(item, str) for item in sequences)
+        ):
+            raise TypeError("Encoded ESMFold2 MSA payload sequences must be a string sequence list.")
+        if path is not None and not isinstance(path, str | Path):
+            raise TypeError("Encoded ESMFold2 MSA payload path must be a string path.")
+        if not isinstance(remove_insertions, bool):
+            raise TypeError("Encoded ESMFold2 MSA payload remove_insertions must be a boolean.")
+        return MSAInput(
+            sequences=[cast(str, item) for item in sequences] if sequences is not None else None,
+            path=cast(str | Path | None, path),
+            remove_insertions=remove_insertions,
+        )
     if isinstance(value, list) and all(isinstance(item, str) for item in value):
         return [cast(str, item) for item in value]
     raise TypeError("Encoded ESMFold2 MSA payload must be a mapping, list[str], or None.")
@@ -223,7 +243,7 @@ def decode_pocket_conditioning(value: Any) -> PocketConditioning | None:
     if not isinstance(contacts, list):
         raise TypeError("Encoded ESMFold2 pocket contacts must be a list.")
     return PocketConditioning(
-        binder_chain_id=str(value["binder_chain_id"]),
+        binder_chain_id=_decode_sequence(value.get("binder_chain_id"), "pocket.binder_chain_id"),
         contacts=[_decode_pocket_contact(contact) for contact in contacts],
     )
 
@@ -264,16 +284,47 @@ def decode_covalent_bond(value: Mapping[str, Any]) -> CovalentBond:
 
 def _decode_id(value: Any) -> str | list[str]:
     """Decode a chain identifier that may name one or many copies."""
-    if isinstance(value, list):
-        return [str(item) for item in value]
-    return str(value)
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list) and all(isinstance(item, str) for item in value):
+        return [cast(str, item) for item in value]
+    raise TypeError("Encoded ESMFold2 id must be str or list[str].")
+
+
+def _decode_sequence(value: Any, field_name: str) -> str:
+    """Decode a required string field."""
+    if not isinstance(value, str):
+        raise TypeError(f"Encoded ESMFold2 {field_name} must be a string.")
+    return value
+
+
+def _decode_optional_str(value: Any, field_name: str) -> str | None:
+    """Decode an optional string field."""
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise TypeError(f"Encoded ESMFold2 {field_name} must be a string or None.")
+    return value
+
+
+def _decode_optional_str_list(value: Any, field_name: str) -> list[str] | None:
+    """Decode an optional list of strings."""
+    if value is None:
+        return None
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise TypeError(f"Encoded ESMFold2 {field_name} must be a list of strings or None.")
+    return [cast(str, item) for item in value]
 
 
 def _decode_pocket_contact(value: Any) -> tuple[str, int]:
     """Decode one pocket contact pair as ``(chain_id, residue_index)``."""
     if not isinstance(value, Sequence) or isinstance(value, str) or len(value) != 2:
         raise TypeError("Encoded ESMFold2 pocket contacts must be [chain_id, residue_index] pairs.")
-    return str(value[0]), int(value[1])
+    chain_id = _decode_sequence(value[0], "pocket.contacts.chain_id")
+    residue_index = value[1]
+    if not isinstance(residue_index, int) or isinstance(residue_index, bool):
+        raise TypeError("Encoded ESMFold2 pocket contact residue index must be an integer.")
+    return chain_id, residue_index
 
 
 def _mapping_sequence(value: Any, field_name: str) -> list[Mapping[str, Any]]:

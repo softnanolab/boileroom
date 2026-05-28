@@ -9,17 +9,10 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from ...base import PredictionMetadata, StructurePrediction
+from ...inputs import MSAInput
 
 if TYPE_CHECKING:
     from biotite.structure import AtomArray
-
-
-@dataclass(frozen=True)
-class MSAInput:
-    """Lightweight MSA specification for ESMFold2 protein inputs."""
-
-    sequences: list[str]
-    remove_insertions: bool = False
 
 
 @dataclass(frozen=True)
