@@ -77,6 +77,14 @@ class DistogramConditioning:
 
 
 @dataclass(frozen=True)
+class PocketConditioning:
+    """Optional pocket conditioning with target contacts for a binder chain."""
+
+    binder_chain_id: str
+    contacts: list[tuple[str, int]]
+
+
+@dataclass(frozen=True)
 class CovalentBond:
     """Optional covalent bond between two chain atoms."""
 
@@ -93,6 +101,7 @@ class StructurePredictionInput:
     """All-atom ESMFold2 input containing protein, nucleic-acid, and ligand chains."""
 
     sequences: Sequence[ProteinInput | RNAInput | DNAInput | LigandInput]
+    pocket: PocketConditioning | None = None
     distogram_conditioning: list[DistogramConditioning] | None = None
     covalent_bonds: list[CovalentBond] | None = None
 
@@ -136,9 +145,7 @@ def _normalize_array_list(values: Any, unit_scale: bool = False) -> list[np.ndar
         return normalized if any(value is not None for value in normalized) else None
 
     array = np.asarray(values)
-    if array.ndim == 0:
-        return [_normalize_array(array, unit_scale=unit_scale)]
-    if array.ndim == 1:
+    if array.ndim <= 1:
         return [_normalize_array(array, unit_scale=unit_scale)]
     return [_normalize_array(sample, unit_scale=unit_scale) for sample in array]
 

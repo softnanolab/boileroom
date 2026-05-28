@@ -6,7 +6,13 @@ from boileroom.base import ModelWrapper
 from boileroom.models.esmfold2.core import ESMFold2Core
 from boileroom.models.esmfold2.esmfold2 import ESMFold2
 from boileroom.models.esmfold2.payloads import decode_structure_input, encode_fold_input
-from boileroom.models.esmfold2.types import DNAInput, LigandInput, ProteinInput, StructurePredictionInput
+from boileroom.models.esmfold2.types import (
+    DNAInput,
+    LigandInput,
+    PocketConditioning,
+    ProteinInput,
+    StructurePredictionInput,
+)
 
 pytestmark = pytest.mark.contract
 
@@ -71,6 +77,34 @@ def test_esmfold2_core_accepts_encoded_structure_payload() -> None:
 
     assert len(requests) == 1
     assert requests[0].sequence_length == 7
+
+
+def test_esmfold2_encoded_structure_input_preserves_pocket_conditioning() -> None:
+    """Apptainer payload encoding should preserve ESMFold2 pocket conditioning."""
+    structure_input = StructurePredictionInput(
+        sequences=[ProteinInput(id="A", sequence="ACD"), ProteinInput(id="B", sequence="EFG")],
+        pocket=PocketConditioning(binder_chain_id="A", contacts=[("B", 1)]),
+    )
+
+    payload = encode_fold_input(structure_input)
+
+    assert isinstance(payload, dict)
+    assert payload["pocket"] == {"binder_chain_id": "A", "contacts": [["B", 1]]}
+    assert decode_structure_input(payload).pocket == structure_input.pocket
+
+
+def test_esmfold2_rejects_invalid_dynamic_options() -> None:
+    """Invalid dynamic inference options should fail before remote execution."""
+    core = ESMFold2Core(config={"device": "cpu"})
+
+    with pytest.raises(ValueError, match="num_diffusion_samples"):
+        core.fold("ACD", options={"num_diffusion_samples": 0})
+
+    with pytest.raises(ValueError, match="seed"):
+        core.fold("ACD", options={"seed": -1})
+
+    with pytest.raises(ValueError, match="noise_scale"):
+        core.fold("ACD", options={"noise_scale": float("nan")})
 
 
 def test_esmfold2_apptainer_wrapper_encodes_rich_inputs(monkeypatch: pytest.MonkeyPatch) -> None:

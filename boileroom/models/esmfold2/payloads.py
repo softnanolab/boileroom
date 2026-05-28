@@ -14,6 +14,7 @@ from .types import (
     LigandInput,
     Modification,
     MSAInput,
+    PocketConditioning,
     ProteinInput,
     RNAInput,
     StructurePredictionInput,
@@ -62,6 +63,7 @@ def encode_structure_input(value: StructurePredictionInput) -> dict[str, Any]:
     return {
         "kind": _STRUCTURE_KIND,
         "sequences": [encode_sequence_input(item) for item in value.sequences],
+        "pocket": encode_pocket_conditioning(value.pocket),
         "distogram_conditioning": (
             [encode_distogram_conditioning(item) for item in value.distogram_conditioning]
             if value.distogram_conditioning is not None
@@ -79,6 +81,7 @@ def decode_structure_input(value: Mapping[str, Any]) -> StructurePredictionInput
         raise ValueError("ESMFold2 structure payload must have kind='structure_prediction_input'.")
     return StructurePredictionInput(
         sequences=[decode_sequence_input(item) for item in _mapping_sequence(value.get("sequences"), "sequences")],
+        pocket=decode_pocket_conditioning(value.get("pocket")),
         distogram_conditioning=(
             [
                 decode_distogram_conditioning(item)
@@ -203,6 +206,28 @@ def decode_msa(value: Any) -> MSAInput | list[str] | None:
     raise TypeError("Encoded ESMFold2 MSA payload must be a mapping, list[str], or None.")
 
 
+def encode_pocket_conditioning(value: PocketConditioning | None) -> dict[str, Any] | None:
+    """Encode pocket conditioning."""
+    if value is None:
+        return None
+    return {"binder_chain_id": value.binder_chain_id, "contacts": [list(contact) for contact in value.contacts]}
+
+
+def decode_pocket_conditioning(value: Any) -> PocketConditioning | None:
+    """Decode pocket conditioning."""
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise TypeError("Encoded ESMFold2 pocket payload must be a mapping or None.")
+    contacts = value.get("contacts")
+    if not isinstance(contacts, list):
+        raise TypeError("Encoded ESMFold2 pocket contacts must be a list.")
+    return PocketConditioning(
+        binder_chain_id=str(value["binder_chain_id"]),
+        contacts=[_decode_pocket_contact(contact) for contact in contacts],
+    )
+
+
 def encode_distogram_conditioning(value: DistogramConditioning) -> dict[str, Any]:
     """Encode distogram conditioning."""
     return {"chain_id": value.chain_id, "distogram": np.asarray(value.distogram).tolist()}
@@ -241,6 +266,12 @@ def _decode_id(value: Any) -> str | list[str]:
     if isinstance(value, list):
         return [str(item) for item in value]
     return str(value)
+
+
+def _decode_pocket_contact(value: Any) -> tuple[str, int]:
+    if not isinstance(value, Sequence) or isinstance(value, str) or len(value) != 2:
+        raise TypeError("Encoded ESMFold2 pocket contacts must be [chain_id, residue_index] pairs.")
+    return str(value[0]), int(value[1])
 
 
 def _mapping_sequence(value: Any, field_name: str) -> list[Mapping[str, Any]]:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import math
 import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -24,6 +25,7 @@ from .types import (
     LigandInput,
     Modification,
     MSAInput,
+    PocketConditioning,
     ProteinInput,
     RNAInput,
     StructurePredictionInput,
@@ -136,6 +138,7 @@ class ESMFold2Core(FoldingAlgorithm):
     def fold(self, sequences: ESMFold2FoldInput, options: dict | None = None) -> ESMFold2Output:
         """Predict one or more structures with ESMFold2."""
         effective_config = self._merge_options(options)
+        self._validate_effective_config(effective_config)
         requests = self._coerce_requests(sequences)
 
         if self.model is None or self.input_builder is None:
@@ -214,6 +217,24 @@ class ESMFold2Core(FoldingAlgorithm):
             "postprocessing": postprocess_timer.duration,
         }
         return results, timing
+
+    @staticmethod
+    def _validate_effective_config(config: dict[str, Any]) -> None:
+        for key in ("num_loops", "num_sampling_steps", "num_diffusion_samples"):
+            value = config[key]
+            if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+                raise ValueError(f"ESMFold2 option {key!r} must be a positive integer.")
+
+        seed = config.get("seed")
+        if seed is not None and (not isinstance(seed, int) or isinstance(seed, bool) or seed < 0):
+            raise ValueError("ESMFold2 option 'seed' must be a non-negative integer or None.")
+
+        for key in ("noise_scale", "step_scale", "max_inference_sigma"):
+            value = config.get(key)
+            if value is None:
+                continue
+            if not isinstance(value, int | float) or isinstance(value, bool) or not math.isfinite(float(value)):
+                raise ValueError(f"ESMFold2 option {key!r} must be a finite number or None.")
 
     @staticmethod
     def _sampler_kwargs(config: dict[str, Any]) -> dict[str, Any]:
@@ -319,6 +340,7 @@ class ESMFold2Core(FoldingAlgorithm):
 
         return ESMStructurePredictionInput(
             sequences=[self._to_esm_sequence_input(item) for item in prediction_input.sequences],
+            pocket=self._to_esm_pocket_conditioning(prediction_input.pocket),
             distogram_conditioning=self._to_esm_distogram_conditioning(prediction_input.distogram_conditioning),
             covalent_bonds=self._to_esm_covalent_bonds(prediction_input.covalent_bonds),
         )
@@ -374,6 +396,14 @@ class ESMFold2Core(FoldingAlgorithm):
         if isinstance(msa, list):
             return MSA.from_sequences(msa)
         return msa
+
+    @staticmethod
+    def _to_esm_pocket_conditioning(pocket: PocketConditioning | None) -> Any | None:
+        if pocket is None:
+            return None
+        from esm.utils.structure.input_builder import PocketConditioning as ESMPocketConditioning
+
+        return ESMPocketConditioning(binder_chain_id=pocket.binder_chain_id, contacts=pocket.contacts)
 
     @staticmethod
     def _to_esm_distogram_conditioning(
