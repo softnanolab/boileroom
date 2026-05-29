@@ -283,16 +283,16 @@ def test_esm2_position_id_skip_changes_embeddings(esm2_model_factory):
 def test_esm2_maybe_build_position_ids_rotary_cache_shape_mismatch_noop():
     """Shape-mismatched position ids must skip custom RoPE cache generation."""
     pytest.importorskip("transformers", reason="requires transformers")
-    from boileroom.models.esm import core as esm_core
+    from boileroom.models.esm import position_routing
 
     class _DummyRotary:
         inv_freq = torch.tensor([0.1, 0.2], dtype=torch.float32)
 
     dummy = _DummyRotary()
-    k = torch.zeros(1, 3, 4, dtype=torch.float32)
-    malformed_position_ids = torch.tensor([[0, 1, 0, 2]], dtype=torch.long)
+    k = torch.zeros(1, 2, 3, 4, dtype=torch.float32)
+    shape_mismatched_position_ids = torch.tensor([[0, 1, 0, 2]], dtype=torch.long)
 
-    cache = esm_core._maybe_build_position_ids_rotary_cache(dummy, k, malformed_position_ids)
+    cache = position_routing._maybe_build_position_ids_rotary_cache(dummy, k, shape_mismatched_position_ids)
     assert cache is None
 
 
