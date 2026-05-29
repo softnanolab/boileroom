@@ -92,10 +92,8 @@ def _maybe_build_position_ids_rotary_cache(
             _POSITION_IDS_ROUTING_WARNING_EMITTED = True
         return None
 
-    if not torch.is_floating_point(position_ids):
-        position_ids = position_ids.to(dtype=torch.long)
-    if position_ids.device != k.device:
-        position_ids = position_ids.to(device=k.device)
+    if position_ids.device != k.device or position_ids.dtype != torch.long:
+        position_ids = position_ids.to(device=k.device, dtype=torch.long)
 
     seq_len = k.shape[-2]
     if seq_len <= 0:
