@@ -29,25 +29,24 @@ logger = logging.getLogger(__name__)
 
 
 @dataclasses.dataclass(frozen=True)
-class _PositionIdsCompatState:
-    """Per-call state for position-id compatibility mode."""
+class _PositionIdsRoutingState:
+    """Per-call state for explicit ESM position-id routing."""
 
-    enabled: bool
-    position_ids: torch.Tensor | None = None
+    position_ids: torch.Tensor
     attention_mask: torch.Tensor | None = None
 
 
-_POSITION_IDS_COMPAT_STATE: ContextVar[_PositionIdsCompatState | None] = ContextVar(
-    "boileroom_esm_position_ids_compat", default=None
+_POSITION_IDS_ROUTING_STATE: ContextVar[_PositionIdsRoutingState | None] = ContextVar(
+    "boileroom_esm_position_ids_routing", default=None
 )
-_POSITION_IDS_COMPAT_PATCHES_INSTALLED = False
-_POSITION_IDS_COMPAT_WARNING_EMITTED = False
+_POSITION_IDS_ROUTING_PATCHES_INSTALLED = False
+_POSITION_IDS_ROUTING_WARNING_EMITTED = False
 
 
-def _position_ids_compat_state() -> _PositionIdsCompatState | None:
-    """Return the current position-id compatibility state, if active."""
+def _position_ids_routing_state() -> _PositionIdsRoutingState | None:
+    """Return the current explicit position-id routing state, if active."""
 
-    return _POSITION_IDS_COMPAT_STATE.get()
+    return _POSITION_IDS_ROUTING_STATE.get()
 
 
 def _is_default_arange_position_ids(position_ids: torch.Tensor) -> bool:
@@ -74,27 +73,25 @@ def _is_default_arange_position_ids(position_ids: torch.Tensor) -> bool:
 
 
 @contextmanager
-def _position_ids_compat_context(
-    enabled: bool,
+def _position_ids_routing_context(
     position_ids: torch.Tensor | None,
     attention_mask: torch.Tensor | None,
 ):
-    """Scope position-id compatibility context for a single inference call."""
+    """Scope explicit position-id routing for a single inference call."""
 
-    if not enabled:
+    if position_ids is None:
         yield
         return
 
-    state = _PositionIdsCompatState(
-        enabled=enabled,
-        position_ids=None if position_ids is None else position_ids,
+    state = _PositionIdsRoutingState(
+        position_ids=position_ids,
         attention_mask=None if attention_mask is None else attention_mask,
     )
-    token = _POSITION_IDS_COMPAT_STATE.set(state)
+    token = _POSITION_IDS_ROUTING_STATE.set(state)
     try:
         yield
     finally:
-        _POSITION_IDS_COMPAT_STATE.reset(token)
+        _POSITION_IDS_ROUTING_STATE.reset(token)
 
 
 def _maybe_build_position_ids_rotary_cache(
@@ -108,15 +105,15 @@ def _maybe_build_position_ids_rotary_cache(
         return None
 
     if position_ids.shape[0] != k.shape[0] or position_ids.shape[1] != k.shape[-2]:
-        global _POSITION_IDS_COMPAT_WARNING_EMITTED
-        if not _POSITION_IDS_COMPAT_WARNING_EMITTED:
+        global _POSITION_IDS_ROUTING_WARNING_EMITTED
+        if not _POSITION_IDS_ROUTING_WARNING_EMITTED:
             logger.warning(
-                "ESM position-id compatibility disabled for rotary embedding due to incompatible shape: "
+                "ESM position-id routing disabled for rotary embedding due to shape mismatch: "
                 "position_ids=%s, key_shape=%s",
                 tuple(position_ids.shape),
                 tuple(k.shape),
             )
-            _POSITION_IDS_COMPAT_WARNING_EMITTED = True
+            _POSITION_IDS_ROUTING_WARNING_EMITTED = True
         return None
 
     if not torch.is_floating_point(position_ids):
@@ -147,12 +144,10 @@ def _maybe_build_position_ids_rotary_cache(
 
 def _compute_esmfold_position_ids(
     esmaa: torch.Tensor,
-    state: _PositionIdsCompatState,
+    state: _PositionIdsRoutingState,
 ) -> torch.Tensor | None:
     """Build LM stem position ids for ESMFold from wrapped context state."""
 
-    if state.position_ids is None:
-        return None
     position_ids = state.position_ids
     if not torch.is_floating_point(position_ids):
         position_ids = position_ids.to(dtype=torch.long)
@@ -183,54 +178,63 @@ def _compute_esmfold_position_ids(
     return None
 
 
-def _install_esm_position_ids_compat_patches() -> None:
-    """Install guarded compatibility patches into Transformer ESM internals."""
+def _install_esm_position_ids_routing_patches() -> None:
+    """Install guarded position-id routing patches into Transformer ESM internals."""
 
-    global _POSITION_IDS_COMPAT_PATCHES_INSTALLED
-    if _POSITION_IDS_COMPAT_PATCHES_INSTALLED:
+    global _POSITION_IDS_ROUTING_PATCHES_INSTALLED
+    if _POSITION_IDS_ROUTING_PATCHES_INSTALLED:
         return
 
     try:
         from transformers.models.esm import modeling_esm, modeling_esmfold
     except (ImportError, ModuleNotFoundError):
-        logger.debug("Skipping ESM position-id compatibility patch: transformers not importable at import-time.")
+        logger.debug("Skipping ESM position-id routing patch: transformers not importable at import-time.")
         return
 
-    # ESM rotary compatibility layer
-    rotary_forward_sig = inspect.signature(modeling_esm.RotaryEmbedding.forward)
-    if len(rotary_forward_sig.parameters) == 3:
-        original_forward = modeling_esm.RotaryEmbedding.forward
-
-        if not hasattr(original_forward, "__wrapped__"):
-
-            def compat_rotary_forward(self: Any, q: torch.Tensor, k: torch.Tensor):
-                state = _position_ids_compat_state()
-                if state is None or not state.enabled or state.position_ids is None:
-                    return original_forward(self, q, k)
-
-                cache = _maybe_build_position_ids_rotary_cache(self, k, state.position_ids.to(device=k.device))
-                if cache is None:
-                    return original_forward(self, q, k)
-
-                cos, sin = cache
-                from transformers.models.esm.modeling_esm import apply_rotary_pos_emb
-
-                return (
-                    apply_rotary_pos_emb(q, cos, sin).to(dtype=q.dtype),
-                    apply_rotary_pos_emb(k, cos, sin).to(dtype=k.dtype),
-                )
-
-            compat_rotary_forward.__name__ = "position_ids_compat_forward"
-            modeling_esm.RotaryEmbedding._position_ids_compat_original_forward = original_forward
-            modeling_esm.RotaryEmbedding.forward = compat_rotary_forward
+    # ESM rotary layer position-id routing.
+    rotary_embedding_cls = getattr(modeling_esm, "RotaryEmbedding", None) or getattr(
+        modeling_esm, "EsmRotaryEmbedding", None
+    )
+    if rotary_embedding_cls is None:
+        logger.warning("Skipping ESM rotary position-id routing patch: rotary embedding class is unavailable.")
     else:
-        logger.warning(
-            "Skipping ESM rotary compatibility patch: signature mismatch for "
-            "transformers.models.esm.RotaryEmbedding.forward: %s",
-            rotary_forward_sig,
-        )
+        rotary_forward_sig = inspect.signature(rotary_embedding_cls.forward)
+        if len(rotary_forward_sig.parameters) == 3:
+            original_forward = rotary_embedding_cls.forward
 
-    # ESMFold LM stem compatibility layer
+            if not hasattr(original_forward, "__wrapped__"):
+
+                def position_ids_rotary_forward(self: Any, q: torch.Tensor, k: torch.Tensor):
+                    state = _position_ids_routing_state()
+                    if state is None:
+                        return original_forward(self, q, k)
+
+                    cache = _maybe_build_position_ids_rotary_cache(self, k, state.position_ids.to(device=k.device))
+                    if cache is None:
+                        return original_forward(self, q, k)
+
+                    cos, sin = cache
+                    from transformers.models.esm.modeling_esm import apply_rotary_pos_emb
+
+                    return (
+                        apply_rotary_pos_emb(q, cos, sin).to(dtype=q.dtype),
+                        apply_rotary_pos_emb(k, cos, sin).to(dtype=k.dtype),
+                    )
+
+                position_ids_rotary_forward.__name__ = "position_ids_routing_forward"
+                position_ids_rotary_forward.__wrapped__ = original_forward
+                rotary_embedding_cls._position_ids_routing_original_forward = original_forward
+                rotary_embedding_cls.forward = position_ids_rotary_forward
+        elif "position_ids" in rotary_forward_sig.parameters:
+            logger.debug("Skipping ESM rotary position-id routing patch: native rotary embedding accepts position_ids.")
+        else:
+            logger.warning(
+                "Skipping ESM rotary position-id routing patch: signature mismatch for %s.forward: %s",
+                rotary_embedding_cls.__name__,
+                rotary_forward_sig,
+            )
+
+    # ESMFold LM stem position-id routing.
     compute_lm_sig = inspect.signature(modeling_esmfold.EsmForProteinFolding.compute_language_model_representations)
     if len(compute_lm_sig.parameters) == 2:
         original_compute_language_model_representations = (
@@ -239,9 +243,9 @@ def _install_esm_position_ids_compat_patches() -> None:
 
         if not hasattr(original_compute_language_model_representations, "__wrapped__"):
 
-            def compat_compute_language_model_representations(self: Any, esmaa: torch.Tensor):
-                state = _position_ids_compat_state()
-                if state is None or not state.enabled or state.position_ids is None:
+            def position_ids_compute_language_model_representations(self: Any, esmaa: torch.Tensor):
+                state = _position_ids_routing_state()
+                if state is None:
                     return original_compute_language_model_representations(self, esmaa)
 
                 position_ids = _compute_esmfold_position_ids(esmaa, state)
@@ -259,7 +263,7 @@ def _install_esm_position_ids_compat_patches() -> None:
                 esmaa = torch.cat([bos, esmaa, eos], dim=1)
                 esmaa[range(B), (esmaa != 1).sum(1)] = eosi
 
-                # position_ids is passed to the stem when compatibility mode is active.
+                # Route explicit multimer position ids into the LM stem.
                 esm_hidden_states = self.esm(
                     esmaa,
                     attention_mask=esmaa != 1,
@@ -270,22 +274,27 @@ def _install_esm_position_ids_compat_patches() -> None:
                 esm_s = esm_s[:, 1:-1]  # B, L, nLayers, C
                 return esm_s
 
-            compat_compute_language_model_representations.__name__ = (
-                "position_ids_compat_compute_language_model_representations"
+            position_ids_compute_language_model_representations.__name__ = (
+                "position_ids_routing_compute_language_model_representations"
             )
-            modeling_esmfold.EsmForProteinFolding._position_ids_compat_original_compute_language_model_representations = original_compute_language_model_representations
+            position_ids_compute_language_model_representations.__wrapped__ = (
+                original_compute_language_model_representations
+            )
+            modeling_esmfold.EsmForProteinFolding._position_ids_routing_original_compute_language_model_representations = (
+                original_compute_language_model_representations
+            )
             modeling_esmfold.EsmForProteinFolding.compute_language_model_representations = (
-                compat_compute_language_model_representations
+                position_ids_compute_language_model_representations
             )
 
     else:
         logger.warning(
-            "Skipping ESMFold compatibility patch: signature mismatch for "
+            "Skipping ESMFold position-id routing patch: signature mismatch for "
             "transformers.models.esmfold.EsmForProteinFolding.compute_language_model_representations: %s",
             compute_lm_sig,
         )
 
-    _POSITION_IDS_COMPAT_PATCHES_INSTALLED = True
+    _POSITION_IDS_ROUTING_PATCHES_INSTALLED = True
 
 
 ############################################################
@@ -363,7 +372,7 @@ def always_no_grad_forward(self, seq_feats, pair_feats, true_aa, residx, mask, n
 EsmFoldingTrunk.forward = always_no_grad_forward
 
 
-_install_esm_position_ids_compat_patches()
+_install_esm_position_ids_routing_patches()
 
 
 class ESM2Core(EmbeddingAlgorithm):
@@ -376,7 +385,6 @@ class ESM2Core(EmbeddingAlgorithm):
         # Chain linking and positioning config
         "glycine_linker": "",
         "position_ids_skip": 512,
-        "enable_position_ids_compat": False,
     }
     # Static config keys that can only be set at initialization
     STATIC_CONFIG_KEYS: ClassVar[frozenset[str]] = frozenset({"device", "model_name"})
@@ -502,9 +510,9 @@ class ESM2Core(EmbeddingAlgorithm):
             A single protein sequence string or an iterable of sequence strings. Sequence strings may contain one-letter residues, inline ``<mask>`` tokens, and optional ``:`` chain separators for multimers.
         options : dict | None, optional
             Per-call configuration that is merged with the core config; can control glycine_linker, position_ids_skip,
-            `enable_position_ids_compat`, `include_fields`, and other runtime options. Request `include_fields=["lm_logits"]`
-            for full-vocabulary masked-language-model logits or `include_fields=["hidden_states", "lm_logits"]` / `["*"]` to
-            return both optional outputs.
+            `include_fields`, and other runtime options. Request `include_fields=["lm_logits"]` for full-vocabulary
+            masked-language-model logits or `include_fields=["hidden_states", "lm_logits"]` / `["*"]` to return both
+            optional outputs.
 
         Returns
         -------
@@ -566,8 +574,7 @@ class ESM2Core(EmbeddingAlgorithm):
         with (
             Timer("Model Inference") as inference_timer,
             torch.inference_mode(),
-            _position_ids_compat_context(
-                bool(effective_config["enable_position_ids_compat"]),
+            _position_ids_routing_context(
                 tokenized.get("position_ids"),
                 tokenized.get("attention_mask"),
             ),
@@ -837,7 +844,6 @@ class ESMFoldCore(FoldingAlgorithm):
         # Chain linking and positioning config
         "glycine_linker": "",
         "position_ids_skip": 512,
-        "enable_position_ids_compat": False,
         "include_fields": None,  # Optional[List[str]] - controls which fields to include in output
     }
     # Static config keys that can only be set at initialization
@@ -900,7 +906,7 @@ class ESMFoldCore(FoldingAlgorithm):
             A single amino acid sequence or an iterable of sequences to predict.
         options : dict, optional
             Per-call configuration merged with the instance's static config (for example, `include_fields` to select which output
-            fields to return, or `enable_position_ids_compat` to route multimer `position_ids` through LM rotary embeddings).
+            fields to return).
 
         Returns
         -------
@@ -927,8 +933,7 @@ class ESMFoldCore(FoldingAlgorithm):
         with (
             Timer("Model Inference") as inference_timer,
             torch.inference_mode(),
-            _position_ids_compat_context(
-                bool(effective_config["enable_position_ids_compat"]),
+            _position_ids_routing_context(
                 tokenized_input.get("position_ids"),
                 tokenized_input.get("attention_mask"),
             ),

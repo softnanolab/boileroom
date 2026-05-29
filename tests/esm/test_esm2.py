@@ -241,17 +241,18 @@ def test_esm2_embed_with_hidden_states_and_lm_logits(esm2_model_factory):
     del model
 
 
-def test_esm2_position_ids_compat_default_is_false():
-    """The compatibility flag must remain opt-in by default."""
+def test_esm2_position_ids_are_not_user_configurable():
+    """Position-id routing is the default multimer behavior, not a user-facing flag."""
     pytest.importorskip("transformers", reason="requires transformers")
     from boileroom.models.esm.core import ESM2Core
 
     core = ESM2Core(config={"device": "cpu", "model_name": "esm2_t6_8M_UR50D"})
-    assert core.config["enable_position_ids_compat"] is False
+    assert "enable_position_ids_compat" not in core.DEFAULT_CONFIG
+    assert "enable_position_ids_compat" not in core.config
 
 
-def test_esm2_position_ids_compat_arange_is_noop(esm2_model_factory, mocker):
-    """When callers provide arange-compatible ids, compatibility mode keeps outputs unchanged."""
+def test_esm2_arange_position_ids_match_monomer_outputs(esm2_model_factory, mocker):
+    """Arange-equivalent multimer ids match equivalent monomer outputs."""
     pytest.importorskip("transformers", reason="requires transformers")
     from boileroom.models.esm import core as esm_core
 
@@ -265,24 +266,23 @@ def test_esm2_position_ids_compat_arange_is_noop(esm2_model_factory, mocker):
     )
 
     model = esm2_model_factory(model_name="esm2_t6_8M_UR50D", include_fields=["hidden_states"])
+    monomer_sequence = "ACDEFG"
+    multimer_sequence = "AC:DEFG"
+
+    result_monomer = model.embed([monomer_sequence])
+    result_multimer = model.embed([multimer_sequence], options={"glycine_linker": ""})
+
+    assert np.array_equal(result_monomer.embeddings, result_multimer.embeddings)
+    assert np.array_equal(result_monomer.hidden_states, result_multimer.hidden_states)
+
+
+def test_esm2_position_id_skip_changes_embeddings(esm2_model_factory):
+    """Custom multimer position skips are wired into rotary embeddings by default."""
     sequence = "AC:DEFG"
+    model = esm2_model_factory(model_name="esm2_t6_8M_UR50D", include_fields=["hidden_states"])
 
-    result_without = model.embed([sequence], options={"enable_position_ids_compat": False})
-    result_with = model.embed([sequence], options={"enable_position_ids_compat": True})
-
-    assert np.array_equal(result_without.embeddings, result_with.embeddings)
-    assert np.array_equal(result_without.hidden_states, result_with.hidden_states)
-
-
-def test_esm2_position_ids_compat_skip_change(esm2_model_factory):
-    """Compatibility mode wires custom multimer position ids for non-default skips."""
-    sequence = "AC:DEFG"
-    model = esm2_model_factory(
-        model_name="esm2_t6_8M_UR50D", include_fields=["hidden_states"], enable_position_ids_compat=True
-    )
-
-    result_skip0 = model.embed([sequence], options={"enable_position_ids_compat": True, "position_ids_skip": 0})
-    result_skip1024 = model.embed([sequence], options={"enable_position_ids_compat": True, "position_ids_skip": 1024})
+    result_skip0 = model.embed([sequence], options={"position_ids_skip": 0})
+    result_skip1024 = model.embed([sequence], options={"position_ids_skip": 1024})
 
     max_diff = np.max(np.abs(result_skip0.embeddings - result_skip1024.embeddings))
     assert max_diff > 0.0

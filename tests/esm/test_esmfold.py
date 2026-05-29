@@ -317,8 +317,8 @@ def test_tokenize_sequences_with_mocker(mocker):
     assert multimer_properties is not None
 
 
-def test_esmfold_position_ids_compat_arange_is_noop(test_sequences, esmfold_model, mocker):
-    """Default-arange position ids remain a strict no-op in compatibility mode."""
+def test_esmfold_arange_position_ids_match_monomer_lm_outputs(test_sequences, esmfold_model, mocker):
+    """Arange-equivalent multimer ids match equivalent monomer LM outputs."""
     pytest.importorskip("transformers", reason="requires transformers")
     from boileroom.models.esm import core as esm_core
 
@@ -331,31 +331,28 @@ def test_esmfold_position_ids_compat_arange_is_noop(test_sequences, esmfold_mode
         add_special_tokens=False: _make_arange_position_ids(sequences, glycine_linker, add_special_tokens),
     )
 
-    sequence = test_sequences["multimer"]
+    multimer_sequence = test_sequences["multimer"]
+    monomer_sequence = multimer_sequence.replace(":", "")
 
-    result_without = esmfold_model.fold(
-        sequence, options={"include_fields": ["lm_logits"], "enable_position_ids_compat": False}
-    )
-    result_with = esmfold_model.fold(
-        sequence, options={"include_fields": ["lm_logits"], "enable_position_ids_compat": True}
-    )
+    result_monomer = esmfold_model.fold(monomer_sequence, options={"include_fields": ["lm_logits"]})
+    result_multimer = esmfold_model.fold(multimer_sequence, options={"include_fields": ["lm_logits"]})
 
-    assert result_without.lm_logits is not None
-    assert result_with.lm_logits is not None
-    assert np.array_equal(result_without.lm_logits, result_with.lm_logits)
+    assert result_monomer.lm_logits is not None
+    assert result_multimer.lm_logits is not None
+    assert np.array_equal(result_monomer.lm_logits, result_multimer.lm_logits)
 
 
-def test_esmfold_position_ids_compat_skip_change(test_sequences, esmfold_model):
-    """Compatibility mode routes multimer skips to different LM representations."""
+def test_esmfold_position_id_skip_changes_lm_outputs(test_sequences, esmfold_model):
+    """Multimer position skips are routed to different LM representations by default."""
     sequence = test_sequences["multimer"]
 
     result_skip0 = esmfold_model.fold(
         sequence,
-        options={"include_fields": ["lm_logits"], "enable_position_ids_compat": True, "position_ids_skip": 0},
+        options={"include_fields": ["lm_logits"], "position_ids_skip": 0},
     )
     result_skip1024 = esmfold_model.fold(
         sequence,
-        options={"include_fields": ["lm_logits"], "enable_position_ids_compat": True, "position_ids_skip": 1024},
+        options={"include_fields": ["lm_logits"], "position_ids_skip": 1024},
     )
 
     assert result_skip0.lm_logits is not None
@@ -368,8 +365,7 @@ def test_esmfold_position_ids_shape_mismatch_noop_fallback():
     pytest.importorskip("transformers", reason="requires transformers")
     from boileroom.models.esm import core as esm_core
 
-    state = esm_core._PositionIdsCompatState(
-        enabled=True,
+    state = esm_core._PositionIdsRoutingState(
         position_ids=torch.tensor([[0, 1, 0, 2]], dtype=torch.long),
         attention_mask=None,
     )
