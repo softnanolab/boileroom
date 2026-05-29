@@ -1,4 +1,18 @@
-"""ESM-2 position-id routing for HuggingFace rotary embeddings."""
+"""Route Boileroom's ESM-2 multimer ``position_ids`` into rotary embeddings.
+
+HuggingFace's ESM-2 model accepts ``position_ids`` at the model-call boundary,
+but older Transformer releases do not pass those ids down into the rotary
+embedding helper. The helper instead rebuilds contiguous token positions from
+the query/key tensor shape. That is fine for ordinary monomers, but it erases
+Boileroom's deliberate multimer position gaps, so ``position_ids_skip`` changes
+the bookkeeping tensors while the attention layers still see vanilla contiguous
+rotary positions.
+
+This module installs a narrow ESM-2 patch that keeps the public model call the
+same while routing the current call's explicit ``position_ids`` into RoPE cache
+construction. Default arange-style ids fall back to the native Transformer path;
+non-contiguous multimer ids use the patched cache by default.
+"""
 
 import dataclasses
 import inspect
@@ -117,7 +131,14 @@ def _maybe_build_position_ids_rotary_cache(
 
 
 def install_esm_position_ids_routing() -> None:
-    """Install guarded position-id routing into Transformer ESM-2 rotary embeddings."""
+    """Install default ESM-2 RoPE routing for explicit multimer position ids.
+
+    The patch is intentionally scoped to Transformer ESM rotary embedding
+    classes whose ``forward`` method still takes only ``q`` and ``k``. Newer
+    Transformer versions that natively accept ``position_ids`` are left
+    untouched. This makes the corrected multimer behavior the default while
+    avoiding a compatibility flag or a fork of the surrounding ESM-2 model code.
+    """
 
     global _POSITION_IDS_ROUTING_PATCHES_INSTALLED
     if _POSITION_IDS_ROUTING_PATCHES_INSTALLED:
