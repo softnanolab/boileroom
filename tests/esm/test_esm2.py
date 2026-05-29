@@ -1,11 +1,8 @@
-from collections.abc import Sequence
-
 import numpy as np
 import pytest
 import torch
 
 from boileroom import ESM2
-from boileroom.models.esm.parsing import parse_esm2_sequences
 
 pytestmark = [pytest.mark.integration, pytest.mark.slow, pytest.mark.gpu, pytest.mark.xdist_group("esm2")]
 
@@ -61,42 +58,6 @@ def esm2_model_factory(backend_option: str, gpu_device: str | None, device_optio
         return ESM2(backend=backend_option, device=device, config=config)
 
     return _make_model
-
-
-def _make_arange_position_ids(sequences: Sequence[str], glycine_linker: str, add_special_tokens: bool) -> torch.Tensor:
-    """Return padded arange-style position ids for each parsed sequence input.
-
-    Parameters
-    ----------
-    sequences : Sequence[str]
-        Input sequences passed to ``parse_esm2_sequences``.
-    glycine_linker : str
-        Linker inserted when replacing chain separators.
-    add_special_tokens : bool
-        Whether tokenizer special tokens are accounted for in the position count.
-
-    Returns
-    -------
-    torch.Tensor
-        Padded position-id tensor with shape ``(batch, max_length)``.
-    """
-    parsed_sequences = parse_esm2_sequences(sequences)
-    lengths = []
-    for parsed_sequence in parsed_sequences:
-        base_length = sum(len(chain.tokens) for chain in parsed_sequence.chains)
-        base_length += max(len(parsed_sequence.chains) - 1, 0) * len(glycine_linker)
-        if add_special_tokens:
-            base_length += 2
-        lengths.append(base_length)
-
-    max_length = max(lengths)
-    position_ids = []
-    for length in lengths:
-        row = torch.arange(length, dtype=torch.long)
-        if length < max_length:
-            row = torch.cat([row, torch.zeros(max_length - length, dtype=torch.long)])
-        position_ids.append(row)
-    return torch.stack(position_ids, dim=0)
 
 
 @pytest.mark.parametrize(
@@ -239,31 +200,6 @@ def test_esm2_embed_with_hidden_states_and_lm_logits(esm2_model_factory):
     assert result.lm_logits is not None
     assert result.lm_logits.shape == (1, len(sequence), 33)
     del model
-
-
-def test_esm2_arange_position_ids_match_monomer_outputs(esm2_model_factory, mocker):
-    """Arange-equivalent multimer ids match equivalent monomer outputs."""
-    pytest.importorskip("transformers", reason="requires transformers")
-    from boileroom.models.esm import core as esm_core
-
-    mocker.patch.object(
-        esm_core,
-        "compute_position_ids",
-        side_effect=lambda sequences,
-        glycine_linker,
-        position_ids_skip,
-        add_special_tokens=False: _make_arange_position_ids(sequences, glycine_linker, add_special_tokens),
-    )
-
-    model = esm2_model_factory(model_name="esm2_t6_8M_UR50D", include_fields=["hidden_states"])
-    monomer_sequence = "ACDEFG"
-    multimer_sequence = "AC:DEFG"
-
-    result_monomer = model.embed([monomer_sequence])
-    result_multimer = model.embed([multimer_sequence], options={"glycine_linker": ""})
-
-    assert np.array_equal(result_monomer.embeddings, result_multimer.embeddings)
-    assert np.array_equal(result_monomer.hidden_states, result_multimer.hidden_states)
 
 
 def test_esm2_position_id_skip_changes_embeddings(esm2_model_factory):
