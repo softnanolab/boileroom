@@ -5,7 +5,7 @@ import inspect
 import logging
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import Any
+from typing import Any, cast
 
 import torch
 
@@ -160,8 +160,8 @@ def install_esm_position_ids_routing() -> None:
                 )
 
             position_ids_rotary_forward.__name__ = "position_ids_routing_forward"
-            position_ids_rotary_forward.__wrapped__ = original_forward
-            rotary_embedding_cls._position_ids_routing_original_forward = original_forward
+            cast(Any, position_ids_rotary_forward).__wrapped__ = original_forward
+            cast(Any, rotary_embedding_cls)._position_ids_routing_original_forward = original_forward
             rotary_embedding_cls.forward = position_ids_rotary_forward
     elif "position_ids" in rotary_forward_sig.parameters:
         logger.debug("Skipping ESM rotary position-id routing patch: native rotary embedding accepts position_ids.")
