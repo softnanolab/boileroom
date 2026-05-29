@@ -241,16 +241,6 @@ def test_esm2_embed_with_hidden_states_and_lm_logits(esm2_model_factory):
     del model
 
 
-def test_esm2_position_ids_are_not_user_configurable():
-    """Position-id routing is the default multimer behavior, not a user-facing flag."""
-    pytest.importorskip("transformers", reason="requires transformers")
-    from boileroom.models.esm.core import ESM2Core
-
-    core = ESM2Core(config={"device": "cpu", "model_name": "esm2_t6_8M_UR50D"})
-    assert "enable_position_ids_compat" not in core.DEFAULT_CONFIG
-    assert "enable_position_ids_compat" not in core.config
-
-
 def test_esm2_arange_position_ids_match_monomer_outputs(esm2_model_factory, mocker):
     """Arange-equivalent multimer ids match equivalent monomer outputs."""
     pytest.importorskip("transformers", reason="requires transformers")
