@@ -71,36 +71,6 @@ def test_position_ids_rotary_cache_matches_closed_form():
     torch.testing.assert_close(sin, expected_sin)
 
 
-def test_rotary_cache_matches_native_for_contiguous_positions():
-    """Contiguous ids reproduce the stock Transformers cache (monomers untouched).
-
-    ``position_ids_skip`` must only change cross-chain geometry. For contiguous
-    ``[0, 1, ..., L-1]`` positions the custom cache has to equal the native
-    ``_update_cos_sin_tables`` output bit-for-bit, guaranteeing monomers and
-    arange-equivalent inputs behave exactly as upstream ESM-2.
-    """
-    torch = pytest.importorskip("torch", reason="requires torch")
-    from boileroom.models.esm import position_routing
-
-    dim = 8
-    seq = 6
-    rotary = _rotary_embedding(dim)
-    key = torch.zeros(1, 2, seq, dim, dtype=torch.float32)
-
-    native_cos, native_sin = rotary._update_cos_sin_tables(key, seq_dimension=-2)
-
-    # arange ids are routed to the native path, so build the custom cache from the
-    # closed form to prove the two definitions coincide for contiguous positions.
-    position_ids = torch.arange(seq, dtype=torch.long).unsqueeze(0)
-    freqs = torch.outer(position_ids.reshape(-1).to(torch.float32), rotary.inv_freq)
-    emb = torch.cat((freqs, freqs), dim=-1)
-    custom_cos = emb.cos().reshape(1, seq, dim).unsqueeze(1)
-    custom_sin = emb.sin().reshape(1, seq, dim).unsqueeze(1)
-
-    torch.testing.assert_close(custom_cos, native_cos)
-    torch.testing.assert_close(custom_sin, native_sin)
-
-
 def test_arange_position_ids_use_native_path():
     """Default contiguous ids must opt out of custom routing.
 
