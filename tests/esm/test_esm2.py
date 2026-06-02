@@ -203,10 +203,29 @@ def test_esm2_embed_with_hidden_states_and_lm_logits(esm2_model_factory):
 
 
 def test_esm2_position_id_skip_changes_embeddings(esm2_model_factory):
-    """Custom multimer position skips are wired into rotary embeddings by default."""
-    sequence = "AC:DEFG"
+    """Custom multimer position skips are wired into rotary embeddings by default.
+
+    Two exact invariances pin the behavior down beyond a ``diff > 0`` smoke check:
+
+    * A monomer has no chain break, so ``position_ids_skip`` is never applied and
+      the embeddings must be identical (within floating-point tolerance)
+      regardless of the requested skip.
+    * A multimer does have a chain break, so a different skip must change the
+      embeddings. RoPE attention depends only on relative positions, hence the
+      skip is exactly what moves the cross-chain geometry.
+
+    The closed-form rotary cache that produces these effects is verified
+    exhaustively in ``tests/esm/test_esm2_position_routing.py``.
+    """
     model = esm2_model_factory(model_name="esm2_t6_8M_UR50D", include_fields=["hidden_states"])
 
+    # Monomer: skip must be a no-op because there is no inter-chain gap to widen.
+    mono_skip0 = model.embed(["ACDEFG"], options={"position_ids_skip": 0})
+    mono_skip1024 = model.embed(["ACDEFG"], options={"position_ids_skip": 1024})
+    np.testing.assert_allclose(mono_skip0.embeddings, mono_skip1024.embeddings, atol=1e-4)
+
+    # Multimer: skip widens the cross-chain rotary phase, so embeddings must change.
+    sequence = "AC:DEFG"
     result_skip0 = model.embed([sequence], options={"position_ids_skip": 0})
     result_skip1024 = model.embed([sequence], options={"position_ids_skip": 1024})
 
