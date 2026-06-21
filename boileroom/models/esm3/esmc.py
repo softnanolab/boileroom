@@ -40,7 +40,8 @@ class ModalESMC:
 
     @modal.method()
     def embed(self, sequences: str | Sequence[str], options: dict | None = None) -> "ESMCOutput":
-        assert self._core is not None, "ModalESMC has not been initialized"
+        if getattr(self, "_core", None) is None:
+            raise RuntimeError("ModalESMC has not been initialized")
         return self._core.embed(sequences, options=options)
 
 

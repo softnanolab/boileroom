@@ -1,9 +1,11 @@
 """Public ESM3-family exports with lazy Modal wrapper imports."""
 
+from typing import Any
+
 from .types import ESM3Output, ESMCOutput, ESMEmbeddingOutput
 
 
-def __getattr__(name: str):
+def __getattr__(name: str) -> Any:
     """Lazy import wrappers to keep types-only imports lightweight."""
 
     if name in {"ESM3", "ModalESM3"}:

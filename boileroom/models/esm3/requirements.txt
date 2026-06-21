@@ -1,6 +1,6 @@
-numpy
+numpy>=2.2.2,<3.0.0
 torch>=2.5.1,<2.7.0
 esm==3.2.3
-fastapi
-uvicorn
-pydantic
+fastapi>=0.115.0,<0.116.0
+uvicorn>=0.34.0,<0.35.0
+pydantic>=2.10.0,<3.0.0

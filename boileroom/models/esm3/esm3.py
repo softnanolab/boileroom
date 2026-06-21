@@ -40,7 +40,8 @@ class ModalESM3:
 
     @modal.method()
     def embed(self, sequences: str | Sequence[str], options: dict | None = None) -> "ESM3Output":
-        assert self._core is not None, "ModalESM3 has not been initialized"
+        if getattr(self, "_core", None) is None:
+            raise RuntimeError("ModalESM3 has not been initialized")
         return self._core.embed(sequences, options=options)
 
 

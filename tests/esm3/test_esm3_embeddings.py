@@ -7,11 +7,10 @@ import sys
 import types
 from dataclasses import fields
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, ClassVar, cast
 
 import numpy as np
 import pytest
-import torch
 
 
 def test_esm3_types_are_lightweight() -> None:
@@ -52,6 +51,16 @@ def test_parse_sequences_preserves_residue_and_chain_indices() -> None:
     assert parsed[0].residue_index.tolist() == [0, 1, 2, 0, 1]
 
 
+def test_parse_sequences_rejects_empty_batches() -> None:
+    from boileroom.models.esm3.core import ESMCCore, parse_esm3_sequences
+
+    with pytest.raises(ValueError, match="at least one sequence"):
+        parse_esm3_sequences([])
+
+    with pytest.raises(ValueError, match="at least one sequence"):
+        ESMCCore(config={"device": "cpu"}).embed([])
+
+
 def test_pad_residue_arrays_zero_and_minus_one_padding() -> None:
     from boileroom.models.esm3.core import pad_residue_arrays
 
@@ -71,6 +80,13 @@ def test_pad_residue_arrays_zero_and_minus_one_padding() -> None:
     assert lm_logits is None
 
 
+def test_pad_residue_arrays_rejects_empty_batches() -> None:
+    from boileroom.models.esm3.core import pad_residue_arrays
+
+    with pytest.raises(ValueError, match="empty batch"):
+        pad_residue_arrays(embeddings=[], chain_index=[], residue_index=[])
+
+
 class _FakeProtein:
     def __init__(self, sequence: str) -> None:
         self.sequence = sequence
@@ -87,12 +103,13 @@ class _FakeEncoded:
 
 
 class _FakeForwardTrackData:
-    def __init__(self, sequence: torch.Tensor | None) -> None:
+    def __init__(self, sequence: Any | None) -> None:
         self.sequence = sequence
 
 
 class _FakeLogitsOutput:
     def __init__(self, sequence: str, include_hidden: bool, include_logits: bool) -> None:
+        torch = pytest.importorskip("torch")
         token_count = len(sequence) + 2
         values = torch.arange(token_count * 3, dtype=torch.float32).reshape(token_count, 3)
         self.embeddings = values
@@ -104,9 +121,9 @@ class _FakeLogitsOutput:
 
 
 class _FakeSDKModel:
-    requested_model_names: list[str] = []
-    logits_configs: list[dict[str, Any]] = []
-    encoded_sequences: list[str] = []
+    requested_model_names: ClassVar[list[str]] = []
+    logits_configs: ClassVar[list[dict[str, Any]]] = []
+    encoded_sequences: ClassVar[list[str]] = []
 
     @classmethod
     def from_pretrained(cls, model_name: str) -> _FakeSDKModel:
@@ -194,7 +211,7 @@ def test_esmc_static_config_and_invalid_model_validation(fake_esm_sdk: type[_Fak
 def test_esm3_core_hidden_states_are_rejected(fake_esm_sdk: type[_FakeSDKModel]) -> None:
     from boileroom.models.esm3.core import ESM3Core
 
-    with pytest.raises(ValueError, match="hidden_states.*ESM3"):
+    with pytest.raises(ValueError, match=r"hidden_states.*ESM3"):
         ESM3Core(config={"device": "cpu"}).embed("ACD", options={"include_fields": ["hidden_states"]})
 
 

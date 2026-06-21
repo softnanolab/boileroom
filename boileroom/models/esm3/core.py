@@ -42,6 +42,8 @@ def parse_esm3_sequences(sequences: str | Sequence[str]) -> list[ESM3ParsedSeque
     """
 
     sequence_list = [sequences] if isinstance(sequences, str) else list(sequences)
+    if not sequence_list:
+        raise ValueError("ESM-C/ESM3 embedding input must contain at least one sequence.")
 
     parsed: list[ESM3ParsedSequence] = []
     for sequence in sequence_list:
@@ -66,6 +68,8 @@ def parse_esm3_sequences(sequences: str | Sequence[str]) -> list[ESM3ParsedSeque
 
 
 def _pad_and_stack(arrays: list[np.ndarray], residue_axis: int, pad_value: float | int) -> np.ndarray:
+    if not arrays:
+        raise ValueError("Cannot pad an empty batch of residue arrays.")
     max_residues = max(array.shape[residue_axis] for array in arrays) if arrays else 0
     padded: list[np.ndarray] = []
     for array in arrays:

@@ -19,3 +19,8 @@ ENV PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 RUN --mount=type=cache,id=${UV_CACHE_ID},target=/root/.cache/uv \
     uv pip install --system -r /tmp/requirements.txt \
     && rm /tmp/requirements.txt
+
+RUN mkdir -p "${MODEL_DIR:-/mnt/models}" \
+    && chown -R 65532:65532 "${MODEL_DIR:-/mnt/models}"
+
+USER 65532:65532
