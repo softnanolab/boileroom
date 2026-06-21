@@ -10,6 +10,7 @@ TaskMethod = Literal["fold", "embed"]
 TaskKind = Literal["structure", "embedding"]
 
 ESM_IMAGE_NAME = get_model_image_spec("esm").image_name
+ESM3_IMAGE_NAME = get_model_image_spec("esm3").image_name
 CHAI_IMAGE_NAME = get_model_image_spec("chai").image_name
 BOLTZ_IMAGE_NAME = get_model_image_spec("boltz").image_name
 
@@ -119,6 +120,44 @@ ESM2_SPEC = ModelSpec(
     ),
 )
 
+ESMC_SPEC = ModelSpec(
+    key="esmc",
+    public_name="ESMC",
+    family="esm3",
+    wrapper_class_path="boileroom.models.esm3.esmc.ESMC",
+    modal_class_path="boileroom.models.esm3.esmc.ModalESMC",
+    apptainer_core_class_path="boileroom.models.esm3.core.ESMCCore",
+    apptainer_image_name=ESM3_IMAGE_NAME,
+    supported_backends=("modal", "apptainer"),
+    contract=ModelContract(
+        task_method="embed",
+        task_kind="embedding",
+        static_config_keys=frozenset({"device", "model_name"}),
+        minimal_output_fields=("metadata", "embeddings", "chain_index", "residue_index"),
+        optional_output_fields=("hidden_states", "lm_logits"),
+        supports_multimer=True,
+    ),
+)
+
+ESM3_SPEC = ModelSpec(
+    key="esm3",
+    public_name="ESM3",
+    family="esm3",
+    wrapper_class_path="boileroom.models.esm3.esm3.ESM3",
+    modal_class_path="boileroom.models.esm3.esm3.ModalESM3",
+    apptainer_core_class_path="boileroom.models.esm3.core.ESM3Core",
+    apptainer_image_name=ESM3_IMAGE_NAME,
+    supported_backends=("modal", "apptainer"),
+    contract=ModelContract(
+        task_method="embed",
+        task_kind="embedding",
+        static_config_keys=frozenset({"device", "model_name"}),
+        minimal_output_fields=("metadata", "embeddings", "chain_index", "residue_index"),
+        optional_output_fields=("lm_logits",),
+        supports_multimer=True,
+    ),
+)
+
 CHAI1_SPEC = ModelSpec(
     key="chai1",
     public_name="Chai1",
@@ -172,7 +211,7 @@ BOLTZ2_SPEC = ModelSpec(
     ),
 )
 
-MODEL_SPECS = (ESMFOLD_SPEC, ESM2_SPEC, CHAI1_SPEC, BOLTZ2_SPEC)
+MODEL_SPECS = (ESMFOLD_SPEC, ESM2_SPEC, ESMC_SPEC, ESM3_SPEC, CHAI1_SPEC, BOLTZ2_SPEC)
 MODEL_SPECS_BY_KEY = {spec.key: spec for spec in MODEL_SPECS}
 MODEL_SPECS_BY_PUBLIC_NAME = {spec.public_name: spec for spec in MODEL_SPECS}
 
@@ -191,6 +230,8 @@ __all__ = [
     "BOLTZ2_SPEC",
     "CHAI1_SPEC",
     "ESM2_SPEC",
+    "ESM3_SPEC",
+    "ESMC_SPEC",
     "ESMFOLD_SPEC",
     "MODEL_SPECS",
     "MODEL_SPECS_BY_KEY",

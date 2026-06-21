@@ -1,8 +1,8 @@
 # Architecture & Backend Alignment
 
-The high-level API (`ESMFold`, `ESM2`) is a thin wrapper around two building blocks:
+The high-level API (`ESMFold`, `ESM2`, `ESMC`, `ESM3`) is a thin wrapper around two building blocks:
 
-- **Core algorithms** (`ESMFoldCore`, `ESM2Core`) encapsulate all model-specific logic. They know nothing about Modal, which keeps the code portable.
+- **Core algorithms** (`ESMFoldCore`, `ESM2Core`, `ESMCCore`, `ESM3Core`) encapsulate all model-specific logic. They know nothing about Modal, which keeps the code portable.
 - **Modal integration** registers each model entrypoint on its own `modal.App` (for example `boileroom-esmfold` and `boileroom-boltz2`) managed by `ModalAppManager`. `ModalBackend` acquires/releases the app attached to the selected Modal class and instantiates that class only once, so test processes can run model-specific apps without registering unrelated GPU functions.
 
 When you construct `ESMFold(backend="modal", device="T4", config={...})`:

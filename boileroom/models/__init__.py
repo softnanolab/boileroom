@@ -9,6 +9,14 @@ def __getattr__(name: str):
         from .esm.esm2 import ESM2
 
         return ESM2
+    if name == "ESMC":
+        from .esm3.esmc import ESMC
+
+        return ESMC
+    if name == "ESM3":
+        from .esm3.esm3 import ESM3
+
+        return ESM3
     if name == "Chai1":
         from .chai.chai1 import Chai1
 
@@ -23,6 +31,8 @@ def __getattr__(name: str):
 __all__ = [
     "ESMFold",
     "ESM2",
+    "ESMC",
+    "ESM3",
     "Chai1",
     "Boltz2",
 ]

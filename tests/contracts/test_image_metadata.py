@@ -48,6 +48,7 @@ def test_model_specs_report_supported_cuda_from_config() -> None:
     assert get_supported_cuda(get_model_image_spec("boltz")) == ("12.6",)
     assert get_supported_cuda(get_model_image_spec("chai")) == ("11.8", "12.6")
     assert get_supported_cuda(get_model_image_spec("esm")) == ("11.8", "12.6")
+    assert get_supported_cuda(get_model_image_spec("esm3")) == ("11.8", "12.6")
 
 
 def test_image_tag_uses_env_override(monkeypatch) -> None:
@@ -152,6 +153,8 @@ def test_iter_image_targets_uses_canonical_cuda_tags() -> None:
     assert references["boltz"].startswith("docker.io/example/")
     assert references["chai"].startswith("docker.io/example/")
     assert references["esm"].startswith("docker.io/example/")
+    assert references["esm3"].startswith("docker.io/example/")
     assert references["boltz"].endswith(":cuda12.6-0.3.0")
     assert references["chai"].endswith(":cuda12.6-0.3.0")
     assert references["esm"].endswith(":cuda12.6-0.3.0")
+    assert references["esm3"].endswith(":cuda12.6-0.3.0")

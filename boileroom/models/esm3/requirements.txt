@@ -1,0 +1,6 @@
+numpy
+torch>=2.5.1,<2.7.0
+esm==3.2.3
+fastapi
+uvicorn
+pydantic

@@ -5,6 +5,7 @@
 - **boltz**: `boileroom/models/boltz/Dockerfile` → installs Boltz runtime dependencies from `requirements.txt`. Tag: `docker.io/jakublala/boileroom-boltz`.
 - **chai1**: `boileroom/models/chai/Dockerfile` → installs Chai runtime dependencies from `requirements.txt`, sets HF env vars. Tag: `docker.io/jakublala/boileroom-chai1`.
 - **esm**: `boileroom/models/esm/Dockerfile` → installs ESM runtime dependencies from `requirements.txt` shared by esm2/esmfold. Tag: `docker.io/jakublala/boileroom-esm`.
+- **esm3**: `boileroom/models/esm3/Dockerfile` → installs the EvolutionaryScale/Biohub `esm` SDK runtime used by ESM-C and ESM3 embeddings. Tag: `docker.io/jakublala/boileroom-esm3`.
 
 Dockerfiles are the canonical image definition for all runtimes. Docker/Apptainer images are built from these Dockerfiles, and Modal pulls the corresponding published model image from Docker Hub instead of maintaining a separate handwritten dependency stack. CUDA variants select the PyTorch wheel index; the runtime images rely on PyTorch/NVIDIA wheels for user-space CUDA libraries and on Docker/Apptainer GPU integration for host driver libraries.
 
@@ -147,6 +148,16 @@ docker build \
   -t docker.io/jakublala/boileroom-esm:local \
   -f boileroom/models/esm/Dockerfile \
   boileroom/models/esm
+```
+
+- Build esm3 (ESM-C and ESM3 embeddings):
+```bash
+docker build \
+  --platform linux/amd64 \
+  --build-arg BASE_IMAGE=docker.io/jakublala/boileroom-base:local \
+  -t docker.io/jakublala/boileroom-esm3:local \
+  -f boileroom/models/esm3/Dockerfile \
+  boileroom/models/esm3
 ```
 
 ### ☁️ Push local tags to Docker Hub

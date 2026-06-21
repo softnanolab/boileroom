@@ -57,3 +57,32 @@ result.lm_logits.shape   # (1, 4, tokenizer.vocab_size)
 top_token_ids = result.lm_logits[0].argmax(axis=-1)
 top_tokens = [id_to_token[token_id] for token_id in top_token_ids]
 ```
+
+
+### ESM-C and ESM3
+- `ESMC` and `ESM3` are embedding-only in this release. Boileroom does not expose ESM3 generation or folding APIs yet.
+- Both wrappers use the EvolutionaryScale/Biohub `esm` SDK in the separate `esm3` runtime image and support Modal and Apptainer through the shared `embed` contract.
+- Supported ESM-C model names are `esmc_300m` and `esmc_600m`. The cheap/default config is `esmc_300m`.
+- Supported ESM3 model names are `esm3_sm_open_v1` plus aliases `esm3-open`, `esm3-sm-open-v1`, and `esm3-open-2024-03`.
+- Outputs are residue-only arrays shaped `(batch, residues, features)`. BOS/EOS, chain-break, and other special-token rows are stripped. Batched outputs pad embeddings/logits with zeros and pad `chain_index` / `residue_index` with `-1`.
+- Colon-separated input such as `"ACD:EF"` means multiple chains. Boileroom maps `:` to the SDK chain-break syntax internally and returns `chain_index=[0,0,0,1,1]`, `residue_index=[0,1,2,0,1]` for the residues.
+- Some upstream weights are gated. Accept the relevant Hugging Face license and provide `HF_TOKEN` / logged-in Hugging Face credentials when required. Set `MODEL_DIR` to control the model cache used by Modal/Apptainer runtimes.
+
+Example usage:
+```python
+from boileroom import ESMC, ESM3
+
+model = ESMC(config={"model_name": "esmc_300m"})
+result = model.embed("ACD:EF")
+result.embeddings.shape  # (1, 5, features)
+result.chain_index       # [[0, 0, 0, 1, 1]]
+result.residue_index     # [[0, 1, 2, 0, 1]]
+
+esm3 = ESM3(config={"model_name": "esm3_sm_open_v1"})
+esm3_result = esm3.embed(["ACD", "EF"])
+```
+
+Optional fields:
+- `include_fields=["lm_logits"]` requests residue-aligned sequence logits when the SDK returns them.
+- `include_fields=["hidden_states"]` is supported for ESM-C when provided by the SDK. ESM3 raises a clear `ValueError` for hidden-state requests.
+- `include_fields=["*"]` means all supported optional fields for that model.

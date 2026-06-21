@@ -21,6 +21,8 @@ Legend:
 | Model      | 🟢 Modal | 🐧 Apptainer |
 |------------|:--------:|:------------:|
 | ESM-2      | ✅       | 🍊           |
+| ESM-C      | ✅       | 🍊           |
+| ESM3       | ✅       | 🍊           |
 
 ## Backend Descriptions
 
