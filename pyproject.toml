@@ -5,8 +5,8 @@ build-backend = "hatchling.build"
 [project]
 name = "boileroom"
 # Release automation treats this as the current stable target. Main-branch
-# image builds publish prerelease tags such as 0.4.0-alpha.1 from it.
-version = "0.4.0"
+# image builds publish prerelease tags such as 0.3.2-alpha.1 from it.
+version = "0.3.2"
 authors = [
     { name="Jakub Lála", email="jakublala@gmail.com" },
     { name="Michael Krása", email="michael.krasa@gmail.com" },
