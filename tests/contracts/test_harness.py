@@ -1,5 +1,7 @@
 """Fast contract tests for the repo-local harness."""
 
+import subprocess
+import sys
 from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -17,6 +19,34 @@ def test_current_repo_harness_passes() -> None:
     """The checked-in repository should satisfy the harness contract."""
     issues = check_repo.run_checks(check_repo.REPO_ROOT, check_repo.load_contract())
     assert issues == []
+
+
+def test_apptainer_core_imports_do_not_require_modal() -> None:
+    """Image-backed runtimes should import core modules without Modal installed."""
+    script = """
+import builtins
+
+original_import = builtins.__import__
+
+def block_modal(name, globals=None, locals=None, fromlist=(), level=0):
+    if name == "modal":
+        raise ModuleNotFoundError("modal blocked for contract test")
+    return original_import(name, globals, locals, fromlist, level)
+
+builtins.__import__ = block_modal
+import boileroom.models.alphafold.core
+import boileroom.models.protenix.core
+"""
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=check_repo.REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_required_family_files_reports_missing_files(tmp_path: Path) -> None:

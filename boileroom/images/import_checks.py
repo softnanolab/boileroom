@@ -22,6 +22,11 @@ from .metadata import (
 _CUDA_TAG_PATTERN = re.compile(r"^cuda\d+\.\d+(?:-.+)?$")
 
 IMPORT_NAME_OVERRIDES: Final[dict[str, str | None]] = {
+    "absl-py": "absl",
+    "biopython": "Bio",
+    "dm-haiku": "haiku",
+    "ml-collections": "ml_collections",
+    "tensorflow-cpu": "tensorflow",
     "pytorch-lightning": "pytorch_lightning",
     "torch-tensorrt": None,
     "hf-transfer": None,
@@ -46,6 +51,28 @@ def compute_cuda_versions(requested: list[str] | None, all_cuda: bool) -> list[s
 def package_name_to_import_name(package_name: str) -> str | None:
     """Return the importable module name for a dependency string."""
     return IMPORT_NAME_OVERRIDES.get(package_name, package_name.replace("-", "_"))
+
+
+def requirement_line_to_package_name(line: str) -> str | None:
+    """Return the package name from one requirements.txt line, or None for pip options."""
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#") or stripped.startswith("-"):
+        return None
+    return re.split(r"[>=<!=;\[]", stripped, maxsplit=1)[0].strip() or None
+
+
+def requirement_import_names(requirements_path: Path) -> list[str]:
+    """Return import names represented by a requirements.txt file."""
+    import_names = []
+    with requirements_path.open(encoding="utf-8") as handle:
+        for line in handle:
+            package_name = requirement_line_to_package_name(line)
+            if package_name is None:
+                continue
+            import_name = package_name_to_import_name(package_name)
+            if import_name:
+                import_names.append(import_name)
+    return import_names
 
 
 def iter_image_targets(

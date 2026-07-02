@@ -1,0 +1,2 @@
+supported_cuda:
+  - "12.6"

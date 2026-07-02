@@ -12,9 +12,11 @@ Legend:
 
 | Model      | 🟢 Modal | 🐧 Apptainer |
 |------------|:--------:|:------------:|
+| AlphaFold2-Multimer | 🍊 | 🍊 |
 | Boltz-2    | 🍊       | 🍊           |
 | Chai-1     | 🍊       | 🍊           |
 | ESMFold    | ✅       | 🍊           |
+| Protenix   | 🍊       | 🍊           |
 
 ### Embedding Algorithms
 

@@ -58,6 +58,13 @@ BASE_IMAGE_SPEC: Final = RuntimeImageSpec(
 
 MODEL_IMAGE_SPECS: Final[tuple[RuntimeImageSpec, ...]] = (
     RuntimeImageSpec(
+        key="alphafold",
+        image_name="boileroom-alphafold2-multimer",
+        dockerfile_relative_path="boileroom/models/alphafold/Dockerfile",
+        context_relative_path="boileroom/models/alphafold",
+        config_relative_path="boileroom/models/alphafold/config.yaml",
+    ),
+    RuntimeImageSpec(
         key="boltz",
         image_name="boileroom-boltz",
         dockerfile_relative_path="boileroom/models/boltz/Dockerfile",
@@ -78,6 +85,13 @@ MODEL_IMAGE_SPECS: Final[tuple[RuntimeImageSpec, ...]] = (
         dockerfile_relative_path="boileroom/models/esm/Dockerfile",
         context_relative_path="boileroom/models/esm",
         config_relative_path="boileroom/models/esm/config.yaml",
+    ),
+    RuntimeImageSpec(
+        key="protenix",
+        image_name="boileroom-protenix",
+        dockerfile_relative_path="boileroom/models/protenix/Dockerfile",
+        context_relative_path="boileroom/models/protenix",
+        config_relative_path="boileroom/models/protenix/config.yaml",
     ),
 )
 

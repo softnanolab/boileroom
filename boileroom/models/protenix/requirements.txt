@@ -1,0 +1,4 @@
+protenix==2.0.0
+fastapi
+pydantic
+uvicorn

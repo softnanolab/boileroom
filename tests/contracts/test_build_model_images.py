@@ -10,6 +10,15 @@ from boileroom.images.metadata import DEFAULT_CUDA_VERSION
 from scripts.images import build_model_images
 
 
+def _cuda_supported_model_specs(cuda_version: str = DEFAULT_CUDA_VERSION) -> list[build_model_images.RuntimeImageSpec]:
+    """Return model image specs that should build for a CUDA version."""
+    return [
+        spec
+        for spec in build_model_images.MODEL_IMAGE_SPECS
+        if cuda_version in build_model_images.get_supported_cuda(spec)
+    ]
+
+
 def test_build_base_push_uses_registry_cache(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
     """Pushed buildx builds should import and export stable registry cache layers."""
     calls: list[tuple[list[str], Path | None, bool]] = []
@@ -327,17 +336,22 @@ def test_main_skips_existing_base_and_model_tags(monkeypatch: MonkeyPatch, tmp_p
 
     build_model_images.run_build(options)
 
-    assert built_bases == []
-    assert built_tasks == [
-        ("boileroom-chai1", f"docker.io/jakublala/boileroom-base:cuda{DEFAULT_CUDA_VERSION}-sha-test"),
-        ("boileroom-esm", f"docker.io/jakublala/boileroom-base:cuda{DEFAULT_CUDA_VERSION}-sha-test"),
+    expected_built_tasks = [
+        (spec.image_name, f"docker.io/jakublala/boileroom-base:cuda{DEFAULT_CUDA_VERSION}-sha-test")
+        for spec in _cuda_supported_model_specs()
+        if spec.image_name != "boileroom-boltz"
     ]
-    assert checked_refs == [
+    expected_checked_refs = [
         f"docker.io/jakublala/boileroom-base:cuda{DEFAULT_CUDA_VERSION}-sha-test",
-        f"docker.io/jakublala/boileroom-boltz:cuda{DEFAULT_CUDA_VERSION}-sha-test",
-        f"docker.io/jakublala/boileroom-chai1:cuda{DEFAULT_CUDA_VERSION}-sha-test",
-        f"docker.io/jakublala/boileroom-esm:cuda{DEFAULT_CUDA_VERSION}-sha-test",
+        *[
+            f"docker.io/jakublala/{spec.image_name}:cuda{DEFAULT_CUDA_VERSION}-sha-test"
+            for spec in _cuda_supported_model_specs()
+        ],
     ]
+
+    assert built_bases == []
+    assert built_tasks == expected_built_tasks
+    assert checked_refs == expected_checked_refs
 
 
 def test_local_base_push_builds_locally_then_pushes(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
@@ -403,10 +417,11 @@ def test_local_base_push_builds_locally_then_pushes(monkeypatch: MonkeyPatch, tm
 
     build_model_images.run_build(options)
 
+    expected_model_calls = [
+        (False, True, f"docker.io/jakublala/boileroom-base:cuda{DEFAULT_CUDA_VERSION}-sha-test")
+        for _spec in _cuda_supported_model_specs()
+    ]
+
     assert buildx_calls == 1
     assert base_calls == [(False, True)]
-    assert model_calls == [
-        (False, True, f"docker.io/jakublala/boileroom-base:cuda{DEFAULT_CUDA_VERSION}-sha-test"),
-        (False, True, f"docker.io/jakublala/boileroom-base:cuda{DEFAULT_CUDA_VERSION}-sha-test"),
-        (False, True, f"docker.io/jakublala/boileroom-base:cuda{DEFAULT_CUDA_VERSION}-sha-test"),
-    ]
+    assert model_calls == expected_model_calls

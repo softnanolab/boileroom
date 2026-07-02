@@ -14,9 +14,9 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from boileroom.images.import_checks import (  # noqa: E402
-    IMPORT_NAME_OVERRIDES,
     compute_cuda_versions,
     iter_image_targets,
+    requirement_import_names,
 )
 from boileroom.images.metadata import (  # noqa: E402
     DEFAULT_DOCKER_REPOSITORY,
@@ -105,29 +105,16 @@ def check_image(
         check=True,
     )
 
+    deps = [*requirement_import_names(requirements_path), "numpy"]
+
     script = f"""
 import ast
 import importlib
-import re
 import sys
 from pathlib import Path
 
-requirements_txt = Path({str(requirements_path)!r})
 core_file = Path({str(core_path)!r})
-import_name_overrides = {IMPORT_NAME_OVERRIDES!r}
-
-deps = []
-with requirements_txt.open(encoding="utf-8") as handle:
-    for line in handle:
-        stripped = line.strip()
-        if not stripped or stripped.startswith('#'):
-            continue
-        pkg_name = re.split(r'[>=<!=;\\[]', stripped)[0].strip()
-        import_name = import_name_overrides.get(pkg_name, pkg_name.replace('-', '_'))
-        if import_name:
-            deps.append(import_name)
-
-deps.append('numpy')
+deps = {deps!r}
 
 try:
     ast.parse(core_file.read_text(encoding='utf-8'), filename=str(core_file))

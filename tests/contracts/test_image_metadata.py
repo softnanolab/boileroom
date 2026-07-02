@@ -4,7 +4,13 @@ import importlib.metadata
 
 import pytest
 
-from boileroom.images.import_checks import compute_cuda_versions, iter_image_targets, package_name_to_import_name
+from boileroom.images.import_checks import (
+    compute_cuda_versions,
+    iter_image_targets,
+    package_name_to_import_name,
+    requirement_import_names,
+    requirement_line_to_package_name,
+)
 from boileroom.images.metadata import (
     IMAGE_TAG_ENV,
     format_image_reference,
@@ -45,9 +51,11 @@ def test_default_image_tag_matches_installed_package_version() -> None:
 
 def test_model_specs_report_supported_cuda_from_config() -> None:
     """Model image specs should report the CUDA variants advertised in config.yaml."""
+    assert get_supported_cuda(get_model_image_spec("alphafold")) == ("12.6",)
     assert get_supported_cuda(get_model_image_spec("boltz")) == ("12.6",)
     assert get_supported_cuda(get_model_image_spec("chai")) == ("11.8", "12.6")
     assert get_supported_cuda(get_model_image_spec("esm")) == ("11.8", "12.6")
+    assert get_supported_cuda(get_model_image_spec("protenix")) == ("12.6",)
 
 
 def test_image_tag_uses_env_override(monkeypatch) -> None:
@@ -140,18 +148,54 @@ def test_compute_cuda_versions_uses_metadata_defaults() -> None:
 
 def test_package_name_to_import_name_handles_overrides_and_hyphens() -> None:
     """Import-name resolution should keep overrides centralized and predictable."""
+    assert package_name_to_import_name("absl-py") == "absl"
+    assert package_name_to_import_name("biopython") == "Bio"
+    assert package_name_to_import_name("dm-haiku") == "haiku"
+    assert package_name_to_import_name("ml-collections") == "ml_collections"
+    assert package_name_to_import_name("tensorflow-cpu") == "tensorflow"
     assert package_name_to_import_name("pytorch-lightning") == "pytorch_lightning"
     assert package_name_to_import_name("torch-tensorrt") is None
     assert package_name_to_import_name("my-package") == "my_package"
+
+
+def test_requirement_line_to_package_name_skips_pip_options() -> None:
+    """Requirements parser should ignore index/option lines in image smoke checks."""
+    assert requirement_line_to_package_name("-f https://example.test/simple") is None
+    assert requirement_line_to_package_name("--extra-index-url https://example.test/simple") is None
+    assert requirement_line_to_package_name("jaxlib==0.4.26+cuda12.cudnn89") == "jaxlib"
+    assert requirement_line_to_package_name("openmm[cuda12]==8.2.0") == "openmm"
+
+
+def test_requirement_import_names_uses_central_parser(tmp_path) -> None:
+    """Image import checks should not treat pip option lines as packages."""
+    requirements_path = tmp_path / "requirements.txt"
+    requirements_path.write_text(
+        "\n".join(
+            [
+                "-f https://example.test/simple",
+                "absl-py==1.0.0",
+                "openmm[cuda12]==8.2.0",
+                "torch-tensorrt==2.0.0",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    assert requirement_import_names(requirements_path) == ["absl", "openmm"]
 
 
 def test_iter_image_targets_uses_canonical_cuda_tags() -> None:
     """Image smoke targets should honor CUDA-qualified tag selection."""
     targets = iter_image_targets("0.3.0", ["12.6"], docker_repository="example")
     references = {image_key: image_reference for image_key, image_reference, *_ in targets}
+    assert references["alphafold"].startswith("docker.io/example/")
     assert references["boltz"].startswith("docker.io/example/")
     assert references["chai"].startswith("docker.io/example/")
     assert references["esm"].startswith("docker.io/example/")
+    assert references["protenix"].startswith("docker.io/example/")
+    assert references["alphafold"].endswith(":cuda12.6-0.3.0")
     assert references["boltz"].endswith(":cuda12.6-0.3.0")
     assert references["chai"].endswith(":cuda12.6-0.3.0")
     assert references["esm"].endswith(":cuda12.6-0.3.0")
+    assert references["protenix"].endswith(":cuda12.6-0.3.0")
