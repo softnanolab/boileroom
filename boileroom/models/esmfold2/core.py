@@ -70,6 +70,10 @@ class ESMFold2Core(FoldingAlgorithm):
         "step_scale": None,
         "max_inference_sigma": None,
         "early_exit": False,
+        "lm_mask_pct": None,
+        "lm_dropout": 0.3,
+        "msa_max_depth": 1024,
+        "msa_column_mask_rate": 0.1,
         "complex_id": "pred",
         "include_fields": None,
     }
@@ -201,6 +205,10 @@ class ESMFold2Core(FoldingAlgorithm):
                 num_sampling_steps=int(config["num_sampling_steps"]),
                 num_diffusion_samples=num_diffusion_samples,
                 early_exit=bool(config["early_exit"]),
+                lm_dropout=config.get("lm_dropout"),
+                msa_max_depth=config.get("msa_max_depth"),
+                msa_column_mask_rate=float(config.get("msa_column_mask_rate", 0.1)),
+                msa_subsample_at_inference=config.get("msa_max_depth") is not None,
                 **sampler_kwargs,
             )
 
@@ -233,18 +241,24 @@ class ESMFold2Core(FoldingAlgorithm):
         if seed is not None and (not isinstance(seed, int) or isinstance(seed, bool) or seed < 0):
             raise ValueError("ESMFold2 option 'seed' must be a non-negative integer or None.")
 
-        for key in ("noise_scale", "step_scale", "max_inference_sigma"):
+        for key in ("noise_scale", "step_scale", "max_inference_sigma", "lm_mask_pct", "lm_dropout", "msa_column_mask_rate"):
             value = config.get(key)
             if value is None:
                 continue
             if not isinstance(value, int | float) or isinstance(value, bool) or not math.isfinite(float(value)):
                 raise ValueError(f"ESMFold2 option {key!r} must be a finite number or None.")
 
+        msa_max_depth = config.get("msa_max_depth")
+        if msa_max_depth is not None and (
+            not isinstance(msa_max_depth, int) or isinstance(msa_max_depth, bool) or msa_max_depth < 1
+        ):
+            raise ValueError("ESMFold2 option 'msa_max_depth' must be a positive integer or None.")
+
     @staticmethod
     def _sampler_kwargs(config: dict[str, Any]) -> dict[str, Any]:
         """Return optional sampler controls accepted by the Biohub model call."""
         kwargs = {}
-        for key in ("noise_scale", "step_scale", "max_inference_sigma"):
+        for key in ("noise_scale", "step_scale", "max_inference_sigma", "lm_mask_pct"):
             if config.get(key) is not None:
                 kwargs[key] = config[key]
         return kwargs

@@ -1,5 +1,8 @@
 """Fast ESMFold2 unit tests that do not import Biohub runtime dependencies."""
 
+import sys
+from contextlib import nullcontext
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -224,6 +227,60 @@ def test_esmfold2_rejects_invalid_dynamic_options() -> None:
 
     with pytest.raises(ValueError, match="noise_scale"):
         core.fold("ACD", options={"noise_scale": float("nan")})
+
+    with pytest.raises(ValueError, match="msa_max_depth"):
+        core.fold("ACD", options={"msa_max_depth": 0})
+
+
+def test_esmfold2_forwards_msa_sampling_options(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Core should expose Biohub's MSA-depth controls, including full-MSA mode."""
+    core = _core_cls()(config={"device": "cpu"})
+    captured: dict[str, object] = {}
+
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(no_grad=nullcontext))
+    monkeypatch.setitem(sys.modules, "esm", SimpleNamespace())
+    monkeypatch.setitem(sys.modules, "esm.models", SimpleNamespace())
+    monkeypatch.setitem(sys.modules, "esm.models.esmfold2", SimpleNamespace())
+    monkeypatch.setitem(
+        sys.modules,
+        "esm.models.esmfold2.processor",
+        SimpleNamespace(_seed_context=lambda seed: nullcontext()),
+    )
+
+    class FakeModel:
+        device = "cpu"
+
+        def __call__(self, **kwargs: object) -> object:
+            captured.update(kwargs)
+            return object()
+
+    class FakeInputBuilder:
+        def prepare_input(self, prediction_input: object, *, seed: int | None, device: str) -> tuple[dict, list]:
+            return {"feature": object()}, []
+
+        def decode(self, output: object, features: dict, chain_infos: list, **kwargs: object) -> object:
+            return object()
+
+    core.model = FakeModel()
+    core.input_builder = FakeInputBuilder()
+    monkeypatch.setattr(core, "_to_esm_structure_prediction_input", lambda prediction_input: prediction_input)
+    prediction_input = StructurePredictionInput(sequences=[ProteinInput(id="A", sequence="ACD")])
+
+    core._fold_one(
+        prediction_input,
+        {
+            **core.config,
+            "msa_max_depth": None,
+            "msa_column_mask_rate": 0.0,
+            "lm_dropout": 0.0,
+        },
+        request_index=0,
+    )
+
+    assert captured["msa_max_depth"] is None
+    assert captured["msa_subsample_at_inference"] is False
+    assert captured["msa_column_mask_rate"] == 0.0
+    assert captured["lm_dropout"] == 0.0
 
 
 def test_esmfold2_apptainer_wrapper_encodes_rich_inputs(monkeypatch: pytest.MonkeyPatch) -> None:
