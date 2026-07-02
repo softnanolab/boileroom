@@ -20,10 +20,12 @@ from boileroom.images.metadata import (
     get_modal_base_image_reference,
     get_model_image_spec,
     get_supported_cuda,
+    get_supported_platforms,
     normalize_docker_repository,
     published_tags,
     render_modal_runtime_env,
     resolve_registry_tag,
+    split_platforms,
 )
 
 
@@ -56,6 +58,21 @@ def test_model_specs_report_supported_cuda_from_config() -> None:
     assert get_supported_cuda(get_model_image_spec("chai")) == ("11.8", "12.6")
     assert get_supported_cuda(get_model_image_spec("esm")) == ("11.8", "12.6")
     assert get_supported_cuda(get_model_image_spec("protenix")) == ("12.6",)
+
+
+def test_model_specs_report_supported_platforms_from_config() -> None:
+    """Model image specs should report the Docker platforms advertised in config.yaml."""
+    assert get_supported_platforms(get_model_image_spec("alphafold")) == ("linux/amd64",)
+    assert get_supported_platforms(get_model_image_spec("boltz")) == ("linux/amd64", "linux/arm64")
+    assert get_supported_platforms(get_model_image_spec("chai")) == ("linux/amd64", "linux/arm64")
+    assert get_supported_platforms(get_model_image_spec("esm")) == ("linux/amd64", "linux/arm64")
+    assert get_supported_platforms(get_model_image_spec("protenix")) == ("linux/amd64",)
+
+
+def test_split_platforms_normalizes_arch_aliases() -> None:
+    """Build and smoke helpers should normalize common Docker platform shorthands."""
+    assert split_platforms("amd64,arm64") == ("linux/amd64", "linux/arm64")
+    assert split_platforms(" linux/amd64 , aarch64 ") == ("linux/amd64", "linux/arm64")
 
 
 def test_image_tag_uses_env_override(monkeypatch) -> None:
@@ -199,3 +216,11 @@ def test_iter_image_targets_uses_canonical_cuda_tags() -> None:
     assert references["chai"].endswith(":cuda12.6-0.3.0")
     assert references["esm"].endswith(":cuda12.6-0.3.0")
     assert references["protenix"].endswith(":cuda12.6-0.3.0")
+
+
+def test_iter_image_targets_filters_by_platform() -> None:
+    """ARM64 smoke checks should skip images that only advertise AMD64 support."""
+    targets = iter_image_targets("0.3.0", ["12.6"], docker_repository="example", platform="linux/arm64")
+    image_keys = [image_key for image_key, *_ in targets]
+
+    assert image_keys == ["boltz", "chai", "esm"]

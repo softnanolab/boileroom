@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.metadata
 import os
+import platform as platform_module
 import re
 import tomllib
 from dataclasses import dataclass
@@ -18,6 +19,7 @@ DOCKER_REPOSITORY_ENV: Final = "BOILEROOM_DOCKER_REPOSITORY"
 IMAGE_TAG_ENV: Final = "BOILEROOM_IMAGE_TAG"
 
 SUPPORTED_CUDA_VERSIONS: Final[tuple[str, ...]] = ("11.8", "12.6")
+SUPPORTED_PLATFORMS: Final[tuple[str, ...]] = ("linux/amd64", "linux/arm64")
 
 CUDA_TORCH_WHEEL_INDEX: Final[dict[str, str]] = {
     "11.8": "https://download.pytorch.org/whl/cu118",
@@ -142,6 +144,37 @@ def normalize_cuda_version(cuda_version: str) -> str:
     return normalized
 
 
+def normalize_platform(platform: str) -> str:
+    """Return a normalized Docker platform string."""
+    normalized = platform.strip().lower()
+    if not normalized:
+        raise ValueError("Platform must not be empty.")
+    aliases = {
+        "amd64": "linux/amd64",
+        "x86_64": "linux/amd64",
+        "arm64": "linux/arm64",
+        "aarch64": "linux/arm64",
+    }
+    return aliases.get(normalized, normalized)
+
+
+def split_platforms(platforms: str) -> tuple[str, ...]:
+    """Return normalized Docker platforms from a comma-separated buildx value."""
+    normalized = tuple(normalize_platform(platform) for platform in platforms.split(",") if platform.strip())
+    if not normalized:
+        raise ValueError("Platform selection must not be empty.")
+    return normalized
+
+
+def current_docker_platform() -> str:
+    """Return the Docker Linux platform matching the current host architecture."""
+    machine = platform_module.machine().lower()
+    normalized = normalize_platform(machine)
+    if "/" in normalized:
+        return normalized
+    return f"linux/{normalized}"
+
+
 def canonical_image_tag(cuda_version: str, tag: str | None) -> str:
     """Return the canonical CUDA-qualified tag."""
     normalized_cuda = normalize_cuda_version(cuda_version)
@@ -251,18 +284,24 @@ def get_model_image_spec(identifier: str) -> RuntimeImageSpec:
 
 
 @cache
-def get_supported_cuda(spec: RuntimeImageSpec) -> tuple[str, ...]:
-    """Return supported CUDA versions for a runtime image spec."""
-    if spec.config_relative_path is None:
-        return SUPPORTED_CUDA_VERSIONS
+def _load_image_config(config_relative_path: str | None) -> dict[str, object]:
+    """Return the YAML config for a runtime image spec."""
+    if config_relative_path is None:
+        return {}
 
-    config_path = get_repo_root() / spec.config_relative_path
+    config_path = get_repo_root() / config_relative_path
     if not config_path.exists():
-        return SUPPORTED_CUDA_VERSIONS
+        return {}
 
     import yaml
 
-    config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    return yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+
+
+@cache
+def get_supported_cuda(spec: RuntimeImageSpec) -> tuple[str, ...]:
+    """Return supported CUDA versions for a runtime image spec."""
+    config = _load_image_config(spec.config_relative_path)
     raw_supported_cuda = config.get("supported_cuda", [])
     if isinstance(raw_supported_cuda, list):
         supported_cuda = [normalize_cuda_version(str(value)) for value in raw_supported_cuda]
@@ -274,6 +313,23 @@ def get_supported_cuda(spec: RuntimeImageSpec) -> tuple[str, ...]:
     if not supported_cuda:
         return SUPPORTED_CUDA_VERSIONS
     return tuple(supported_cuda)
+
+
+@cache
+def get_supported_platforms(spec: RuntimeImageSpec) -> tuple[str, ...]:
+    """Return supported Docker platforms for a runtime image spec."""
+    config = _load_image_config(spec.config_relative_path)
+    raw_supported_platforms = config.get("supported_platforms", [])
+    if isinstance(raw_supported_platforms, list):
+        supported_platforms = [normalize_platform(str(value)) for value in raw_supported_platforms]
+    elif raw_supported_platforms:
+        supported_platforms = [normalize_platform(str(raw_supported_platforms))]
+    else:
+        supported_platforms = []
+
+    if not supported_platforms:
+        return SUPPORTED_PLATFORMS
+    return tuple(supported_platforms)
 
 
 def render_modal_runtime_env(spec: RuntimeImageSpec, model_dir: str) -> dict[str, str]:

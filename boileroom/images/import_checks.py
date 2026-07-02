@@ -14,9 +14,11 @@ from .metadata import (
     RuntimeImageSpec,
     format_image_reference,
     get_supported_cuda,
+    get_supported_platforms,
     normalize_cuda_version,
     normalize_requested_tag,
     published_image_references,
+    split_platforms,
 )
 
 _CUDA_TAG_PATTERN = re.compile(r"^cuda\d+\.\d+(?:-.+)?$")
@@ -81,6 +83,7 @@ def iter_image_targets(
     *,
     docker_repository: str = DEFAULT_DOCKER_REPOSITORY,
     image_specs: Sequence[RuntimeImageSpec] | None = None,
+    platform: str | None = None,
 ) -> list[tuple[str, str, str, Path, Path]]:
     """Return model-image targets for smoke checks.
 
@@ -91,8 +94,12 @@ def iter_image_targets(
         raise ValueError("Do not combine --all-cuda/--cuda-version with an already CUDA-qualified --tag.")
 
     specs = MODEL_IMAGE_SPECS if image_specs is None else image_specs
+    requested_platforms = set(split_platforms(platform)) if platform is not None else None
     targets: list[tuple[str, str, str, Path, Path]] = []
     for spec in specs:
+        if requested_platforms is not None and not requested_platforms.issubset(get_supported_platforms(spec)):
+            continue
+
         requirements_path = spec.context_path / "requirements.txt"
         core_path = spec.context_path / "core.py"
         if cuda_versions:

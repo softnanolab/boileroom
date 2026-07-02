@@ -20,6 +20,7 @@ from boileroom.images.import_checks import (  # noqa: E402
 )
 from boileroom.images.metadata import (  # noqa: E402
     DEFAULT_DOCKER_REPOSITORY,
+    current_docker_platform,
     normalize_docker_repository,
     normalize_requested_tag,
 )
@@ -159,7 +160,12 @@ def run_import_checks(options: ImportCheckOptions) -> None:
     ensure_docker()
     docker_repository = normalize_docker_repository(options.docker_user)
     cuda_versions = compute_cuda_versions(options.cuda_versions, options.all_cuda)
-    targets = iter_image_targets(options.tag, cuda_versions, docker_repository=docker_repository)
+    targets = iter_image_targets(
+        options.tag,
+        cuda_versions,
+        docker_repository=docker_repository,
+        platform=current_docker_platform(),
+    )
     if not targets:
         raise SystemExit("No image targets matched the requested CUDA selection.")
 
