@@ -241,7 +241,14 @@ class ESMFold2Core(FoldingAlgorithm):
         if seed is not None and (not isinstance(seed, int) or isinstance(seed, bool) or seed < 0):
             raise ValueError("ESMFold2 option 'seed' must be a non-negative integer or None.")
 
-        for key in ("noise_scale", "step_scale", "max_inference_sigma", "lm_mask_pct", "lm_dropout", "msa_column_mask_rate"):
+        for key in (
+            "noise_scale",
+            "step_scale",
+            "max_inference_sigma",
+            "lm_mask_pct",
+            "lm_dropout",
+            "msa_column_mask_rate",
+        ):
             value = config.get(key)
             if value is None:
                 continue
