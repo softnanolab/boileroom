@@ -1,6 +1,6 @@
 -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
 absl-py==1.0.0
-biopython==1.79
+biopython==1.83
 biotite>=1.0.1
 dm-haiku==0.0.12
 docker==5.0.0
