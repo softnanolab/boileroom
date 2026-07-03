@@ -10,6 +10,20 @@ from boileroom.images.metadata import DEFAULT_CUDA_VERSION
 from scripts.images import build_model_images
 
 
+def _cuda_supported_model_specs(
+    cuda_version: str = DEFAULT_CUDA_VERSION,
+    platform: str = "linux/amd64",
+) -> list[build_model_images.RuntimeImageSpec]:
+    """Return model image specs that should build for a CUDA version."""
+    requested_platforms = set(build_model_images.split_platforms(platform))
+    return [
+        spec
+        for spec in build_model_images.MODEL_IMAGE_SPECS
+        if cuda_version in build_model_images.get_supported_cuda(spec)
+        and requested_platforms.issubset(build_model_images.get_supported_platforms(spec))
+    ]
+
+
 def test_build_base_push_uses_registry_cache(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
     """Pushed buildx builds should import and export stable registry cache layers."""
     calls: list[tuple[list[str], Path | None, bool]] = []
@@ -327,17 +341,74 @@ def test_main_skips_existing_base_and_model_tags(monkeypatch: MonkeyPatch, tmp_p
 
     build_model_images.run_build(options)
 
-    assert built_bases == []
-    assert built_tasks == [
-        ("boileroom-chai1", f"docker.io/jakublala/boileroom-base:cuda{DEFAULT_CUDA_VERSION}-sha-test"),
-        ("boileroom-esm", f"docker.io/jakublala/boileroom-base:cuda{DEFAULT_CUDA_VERSION}-sha-test"),
+    expected_built_tasks = [
+        (spec.image_name, f"docker.io/jakublala/boileroom-base:cuda{DEFAULT_CUDA_VERSION}-sha-test")
+        for spec in _cuda_supported_model_specs()
+        if spec.image_name != "boileroom-boltz"
     ]
-    assert checked_refs == [
+    expected_checked_refs = [
         f"docker.io/jakublala/boileroom-base:cuda{DEFAULT_CUDA_VERSION}-sha-test",
-        f"docker.io/jakublala/boileroom-boltz:cuda{DEFAULT_CUDA_VERSION}-sha-test",
-        f"docker.io/jakublala/boileroom-chai1:cuda{DEFAULT_CUDA_VERSION}-sha-test",
-        f"docker.io/jakublala/boileroom-esm:cuda{DEFAULT_CUDA_VERSION}-sha-test",
+        *[
+            f"docker.io/jakublala/{spec.image_name}:cuda{DEFAULT_CUDA_VERSION}-sha-test"
+            for spec in _cuda_supported_model_specs()
+        ],
     ]
+
+    assert built_bases == []
+    assert built_tasks == expected_built_tasks
+    assert checked_refs == expected_checked_refs
+
+
+def test_run_build_skips_model_specs_with_unsupported_platform(
+    monkeypatch: MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """ARM64 builds should skip model images that only advertise AMD64 support."""
+    options = build_model_images.BuildOptions(
+        tag="sha-test",
+        docker_user="docker.io/jakublala",
+        cuda_versions=[DEFAULT_CUDA_VERSION],
+        all_cuda=False,
+        platform="linux/arm64",
+        push=False,
+        load=False,
+        no_cache=False,
+        verbose=False,
+        skip_existing=False,
+        force_rebuild=False,
+        max_workers=1,
+        local_base=False,
+    )
+
+    built_models: list[str] = []
+    warnings: list[str] = []
+
+    def fake_build_base(cuda_version: str, tag: str, docker_repository: str, *_args, **_kwargs) -> str:
+        return f"{docker_repository}/boileroom-base:cuda{cuda_version}-{tag}"
+
+    def fake_build_model(task, *_args, **_kwargs):
+        built_models.append(task.image_spec.image_name)
+        return (f"{task.image_spec.image_name}:built",)
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(build_model_images, "ensure_docker", lambda: None)
+    monkeypatch.setattr(build_model_images, "ensure_buildx_builder", lambda: None)
+    monkeypatch.setattr(build_model_images, "build_base", fake_build_base)
+    monkeypatch.setattr(build_model_images, "build_model", fake_build_model)
+    monkeypatch.setattr(build_model_images, "log_info", lambda *args, **kwargs: None)
+    monkeypatch.setattr(build_model_images, "log_warn", lambda message, *args, **kwargs: warnings.append(message))
+    monkeypatch.setattr(build_model_images, "log_success", lambda *args, **kwargs: None)
+
+    build_model_images.run_build(options)
+
+    assert built_models == [spec.image_name for spec in _cuda_supported_model_specs(platform="linux/arm64")]
+    assert built_models == [
+        "boileroom-boltz",
+        "boileroom-chai1",
+        "boileroom-esm",
+    ]
+    assert any("boileroom-alphafold2-multimer" in warning for warning in warnings)
+    assert any("boileroom-protenix" in warning for warning in warnings)
 
 
 def test_local_base_push_builds_locally_then_pushes(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
@@ -403,10 +474,11 @@ def test_local_base_push_builds_locally_then_pushes(monkeypatch: MonkeyPatch, tm
 
     build_model_images.run_build(options)
 
+    expected_model_calls = [
+        (False, True, f"docker.io/jakublala/boileroom-base:cuda{DEFAULT_CUDA_VERSION}-sha-test")
+        for _spec in _cuda_supported_model_specs()
+    ]
+
     assert buildx_calls == 1
     assert base_calls == [(False, True)]
-    assert model_calls == [
-        (False, True, f"docker.io/jakublala/boileroom-base:cuda{DEFAULT_CUDA_VERSION}-sha-test"),
-        (False, True, f"docker.io/jakublala/boileroom-base:cuda{DEFAULT_CUDA_VERSION}-sha-test"),
-        (False, True, f"docker.io/jakublala/boileroom-base:cuda{DEFAULT_CUDA_VERSION}-sha-test"),
-    ]
+    assert model_calls == expected_model_calls

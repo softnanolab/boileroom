@@ -12,6 +12,8 @@ TaskKind = Literal["structure", "embedding"]
 ESM_IMAGE_NAME = get_model_image_spec("esm").image_name
 CHAI_IMAGE_NAME = get_model_image_spec("chai").image_name
 BOLTZ_IMAGE_NAME = get_model_image_spec("boltz").image_name
+PROTENIX_IMAGE_NAME = get_model_image_spec("protenix").image_name
+ALPHAFOLD2_MULTIMER_IMAGE_NAME = get_model_image_spec("alphafold").image_name
 
 
 @dataclass(frozen=True)
@@ -172,7 +174,47 @@ BOLTZ2_SPEC = ModelSpec(
     ),
 )
 
-MODEL_SPECS = (ESMFOLD_SPEC, ESM2_SPEC, CHAI1_SPEC, BOLTZ2_SPEC)
+PROTENIX_SPEC = ModelSpec(
+    key="protenix",
+    public_name="Protenix",
+    family="protenix",
+    wrapper_class_path="boileroom.models.protenix.protenix.Protenix",
+    modal_class_path="boileroom.models.protenix.protenix.ModalProtenix",
+    apptainer_core_class_path="boileroom.models.protenix.core.ProtenixCore",
+    apptainer_image_name=PROTENIX_IMAGE_NAME,
+    supported_backends=("modal", "apptainer"),
+    contract=ModelContract(
+        task_method="fold",
+        task_kind="structure",
+        static_config_keys=frozenset({"device", "protenix_command"}),
+        minimal_output_fields=("metadata", "atom_array"),
+        optional_output_fields=("confidence", "ptm", "iptm", "pdb", "cif"),
+        supports_batch=False,
+        supports_multimer=True,
+    ),
+)
+
+ALPHAFOLD2_MULTIMER_SPEC = ModelSpec(
+    key="alphafold2_multimer",
+    public_name="AlphaFold2Multimer",
+    family="alphafold",
+    wrapper_class_path="boileroom.models.alphafold.alphafold2_multimer.AlphaFold2Multimer",
+    modal_class_path="boileroom.models.alphafold.alphafold2_multimer.ModalAlphaFold2Multimer",
+    apptainer_core_class_path="boileroom.models.alphafold.core.AlphaFold2MultimerCore",
+    apptainer_image_name=ALPHAFOLD2_MULTIMER_IMAGE_NAME,
+    supported_backends=("modal", "apptainer"),
+    contract=ModelContract(
+        task_method="fold",
+        task_kind="structure",
+        static_config_keys=frozenset({"device", "alphafold_command", "data_dir"}),
+        minimal_output_fields=("metadata", "atom_array"),
+        optional_output_fields=("ranking", "plddt", "ptm", "iptm", "pae", "pdb", "cif"),
+        supports_batch=False,
+        supports_multimer=True,
+    ),
+)
+
+MODEL_SPECS = (ESMFOLD_SPEC, ESM2_SPEC, CHAI1_SPEC, BOLTZ2_SPEC, PROTENIX_SPEC, ALPHAFOLD2_MULTIMER_SPEC)
 MODEL_SPECS_BY_KEY = {spec.key: spec for spec in MODEL_SPECS}
 MODEL_SPECS_BY_PUBLIC_NAME = {spec.public_name: spec for spec in MODEL_SPECS}
 
@@ -188,6 +230,7 @@ def get_model_spec(identifier: str) -> ModelSpec:
 
 
 __all__ = [
+    "ALPHAFOLD2_MULTIMER_SPEC",
     "BOLTZ2_SPEC",
     "CHAI1_SPEC",
     "ESM2_SPEC",
@@ -197,6 +240,7 @@ __all__ = [
     "MODEL_SPECS_BY_PUBLIC_NAME",
     "ModelContract",
     "ModelSpec",
+    "PROTENIX_SPEC",
     "get_model_spec",
     "resolve_object",
 ]

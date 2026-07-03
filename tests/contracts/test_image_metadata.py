@@ -1,10 +1,17 @@
 """Fast contract tests for shared image metadata and tag behavior."""
 
 import importlib.metadata
+from pathlib import Path
 
 import pytest
 
-from boileroom.images.import_checks import compute_cuda_versions, iter_image_targets, package_name_to_import_name
+from boileroom.images.import_checks import (
+    compute_cuda_versions,
+    iter_image_targets,
+    package_name_to_import_name,
+    requirement_import_names,
+    requirement_line_to_package_name,
+)
 from boileroom.images.metadata import (
     IMAGE_TAG_ENV,
     format_image_reference,
@@ -14,11 +21,15 @@ from boileroom.images.metadata import (
     get_modal_base_image_reference,
     get_model_image_spec,
     get_supported_cuda,
+    get_supported_platforms,
     normalize_docker_repository,
     published_tags,
     render_modal_runtime_env,
     resolve_registry_tag,
+    split_platforms,
 )
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_published_tags_include_default_cuda_aliases() -> None:
@@ -45,9 +56,42 @@ def test_default_image_tag_matches_installed_package_version() -> None:
 
 def test_model_specs_report_supported_cuda_from_config() -> None:
     """Model image specs should report the CUDA variants advertised in config.yaml."""
+    assert get_supported_cuda(get_model_image_spec("alphafold")) == ("12.6",)
     assert get_supported_cuda(get_model_image_spec("boltz")) == ("12.6",)
     assert get_supported_cuda(get_model_image_spec("chai")) == ("11.8", "12.6")
     assert get_supported_cuda(get_model_image_spec("esm")) == ("11.8", "12.6")
+    assert get_supported_cuda(get_model_image_spec("protenix")) == ("12.6",)
+
+
+def test_model_specs_report_supported_platforms_from_config() -> None:
+    """Model image specs should report the Docker platforms advertised in config.yaml."""
+    assert get_supported_platforms(get_model_image_spec("alphafold")) == ("linux/amd64",)
+    assert get_supported_platforms(get_model_image_spec("boltz")) == ("linux/amd64", "linux/arm64")
+    assert get_supported_platforms(get_model_image_spec("chai")) == ("linux/amd64", "linux/arm64")
+    assert get_supported_platforms(get_model_image_spec("esm")) == ("linux/amd64", "linux/arm64")
+    assert get_supported_platforms(get_model_image_spec("protenix")) == ("linux/amd64",)
+
+
+def test_alphafold_biopython_pin_supports_python312_image_builds() -> None:
+    """AlphaFold image requirements should avoid Biopython releases broken on Python 3.12."""
+    requirements = (REPO_ROOT / "boileroom" / "models" / "alphafold" / "requirements.txt").read_text(encoding="utf-8")
+    pin = next(line for line in requirements.splitlines() if line.startswith("biopython=="))
+    major, minor, *_ = (int(part) for part in pin.split("==", 1)[1].split("."))
+
+    assert (major, minor) >= (1, 83)
+
+
+def test_protenix_image_uses_non_jit_layernorm_by_default() -> None:
+    """Protenix images should avoid runtime CUDA-extension JIT compilation."""
+    dockerfile = (REPO_ROOT / "boileroom" / "models" / "protenix" / "Dockerfile").read_text(encoding="utf-8")
+
+    assert "LAYERNORM_TYPE=openfold" in dockerfile
+
+
+def test_split_platforms_normalizes_arch_aliases() -> None:
+    """Build and smoke helpers should normalize common Docker platform shorthands."""
+    assert split_platforms("amd64,arm64") == ("linux/amd64", "linux/arm64")
+    assert split_platforms(" linux/amd64 , aarch64 ") == ("linux/amd64", "linux/arm64")
 
 
 def test_image_tag_uses_env_override(monkeypatch) -> None:
@@ -80,6 +124,16 @@ def test_modal_runtime_env_carries_image_lookup_overrides(monkeypatch) -> None:
     assert env["BOILEROOM_DOCKER_REPOSITORY"] == "docker.io/example"
     assert env[IMAGE_TAG_ENV] == "0.3.0.1"
     assert set(env) == {"MODEL_DIR", "BOILEROOM_DOCKER_REPOSITORY", IMAGE_TAG_ENV}
+
+
+def test_protenix_modal_runtime_env_uses_non_jit_layernorm(monkeypatch) -> None:
+    """Modal Protenix should avoid runtime CUDA-extension JIT compilation."""
+    monkeypatch.setenv("BOILEROOM_DOCKER_REPOSITORY", "docker.io/example")
+    monkeypatch.setenv(IMAGE_TAG_ENV, "0.3.0.1")
+
+    env = render_modal_runtime_env(get_model_image_spec("protenix"), "/mnt/models")
+
+    assert env["LAYERNORM_TYPE"] == "openfold"
 
 
 def test_docker_repository_uses_env_override(monkeypatch) -> None:
@@ -140,18 +194,62 @@ def test_compute_cuda_versions_uses_metadata_defaults() -> None:
 
 def test_package_name_to_import_name_handles_overrides_and_hyphens() -> None:
     """Import-name resolution should keep overrides centralized and predictable."""
+    assert package_name_to_import_name("absl-py") == "absl"
+    assert package_name_to_import_name("biopython") == "Bio"
+    assert package_name_to_import_name("dm-haiku") == "haiku"
+    assert package_name_to_import_name("ml-collections") == "ml_collections"
+    assert package_name_to_import_name("tensorflow-cpu") == "tensorflow"
     assert package_name_to_import_name("pytorch-lightning") == "pytorch_lightning"
     assert package_name_to_import_name("torch-tensorrt") is None
     assert package_name_to_import_name("my-package") == "my_package"
+
+
+def test_requirement_line_to_package_name_skips_pip_options() -> None:
+    """Requirements parser should ignore index/option lines in image smoke checks."""
+    assert requirement_line_to_package_name("-f https://example.test/simple") is None
+    assert requirement_line_to_package_name("--extra-index-url https://example.test/simple") is None
+    assert requirement_line_to_package_name("jaxlib==0.4.26+cuda12.cudnn89") == "jaxlib"
+    assert requirement_line_to_package_name("openmm[cuda12]==8.2.0") == "openmm"
+
+
+def test_requirement_import_names_uses_central_parser(tmp_path) -> None:
+    """Image import checks should not treat pip option lines as packages."""
+    requirements_path = tmp_path / "requirements.txt"
+    requirements_path.write_text(
+        "\n".join(
+            [
+                "-f https://example.test/simple",
+                "absl-py==1.0.0",
+                "openmm[cuda12]==8.2.0",
+                "torch-tensorrt==2.0.0",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    assert requirement_import_names(requirements_path) == ["absl", "openmm"]
 
 
 def test_iter_image_targets_uses_canonical_cuda_tags() -> None:
     """Image smoke targets should honor CUDA-qualified tag selection."""
     targets = iter_image_targets("0.3.0", ["12.6"], docker_repository="example")
     references = {image_key: image_reference for image_key, image_reference, *_ in targets}
+    assert references["alphafold"].startswith("docker.io/example/")
     assert references["boltz"].startswith("docker.io/example/")
     assert references["chai"].startswith("docker.io/example/")
     assert references["esm"].startswith("docker.io/example/")
+    assert references["protenix"].startswith("docker.io/example/")
+    assert references["alphafold"].endswith(":cuda12.6-0.3.0")
     assert references["boltz"].endswith(":cuda12.6-0.3.0")
     assert references["chai"].endswith(":cuda12.6-0.3.0")
     assert references["esm"].endswith(":cuda12.6-0.3.0")
+    assert references["protenix"].endswith(":cuda12.6-0.3.0")
+
+
+def test_iter_image_targets_filters_by_platform() -> None:
+    """ARM64 smoke checks should skip images that only advertise AMD64 support."""
+    targets = iter_image_targets("0.3.0", ["12.6"], docker_repository="example", platform="linux/arm64")
+    image_keys = [image_key for image_key, *_ in targets]
+
+    assert image_keys == ["boltz", "chai", "esm"]

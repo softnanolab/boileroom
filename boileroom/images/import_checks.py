@@ -14,14 +14,21 @@ from .metadata import (
     RuntimeImageSpec,
     format_image_reference,
     get_supported_cuda,
+    get_supported_platforms,
     normalize_cuda_version,
     normalize_requested_tag,
     published_image_references,
+    split_platforms,
 )
 
 _CUDA_TAG_PATTERN = re.compile(r"^cuda\d+\.\d+(?:-.+)?$")
 
 IMPORT_NAME_OVERRIDES: Final[dict[str, str | None]] = {
+    "absl-py": "absl",
+    "biopython": "Bio",
+    "dm-haiku": "haiku",
+    "ml-collections": "ml_collections",
+    "tensorflow-cpu": "tensorflow",
     "pytorch-lightning": "pytorch_lightning",
     "torch-tensorrt": None,
     "hf-transfer": None,
@@ -48,12 +55,35 @@ def package_name_to_import_name(package_name: str) -> str | None:
     return IMPORT_NAME_OVERRIDES.get(package_name, package_name.replace("-", "_"))
 
 
+def requirement_line_to_package_name(line: str) -> str | None:
+    """Return the package name from one requirements.txt line, or None for pip options."""
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#") or stripped.startswith("-"):
+        return None
+    return re.split(r"[>=<!=;\[]", stripped, maxsplit=1)[0].strip() or None
+
+
+def requirement_import_names(requirements_path: Path) -> list[str]:
+    """Return import names represented by a requirements.txt file."""
+    import_names = []
+    with requirements_path.open(encoding="utf-8") as handle:
+        for line in handle:
+            package_name = requirement_line_to_package_name(line)
+            if package_name is None:
+                continue
+            import_name = package_name_to_import_name(package_name)
+            if import_name:
+                import_names.append(import_name)
+    return import_names
+
+
 def iter_image_targets(
     tag: str | None,
     cuda_versions: list[str],
     *,
     docker_repository: str = DEFAULT_DOCKER_REPOSITORY,
     image_specs: Sequence[RuntimeImageSpec] | None = None,
+    platform: str | None = None,
 ) -> list[tuple[str, str, str, Path, Path]]:
     """Return model-image targets for smoke checks.
 
@@ -64,8 +94,12 @@ def iter_image_targets(
         raise ValueError("Do not combine --all-cuda/--cuda-version with an already CUDA-qualified --tag.")
 
     specs = MODEL_IMAGE_SPECS if image_specs is None else image_specs
+    requested_platforms = set(split_platforms(platform)) if platform is not None else None
     targets: list[tuple[str, str, str, Path, Path]] = []
     for spec in specs:
+        if requested_platforms is not None and not requested_platforms.issubset(get_supported_platforms(spec)):
+            continue
+
         requirements_path = spec.context_path / "requirements.txt"
         core_path = spec.context_path / "core.py"
         if cuda_versions:

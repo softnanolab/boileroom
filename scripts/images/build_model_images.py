@@ -24,10 +24,12 @@ from boileroom.images.metadata import (  # noqa: E402
     RuntimeImageSpec,
     SUPPORTED_CUDA_VERSIONS,
     get_supported_cuda,
+    get_supported_platforms,
     normalize_docker_repository,
     normalize_cuda_version,
     normalize_requested_tag,
     published_image_references,
+    split_platforms,
 )
 from scripts.cli_utils import CONTEXT_SETTINGS, all_cuda_option, cuda_version_option, none_if_empty  # noqa: E402
 
@@ -441,12 +443,14 @@ def run_build(options: BuildOptions) -> None:
         tag = resolve_publish_tag(options.tag)
         docker_repository = normalize_docker_repository(options.docker_user)
         cuda_versions = compute_cuda_versions(options.cuda_versions, options.all_cuda)
-        output_flag = resolve_output_flag(options.push, options.load, options.platform)
-        use_local_docker_build = should_use_local_docker_build(options.push, options.platform)
+        requested_platforms = split_platforms(options.platform)
+        platform = ",".join(requested_platforms)
+        output_flag = resolve_output_flag(options.push, options.load, platform)
+        use_local_docker_build = should_use_local_docker_build(options.push, platform)
         if options.local_base:
             if not options.push:
                 raise ValueError("--local-base only applies to pushed builds.")
-            if "," in options.platform:
+            if "," in platform:
                 raise ValueError("--local-base requires a single --platform value.")
             use_local_docker_build = False
         ensure_docker()
@@ -473,7 +477,7 @@ def run_build(options: BuildOptions) -> None:
     log_info(f"Docker repository: {docker_repository}")
     log_info(f"Model images: {', '.join(spec.image_name for spec in MODEL_IMAGE_SPECS)}")
     log_info(f"CUDA versions: {', '.join(cuda_versions)}")
-    log_info(f"Platforms: {options.platform}")
+    log_info(f"Platforms: {platform}")
     if options.verbose:
         if options.local_base:
             output_mode = "load into local Docker then push"
@@ -509,7 +513,7 @@ def run_build(options: BuildOptions) -> None:
                     cuda_version,
                     tag,
                     docker_repository,
-                    options.platform,
+                    platform,
                     output_flag,
                     options.no_cache,
                     use_local_docker_build,
@@ -528,6 +532,13 @@ def run_build(options: BuildOptions) -> None:
                 log_warn(
                     f"Skipping {image_spec.image_name} for CUDA {cuda_version} "
                     f"(supported CUDA variants: {', '.join(supported_cuda)})"
+                )
+                continue
+            supported_platforms = get_supported_platforms(image_spec)
+            if not set(requested_platforms).issubset(supported_platforms):
+                log_warn(
+                    f"Skipping {image_spec.image_name} for platforms {', '.join(requested_platforms)} "
+                    f"(supported platforms: {', '.join(supported_platforms)})"
                 )
                 continue
             target_reference = published_image_references(image_spec.image_name, cuda_version, tag, docker_repository)[0]
@@ -556,7 +567,7 @@ def run_build(options: BuildOptions) -> None:
                 published_references.extend(
                     build_model(
                         task,
-                        options.platform,
+                        platform,
                         output_flag,
                         options.no_cache,
                         use_local_docker_build,
@@ -574,7 +585,7 @@ def run_build(options: BuildOptions) -> None:
                 executor.submit(
                     build_model,
                     task,
-                    options.platform,
+                    platform,
                     output_flag,
                     options.no_cache,
                     use_local_docker_build,

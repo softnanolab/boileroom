@@ -67,6 +67,8 @@ In `0.3.1`, this replaces ESMFold's old padded pLDDT batch array and moves Boltz
 | ESM-2    | ✅      | MSA-free embedding model   | [Facebook (now Meta)](https://github.com/facebookresearch/esm)     |
 | Chai-1    | ✅      | Protein design and structure prediction model | [Chai Discovery](https://github.com/chaidiscovery/chai-lab) |
 | Boltz-2   | ✅      | Diffusion-based protein structure prediction | [Boltz / MIT](https://github.com/jwohlwend/boltz) |
+| Protenix  | 🍊      | CLI-backed biomolecular structure prediction | [ByteDance](https://github.com/bytedance/Protenix) |
+| AlphaFold2-Multimer | 🍊 | CLI-backed protein complex prediction | [Google DeepMind](https://github.com/google-deepmind/alphafold) |
 
 ## Development
 
