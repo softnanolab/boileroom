@@ -24,4 +24,5 @@ RUN --mount=type=cache,id=${UV_CACHE_ID},target=/root/.cache/uv \
     && rm /tmp/requirements.txt
 
 ENV HF_HUB_ENABLE_HF_TRANSFER=1 \
-    DISABLE_PANDERA_IMPORT_WARNING=True
+    DISABLE_PANDERA_IMPORT_WARNING=True \
+    LAYERNORM_TYPE=openfold

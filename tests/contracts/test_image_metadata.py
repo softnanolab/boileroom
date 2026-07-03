@@ -81,6 +81,13 @@ def test_alphafold_biopython_pin_supports_python312_image_builds() -> None:
     assert (major, minor) >= (1, 83)
 
 
+def test_protenix_image_uses_non_jit_layernorm_by_default() -> None:
+    """Protenix images should avoid runtime CUDA-extension JIT compilation."""
+    dockerfile = (REPO_ROOT / "boileroom" / "models" / "protenix" / "Dockerfile").read_text(encoding="utf-8")
+
+    assert "LAYERNORM_TYPE=openfold" in dockerfile
+
+
 def test_split_platforms_normalizes_arch_aliases() -> None:
     """Build and smoke helpers should normalize common Docker platform shorthands."""
     assert split_platforms("amd64,arm64") == ("linux/amd64", "linux/arm64")
