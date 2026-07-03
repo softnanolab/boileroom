@@ -1,5 +1,7 @@
 """Fast contract tests for public model wrappers."""
 
+import subprocess
+import sys
 from typing import Any
 
 import numpy as np
@@ -38,6 +40,27 @@ SAMPLE_INPUTS: dict[str, Any] = {
     "alphafold2_multimer": "MLKNVHVLVLGAGDVGSVVVRLLEK:MLKNVHVLVLGAGDVGSVVVRLLEK",
 }
 EXPECTED_MODAL_APP_NAMES = {spec.key: f"boileroom-{spec.key}" for spec in MODEL_SPECS}
+
+
+def test_base_import_does_not_require_torch() -> None:
+    """Runtime images without torch should still import wrapper base classes."""
+    code = """
+import builtins
+
+real_import = builtins.__import__
+
+def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
+    if name == "torch":
+        raise ModuleNotFoundError("No module named 'torch'")
+    return real_import(name, globals, locals, fromlist, level)
+
+builtins.__import__ = guarded_import
+import boileroom.base
+print("ok")
+"""
+    result = subprocess.run([sys.executable, "-c", code], check=True, capture_output=True, text=True)
+
+    assert result.stdout.strip() == "ok"
 
 
 def _make_metadata(model_name: str) -> PredictionMetadata:

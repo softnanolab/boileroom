@@ -94,6 +94,7 @@ MODEL_IMAGE_SPECS: Final[tuple[RuntimeImageSpec, ...]] = (
         dockerfile_relative_path="boileroom/models/protenix/Dockerfile",
         context_relative_path="boileroom/models/protenix",
         config_relative_path="boileroom/models/protenix/config.yaml",
+        modal_runtime_env=(("LAYERNORM_TYPE", "openfold"),),
     ),
 )
 

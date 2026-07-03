@@ -126,6 +126,16 @@ def test_modal_runtime_env_carries_image_lookup_overrides(monkeypatch) -> None:
     assert set(env) == {"MODEL_DIR", "BOILEROOM_DOCKER_REPOSITORY", IMAGE_TAG_ENV}
 
 
+def test_protenix_modal_runtime_env_uses_non_jit_layernorm(monkeypatch) -> None:
+    """Modal Protenix should avoid runtime CUDA-extension JIT compilation."""
+    monkeypatch.setenv("BOILEROOM_DOCKER_REPOSITORY", "docker.io/example")
+    monkeypatch.setenv(IMAGE_TAG_ENV, "0.3.0.1")
+
+    env = render_modal_runtime_env(get_model_image_spec("protenix"), "/mnt/models")
+
+    assert env["LAYERNORM_TYPE"] == "openfold"
+
+
 def test_docker_repository_uses_env_override(monkeypatch) -> None:
     """Image references should support a shared Docker repository override."""
     monkeypatch.setenv("BOILEROOM_DOCKER_REPOSITORY", "example")
