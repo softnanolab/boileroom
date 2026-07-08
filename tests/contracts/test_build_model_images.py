@@ -409,9 +409,5 @@ def test_local_base_push_builds_locally_then_pushes(monkeypatch: MonkeyPatch, tm
 
     assert buildx_calls == 1
     assert base_calls == [(False, True)]
-    assert model_calls == [
-        (False, True, f"docker.io/jakublala/boileroom-base:cuda{DEFAULT_CUDA_VERSION}-sha-test"),
-        (False, True, f"docker.io/jakublala/boileroom-base:cuda{DEFAULT_CUDA_VERSION}-sha-test"),
-        (False, True, f"docker.io/jakublala/boileroom-base:cuda{DEFAULT_CUDA_VERSION}-sha-test"),
-        (False, True, f"docker.io/jakublala/boileroom-base:cuda{DEFAULT_CUDA_VERSION}-sha-test"),
-    ]
+    base_image_reference = f"docker.io/jakublala/boileroom-base:cuda{DEFAULT_CUDA_VERSION}-sha-test"
+    assert model_calls == [(False, True, base_image_reference)] * len(build_model_images.MODEL_IMAGE_SPECS)
