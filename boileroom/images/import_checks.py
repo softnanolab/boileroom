@@ -48,6 +48,28 @@ def package_name_to_import_name(package_name: str) -> str | None:
     return IMPORT_NAME_OVERRIDES.get(package_name, package_name.replace("-", "_"))
 
 
+def requirement_line_to_package_name(requirement: str) -> str:
+    """Extract the package name from a requirements.txt line.
+
+    Parameters
+    ----------
+    requirement : str
+        Requirements.txt-style line, such as ``package>=1.0``, ``pkg @ url``,
+        or ``url#egg=pkg``.
+
+    Returns
+    -------
+    str
+        Extracted package or distribution name.
+    """
+    stripped = requirement.strip()
+    if "#egg=" in stripped:
+        return stripped.rsplit("#egg=", 1)[1].split("&", 1)[0].strip()
+    if " @ " in stripped:
+        return stripped.split(" @ ", 1)[0].strip()
+    return re.split(r"[>=<!=;\[]", stripped)[0].strip()
+
+
 def iter_image_targets(
     tag: str | None,
     cuda_versions: list[str],

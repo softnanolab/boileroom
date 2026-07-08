@@ -9,6 +9,10 @@ def __getattr__(name: str):
         from .models import ESM2
 
         return ESM2
+    if name == "ESMFold2":
+        from .models import ESMFold2
+
+        return ESMFold2
     if name == "Chai1":
         from .models import Chai1
 
@@ -20,4 +24,4 @@ def __getattr__(name: str):
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
-__all__ = ["ESMFold", "ESM2", "Chai1", "Boltz2"]
+__all__ = ["ESMFold", "ESM2", "ESMFold2", "Chai1", "Boltz2"]

@@ -331,12 +331,14 @@ def test_main_skips_existing_base_and_model_tags(monkeypatch: MonkeyPatch, tmp_p
     assert built_tasks == [
         ("boileroom-chai1", f"docker.io/jakublala/boileroom-base:cuda{DEFAULT_CUDA_VERSION}-sha-test"),
         ("boileroom-esm", f"docker.io/jakublala/boileroom-base:cuda{DEFAULT_CUDA_VERSION}-sha-test"),
+        ("boileroom-esmfold2", f"docker.io/jakublala/boileroom-base:cuda{DEFAULT_CUDA_VERSION}-sha-test"),
     ]
     assert checked_refs == [
         f"docker.io/jakublala/boileroom-base:cuda{DEFAULT_CUDA_VERSION}-sha-test",
         f"docker.io/jakublala/boileroom-boltz:cuda{DEFAULT_CUDA_VERSION}-sha-test",
         f"docker.io/jakublala/boileroom-chai1:cuda{DEFAULT_CUDA_VERSION}-sha-test",
         f"docker.io/jakublala/boileroom-esm:cuda{DEFAULT_CUDA_VERSION}-sha-test",
+        f"docker.io/jakublala/boileroom-esmfold2:cuda{DEFAULT_CUDA_VERSION}-sha-test",
     ]
 
 
@@ -406,6 +408,7 @@ def test_local_base_push_builds_locally_then_pushes(monkeypatch: MonkeyPatch, tm
     assert buildx_calls == 1
     assert base_calls == [(False, True)]
     assert model_calls == [
+        (False, True, f"docker.io/jakublala/boileroom-base:cuda{DEFAULT_CUDA_VERSION}-sha-test"),
         (False, True, f"docker.io/jakublala/boileroom-base:cuda{DEFAULT_CUDA_VERSION}-sha-test"),
         (False, True, f"docker.io/jakublala/boileroom-base:cuda{DEFAULT_CUDA_VERSION}-sha-test"),
         (False, True, f"docker.io/jakublala/boileroom-base:cuda{DEFAULT_CUDA_VERSION}-sha-test"),
