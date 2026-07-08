@@ -1,4 +1,4 @@
-"""Contract/fake-SDK tests for ESM-C and ESM3 embedding support."""
+"""Contract/fake-SDK tests for ESM-C embedding support (Biohub MIT ``esm``)."""
 
 from __future__ import annotations
 
@@ -13,8 +13,8 @@ import numpy as np
 import pytest
 
 
-def test_esm3_types_are_lightweight() -> None:
-    source = Path("boileroom/models/esm3/types.py").read_text(encoding="utf-8")
+def test_esmc_types_are_lightweight() -> None:
+    source = Path("boileroom/models/esmc/types.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
     imports: set[str] = set()
     for node in ast.walk(tree):
@@ -24,10 +24,9 @@ def test_esm3_types_are_lightweight() -> None:
             imports.add(node.module.split(".")[0])
     assert not ({"torch", "esm", "transformers", "modal", "biotite"} & imports)
 
-    from boileroom.models.esm3.types import ESM3Output, ESMCOutput, ESMEmbeddingOutput
+    from boileroom.models.esmc.types import ESMCOutput, ESMEmbeddingOutput
 
     assert ESMCOutput is ESMEmbeddingOutput
-    assert ESM3Output is ESMEmbeddingOutput
     assert {field.name for field in fields(ESMEmbeddingOutput)} >= {
         "metadata",
         "embeddings",
@@ -39,9 +38,9 @@ def test_esm3_types_are_lightweight() -> None:
 
 
 def test_parse_sequences_preserves_residue_and_chain_indices() -> None:
-    from boileroom.models.esm3.core import parse_esm3_sequences
+    from boileroom.models.esmc.core import parse_esmc_sequences
 
-    parsed = parse_esm3_sequences("ACD:EF")
+    parsed = parse_esmc_sequences("ACD:EF")
 
     assert len(parsed) == 1
     assert parsed[0].original == "ACD:EF"
@@ -52,17 +51,17 @@ def test_parse_sequences_preserves_residue_and_chain_indices() -> None:
 
 
 def test_parse_sequences_rejects_empty_batches() -> None:
-    from boileroom.models.esm3.core import ESMCCore, parse_esm3_sequences
+    from boileroom.models.esmc.core import ESMCCore, parse_esmc_sequences
 
     with pytest.raises(ValueError, match="at least one sequence"):
-        parse_esm3_sequences([])
+        parse_esmc_sequences([])
 
     with pytest.raises(ValueError, match="at least one sequence"):
         ESMCCore(config={"device": "cpu"}).embed([])
 
 
 def test_pad_residue_arrays_zero_and_minus_one_padding() -> None:
-    from boileroom.models.esm3.core import pad_residue_arrays
+    from boileroom.models.esmc.core import pad_residue_arrays
 
     embeddings, hidden_states, lm_logits, chain_index, residue_index = pad_residue_arrays(
         embeddings=[np.ones((5, 2), dtype=np.float32), np.full((2, 2), 2, dtype=np.float32)],
@@ -81,7 +80,7 @@ def test_pad_residue_arrays_zero_and_minus_one_padding() -> None:
 
 
 def test_pad_residue_arrays_rejects_empty_batches() -> None:
-    from boileroom.models.esm3.core import pad_residue_arrays
+    from boileroom.models.esmc.core import pad_residue_arrays
 
     with pytest.raises(ValueError, match="empty batch"):
         pad_residue_arrays(embeddings=[], chain_index=[], residue_index=[])
@@ -160,24 +159,21 @@ def fake_esm_sdk(monkeypatch: pytest.MonkeyPatch) -> type[_FakeSDKModel]:
     cast(Any, esm).__version__ = "fake-version"
     esm_models = types.ModuleType("esm.models")
     esmc = types.ModuleType("esm.models.esmc")
-    esm3 = types.ModuleType("esm.models.esm3")
     sdk = types.ModuleType("esm.sdk")
     api = types.ModuleType("esm.sdk.api")
     cast(Any, esmc).ESMC = _FakeSDKModel
-    cast(Any, esm3).ESM3 = _FakeSDKModel
     cast(Any, api).ESMProtein = _FakeProtein
     cast(Any, api).LogitsConfig = _FakeLogitsConfig
     monkeypatch.setitem(sys.modules, "esm", esm)
     monkeypatch.setitem(sys.modules, "esm.models", esm_models)
     monkeypatch.setitem(sys.modules, "esm.models.esmc", esmc)
-    monkeypatch.setitem(sys.modules, "esm.models.esm3", esm3)
     monkeypatch.setitem(sys.modules, "esm.sdk", sdk)
     monkeypatch.setitem(sys.modules, "esm.sdk.api", api)
     return _FakeSDKModel
 
 
 def test_esmc_core_uses_sdk_and_strips_special_chain_break_tokens(fake_esm_sdk: type[_FakeSDKModel]) -> None:
-    from boileroom.models.esm3.core import ESMCCore
+    from boileroom.models.esmc.core import ESMCCore
 
     core = ESMCCore(config={"device": "cpu", "model_name": "esmc_300m"})
     result = core.embed(["ACD:EF", "GH", "I"], options={"include_fields": ["hidden_states", "lm_logits"]})
@@ -198,7 +194,7 @@ def test_esmc_core_uses_sdk_and_strips_special_chain_break_tokens(fake_esm_sdk: 
 
 
 def test_esmc_static_config_and_invalid_model_validation(fake_esm_sdk: type[_FakeSDKModel]) -> None:
-    from boileroom.models.esm3.core import ESMCCore
+    from boileroom.models.esmc.core import ESMCCore
 
     with pytest.raises(ValueError, match="Unsupported ESM-C model"):
         ESMCCore(config={"model_name": "nope"})
@@ -208,45 +204,35 @@ def test_esmc_static_config_and_invalid_model_validation(fake_esm_sdk: type[_Fak
         core.embed("ACD", options={"model_name": "esmc_600m"})
 
 
-def test_esm3_core_hidden_states_are_rejected(fake_esm_sdk: type[_FakeSDKModel]) -> None:
-    from boileroom.models.esm3.core import ESM3Core
+def test_esmc_alias_model_names_are_valid(fake_esm_sdk: type[_FakeSDKModel]) -> None:
+    from boileroom.models.esmc.core import ESMCCore
 
-    with pytest.raises(ValueError, match=r"hidden_states.*ESM3"):
-        ESM3Core(config={"device": "cpu"}).embed("ACD", options={"include_fields": ["hidden_states"]})
-
-
-def test_esm3_wildcard_requests_supported_logits_only(fake_esm_sdk: type[_FakeSDKModel]) -> None:
-    from boileroom.models.esm3.core import ESM3Core
-
-    result = ESM3Core(config={"device": "cpu"}).embed("ACD", options={"include_fields": ["*"]})
-
-    assert result.lm_logits is not None and result.lm_logits.shape == (1, 3, 4)
-    assert result.hidden_states is None
-
-
-def test_esm3_alias_model_names_are_valid(fake_esm_sdk: type[_FakeSDKModel]) -> None:
-    from boileroom.models.esm3.core import ESM3Core
-
-    core = ESM3Core(config={"device": "cpu", "model_name": "esm3-sm-open-v1"})
+    core = ESMCCore(config={"device": "cpu", "model_name": "esmc-600m"})
     result = core.embed("ACD")
 
-    assert fake_esm_sdk.requested_model_names == ["esm3_sm_open_v1"]
+    assert fake_esm_sdk.requested_model_names == ["esmc_600m"]
     assert result.embeddings.shape == (1, 3, 3)
-    assert result.lm_logits is None
 
 
-def test_esm3_package_types_import_has_no_modal_wrapper_side_effects(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_esmc_wildcard_requests_all_supported_fields(fake_esm_sdk: type[_FakeSDKModel]) -> None:
+    from boileroom.models.esmc.core import ESMCCore
+
+    result = ESMCCore(config={"device": "cpu"}).embed("ACD", options={"include_fields": ["*"]})
+
+    assert result.hidden_states is not None and result.hidden_states.shape == (2, 1, 3, 3)
+    assert result.lm_logits is not None and result.lm_logits.shape == (1, 3, 4)
+
+
+def test_esmc_package_types_import_has_no_modal_wrapper_side_effects(monkeypatch: pytest.MonkeyPatch) -> None:
     for module_name in [
-        "boileroom.models.esm3",
-        "boileroom.models.esm3.types",
-        "boileroom.models.esm3.esmc",
-        "boileroom.models.esm3.esm3",
+        "boileroom.models.esmc",
+        "boileroom.models.esmc.types",
+        "boileroom.models.esmc.esmc",
         "modal",
     ]:
         monkeypatch.delitem(sys.modules, module_name, raising=False)
 
-    import boileroom.models.esm3.types  # noqa: F401, PLC0415
+    import boileroom.models.esmc.types  # noqa: F401, PLC0415
 
-    assert "boileroom.models.esm3.esmc" not in sys.modules
-    assert "boileroom.models.esm3.esm3" not in sys.modules
+    assert "boileroom.models.esmc.esmc" not in sys.modules
     assert "modal" not in sys.modules

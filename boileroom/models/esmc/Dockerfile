@@ -20,7 +20,10 @@ RUN --mount=type=cache,id=${UV_CACHE_ID},target=/root/.cache/uv \
     uv pip install --system -r /tmp/requirements.txt \
     && rm /tmp/requirements.txt
 
-RUN mkdir -p "${MODEL_DIR:-/mnt/models}" \
-    && chown -R 65532:65532 "${MODEL_DIR:-/mnt/models}"
+RUN groupadd --gid 10001 boileroom \
+    && useradd --uid 10001 --gid boileroom --create-home --home-dir /home/boileroom --shell /usr/sbin/nologin boileroom \
+    && mkdir -p /mnt/models \
+    && chown -R boileroom:boileroom /home/boileroom /mnt/models
 
-USER 65532:65532
+WORKDIR /home/boileroom
+USER boileroom

@@ -1,4 +1,10 @@
-"""Core ESM-C and ESM3 embedding implementations without Modal dependencies."""
+"""Core ESM-C embedding implementation without Modal dependencies.
+
+ESM-C is loaded from the 2026 Chan Zuckerberg Biohub MIT-licensed ``esm`` fork
+(https://github.com/Biohub/esm). Weights are the MIT-relicensed Hugging Face
+checkpoints ``biohub/esmc-300m-2024-12`` / ``biohub/esmc-600m-2024-12`` /
+``biohub/esmc-6b-2024-12``.
+"""
 
 from __future__ import annotations
 
@@ -8,21 +14,21 @@ import logging
 import os
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, ClassVar, Literal, cast
+from typing import Any, ClassVar, cast
 
 import numpy as np
 import torch
 
 from ...base import EmbeddingAlgorithm
 from ...utils import Timer, get_model_cache_dir, validate_sequence
-from .types import ESM3Output, ESMCOutput, ESMEmbeddingOutput
+from .types import ESMCOutput, ESMEmbeddingOutput
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
-class ESM3ParsedSequence:
-    """Residue and chain metadata for an ESM-C/ESM3 input sequence."""
+class ESMCParsedSequence:
+    """Residue and chain metadata for an ESM-C input sequence."""
 
     original: str
     sdk_sequence: str
@@ -34,30 +40,30 @@ class ESM3ParsedSequence:
         return int(self.chain_index.shape[0])
 
 
-def parse_esm3_sequences(sequences: str | Sequence[str]) -> list[ESM3ParsedSequence]:
-    """Parse ESM-C/ESM3 inputs and map colon chain separators to SDK breaks.
+def parse_esmc_sequences(sequences: str | Sequence[str]) -> list[ESMCParsedSequence]:
+    """Parse ESM-C inputs and map colon chain separators to SDK breaks.
 
-    ``AAA:BBB`` is submitted to the EvolutionaryScale SDK as ``AAA|BBB`` while
-    residue indices remain aligned to the original residues only.
+    ``AAA:BBB`` is submitted to the Biohub ESM SDK as ``AAA|BBB`` while residue
+    indices remain aligned to the original residues only.
     """
 
     sequence_list = [sequences] if isinstance(sequences, str) else list(sequences)
     if not sequence_list:
-        raise ValueError("ESM-C/ESM3 embedding input must contain at least one sequence.")
+        raise ValueError("ESM-C embedding input must contain at least one sequence.")
 
-    parsed: list[ESM3ParsedSequence] = []
+    parsed: list[ESMCParsedSequence] = []
     for sequence in sequence_list:
         validate_sequence(sequence)
         chains = sequence.split(":")
         if any(chain == "" for chain in chains):
-            raise ValueError("ESM-C/ESM3 sequences must not contain empty chains.")
+            raise ValueError("ESM-C sequences must not contain empty chains.")
         chain_index: list[int] = []
         residue_index: list[int] = []
         for chain_id, chain in enumerate(chains):
             chain_index.extend([chain_id] * len(chain))
             residue_index.extend(range(len(chain)))
         parsed.append(
-            ESM3ParsedSequence(
+            ESMCParsedSequence(
                 original=sequence,
                 sdk_sequence="|".join(chains),
                 chain_index=np.asarray(chain_index, dtype=np.int32),
@@ -98,20 +104,23 @@ def pad_residue_arrays(
     return padded_embeddings, padded_hidden_states, padded_lm_logits, padded_chain_index, padded_residue_index
 
 
-class _BaseESM3EmbeddingCore(EmbeddingAlgorithm):
-    """Shared SDK-backed embedding logic for ESM-C and ESM3."""
+class ESMCCore(EmbeddingAlgorithm):
+    """ESM-C residue-level embedding model backed by the Biohub MIT ``esm`` SDK."""
 
     DEFAULT_CONFIG: ClassVar[dict[str, Any]] = {
         "device": "cuda:0",
-        "model_name": "",
+        "model_name": "esmc_300m",
         "include_fields": None,
     }
     STATIC_CONFIG_KEYS: ClassVar[frozenset[str]] = frozenset({"device", "model_name"})
-    MODEL_DISPLAY_NAME: ClassVar[str]
-    MODEL_KIND: ClassVar[Literal["esmc", "esm3"]]
-    VALID_MODEL_NAMES: ClassVar[frozenset[str]]
-    MODEL_ALIASES: ClassVar[dict[str, str]] = {}
-    SUPPORTED_OPTIONAL_FIELDS: ClassVar[frozenset[str]] = frozenset({"lm_logits"})
+    MODEL_DISPLAY_NAME: ClassVar[str] = "ESM-C"
+    VALID_MODEL_NAMES: ClassVar[frozenset[str]] = frozenset({"esmc_300m", "esmc_600m", "esmc_6b"})
+    MODEL_ALIASES: ClassVar[dict[str, str]] = {
+        "esmc-300m": "esmc_300m",
+        "esmc-600m": "esmc_600m",
+        "esmc-6b": "esmc_6b",
+    }
+    SUPPORTED_OPTIONAL_FIELDS: ClassVar[frozenset[str]] = frozenset({"hidden_states", "lm_logits"})
 
     def __init__(self, config: dict | None = None) -> None:
         super().__init__(config)
@@ -148,16 +157,13 @@ class _BaseESM3EmbeddingCore(EmbeddingAlgorithm):
         self._load()
 
     def _load(self) -> None:
-        """Load the configured EvolutionaryScale SDK model."""
+        """Load the configured ESM-C model from the Biohub MIT ``esm`` SDK."""
 
         if self.model is not None:
             return
         self._configure_huggingface_cache()
-        if self.MODEL_KIND == "esmc":
-            from esm.models.esmc import ESMC as SDKModel
-        else:
-            from esm.models.esm3 import ESM3 as SDKModel
         import esm
+        from esm.models.esmc import ESMC as SDKModel
 
         self._device = self.config["device"]
         self.model = SDKModel.from_pretrained(self.config["model_name"]).to(self._device).eval()
@@ -168,7 +174,7 @@ class _BaseESM3EmbeddingCore(EmbeddingAlgorithm):
     def _configure_huggingface_cache() -> None:
         """Route SDK/Hugging Face downloads through Boileroom's model cache."""
 
-        cache_dir = get_model_cache_dir("esm3") / "huggingface"
+        cache_dir = get_model_cache_dir("esmc") / "huggingface"
         cache_dir.mkdir(parents=True, exist_ok=True)
         os.environ.setdefault("HF_HOME", str(cache_dir))
         os.environ.setdefault("HUGGINGFACE_HUB_CACHE", str(cache_dir / "hub"))
@@ -179,21 +185,12 @@ class _BaseESM3EmbeddingCore(EmbeddingAlgorithm):
             return False
         return field in include_fields or ("*" in include_fields and field in self.SUPPORTED_OPTIONAL_FIELDS)
 
-    def _validate_include_fields(self, include_fields: list[str] | tuple[str, ...] | None) -> None:
-        if (
-            include_fields is not None
-            and "hidden_states" in include_fields
-            and "hidden_states" not in self.SUPPORTED_OPTIONAL_FIELDS
-        ):
-            raise ValueError("hidden_states are not supported for ESM3 embeddings by the current SDK wrapper.")
-
-    def embed(self, sequences: str | Sequence[str], options: dict | None = None) -> ESMEmbeddingOutput:
-        """Compute residue-only embeddings using the EvolutionaryScale ESM SDK."""
+    def embed(self, sequences: str | Sequence[str], options: dict | None = None) -> ESMCOutput:
+        """Compute residue-only embeddings using the Biohub MIT ESM-C SDK."""
 
         effective_config = self._merge_options(options)
         include_fields = effective_config.get("include_fields")
-        self._validate_include_fields(include_fields)
-        parsed_sequences = parse_esm3_sequences(sequences)
+        parsed_sequences = parse_esmc_sequences(sequences)
 
         if self.model is None:
             logger.warning("Model not loaded. Forcing the model to load... Next time call _load() first.")
@@ -256,7 +253,7 @@ class _BaseESM3EmbeddingCore(EmbeddingAlgorithm):
                 residue_index=residue_out,
             )
             filtered = self._filter_include_fields(full_output, cast(list[str] | None, include_fields))
-            return cast(ESMEmbeddingOutput, filtered)
+            return cast(ESMCOutput, filtered)
 
     def _encode_sequence(self, sdk_sequence: str) -> Any:
         from esm.sdk.api import ESMProtein
@@ -284,6 +281,10 @@ class _BaseESM3EmbeddingCore(EmbeddingAlgorithm):
     @staticmethod
     def _to_numpy(value: Any) -> np.ndarray:
         if isinstance(value, torch.Tensor):
+            # The Biohub ESM-C SDK runs in bfloat16 on CUDA; NumPy has no bfloat16,
+            # so upcast floating tensors to float32 before conversion.
+            if value.is_floating_point():
+                value = value.to(torch.float32)
             return value.detach().cpu().numpy()
         return np.asarray(value)
 
@@ -333,49 +334,9 @@ class _BaseESM3EmbeddingCore(EmbeddingAlgorithm):
         raise ValueError(f"Expected hidden states with shape (layers, tokens, features); got {array.shape}")
 
 
-class ESMCCore(_BaseESM3EmbeddingCore):
-    """ESM-C embedding model backed by the official ``esm`` SDK."""
-
-    DEFAULT_CONFIG: ClassVar[dict[str, Any]] = {
-        "device": "cuda:0",
-        "model_name": "esmc_300m",
-        "include_fields": None,
-    }
-    MODEL_DISPLAY_NAME: ClassVar[str] = "ESM-C"
-    MODEL_KIND: ClassVar[Literal["esmc", "esm3"]] = "esmc"
-    VALID_MODEL_NAMES: ClassVar[frozenset[str]] = frozenset({"esmc_300m", "esmc_600m"})
-    SUPPORTED_OPTIONAL_FIELDS: ClassVar[frozenset[str]] = frozenset({"hidden_states", "lm_logits"})
-
-    def embed(self, sequences: str | Sequence[str], options: dict | None = None) -> ESMCOutput:
-        return cast(ESMCOutput, super().embed(sequences, options=options))
-
-
-class ESM3Core(_BaseESM3EmbeddingCore):
-    """ESM3 embedding-only model backed by the official ``esm`` SDK."""
-
-    DEFAULT_CONFIG: ClassVar[dict[str, Any]] = {
-        "device": "cuda:0",
-        "model_name": "esm3_sm_open_v1",
-        "include_fields": None,
-    }
-    MODEL_DISPLAY_NAME: ClassVar[str] = "ESM3"
-    MODEL_KIND: ClassVar[Literal["esmc", "esm3"]] = "esm3"
-    VALID_MODEL_NAMES: ClassVar[frozenset[str]] = frozenset({"esm3_sm_open_v1"})
-    MODEL_ALIASES: ClassVar[dict[str, str]] = {
-        "esm3-open": "esm3_sm_open_v1",
-        "esm3-sm-open-v1": "esm3_sm_open_v1",
-        "esm3-open-2024-03": "esm3_sm_open_v1",
-    }
-    SUPPORTED_OPTIONAL_FIELDS: ClassVar[frozenset[str]] = frozenset({"lm_logits"})
-
-    def embed(self, sequences: str | Sequence[str], options: dict | None = None) -> ESM3Output:
-        return cast(ESM3Output, super().embed(sequences, options=options))
-
-
 __all__ = [
-    "ESM3Core",
-    "ESM3ParsedSequence",
     "ESMCCore",
+    "ESMCParsedSequence",
     "pad_residue_arrays",
-    "parse_esm3_sequences",
+    "parse_esmc_sequences",
 ]

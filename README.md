@@ -53,14 +53,14 @@ atom_array = result.atom_array[0]
 coordinates = atom_array.coord
 confidence = result.plddt[0]  # Requested explicitly via include_fields above
 
-# ESM-C / ESM3 are embedding-only. Colon-separated chains are supported.
+# ESM-C is embedding-only. Colon-separated chains are supported.
 embedder = ESMC(config={"model_name": "esmc_300m"})
 embedding_result = embedder.embed("ACD:EF")
 embedding_result.embeddings.shape  # (1, 5, features), residue-only
 embedding_result.chain_index       # [[0, 0, 0, 1, 1]]
 ```
 
-ESM-C and ESM3 use the EvolutionaryScale/Biohub `esm` SDK in a separate `esm3` runtime image. Some weights are gated; accept the upstream license and provide a Hugging Face token when required. Set `MODEL_DIR` to control the shared model-weight cache.
+ESM-C uses the MIT-licensed 2026 Chan Zuckerberg Biohub `esm` fork in its own `esmc` runtime image. Weights are the MIT-relicensed Hugging Face checkpoints (`biohub/esmc-300m-2024-12`, `biohub/esmc-600m-2024-12`, `biohub/esmc-6b-2024-12`). Set `MODEL_DIR` to control the shared model-weight cache.
 
 Confidence metrics returned by structure wrappers use a consistent public shape: `plddt` entries are unit-scale
 per-residue arrays on `[0, 1]`, and scalar scores such as `ptm` and `iptm` are returned as shape-`(1,)` arrays.
@@ -73,8 +73,7 @@ In `0.3.1`, this replaces ESMFold's old padded pLDDT batch array and moves Boltz
 |------------|--------|------------------------------------------------|--------------------------------------------------------|
 | ESMFold    | ✅      | Fast protein structure prediction   | [Facebook (now Meta)](https://github.com/facebookresearch/esm)     |
 | ESM-2    | ✅      | MSA-free embedding model   | [Facebook (now Meta)](https://github.com/facebookresearch/esm)     |
-| ESM-C    | ✅      | EvolutionaryScale embedding-only model | [EvolutionaryScale](https://github.com/evolutionaryscale/esm) |
-| ESM3     | ✅      | EvolutionaryScale multimodal model, embedding-only in Boileroom | [EvolutionaryScale](https://github.com/evolutionaryscale/esm) |
+| ESM-C    | ✅      | MIT-licensed embedding-only model | [Chan Zuckerberg Biohub](https://github.com/Biohub/esm) |
 | Chai-1    | ✅      | Protein design and structure prediction model | [Chai Discovery](https://github.com/chaidiscovery/chai-lab) |
 | Boltz-2   | ✅      | Diffusion-based protein structure prediction | [Boltz / MIT](https://github.com/jwohlwend/boltz) |
 

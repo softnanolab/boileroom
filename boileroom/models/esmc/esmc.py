@@ -10,7 +10,7 @@ from ...base import ModelWrapper
 from ...images.volumes import model_weights
 from ...utils import MINUTES, MODAL_MODEL_DIR
 from ..registry import ESMC_SPEC
-from .image import esm3_image
+from .image import esmc_image
 
 if TYPE_CHECKING:
     from .types import ESMCOutput
@@ -20,7 +20,7 @@ app = get_modal_app("esmc")
 
 
 @app.cls(
-    image=esm3_image,
+    image=esmc_image,
     gpu="T4",
     timeout=20 * MINUTES,
     scaledown_window=10 * MINUTES,
