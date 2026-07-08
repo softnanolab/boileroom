@@ -185,7 +185,7 @@ class EmbedRequest(BaseModel):
 class FoldRequest(BaseModel):
     """Request model for fold endpoint."""
 
-    sequences: str | list[str]
+    sequences: str | list[str] | dict[str, Any] | list[dict[str, Any]]
     options: dict[str, Any] | None = None
 
 

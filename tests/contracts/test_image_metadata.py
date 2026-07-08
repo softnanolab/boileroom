@@ -4,7 +4,12 @@ import importlib.metadata
 
 import pytest
 
-from boileroom.images.import_checks import compute_cuda_versions, iter_image_targets, package_name_to_import_name
+from boileroom.images.import_checks import (
+    compute_cuda_versions,
+    iter_image_targets,
+    package_name_to_import_name,
+    requirement_line_to_package_name,
+)
 from boileroom.images.metadata import (
     IMAGE_TAG_ENV,
     format_image_reference,
@@ -49,6 +54,7 @@ def test_model_specs_report_supported_cuda_from_config() -> None:
     assert get_supported_cuda(get_model_image_spec("chai")) == ("11.8", "12.6")
     assert get_supported_cuda(get_model_image_spec("esm")) == ("11.8", "12.6")
     assert get_supported_cuda(get_model_image_spec("esm3")) == ("11.8", "12.6")
+    assert get_supported_cuda(get_model_image_spec("esmfold2")) == ("11.8", "12.6")
 
 
 def test_image_tag_uses_env_override(monkeypatch) -> None:
@@ -146,6 +152,13 @@ def test_package_name_to_import_name_handles_overrides_and_hyphens() -> None:
     assert package_name_to_import_name("my-package") == "my_package"
 
 
+def test_requirement_line_to_package_name_handles_direct_references() -> None:
+    """Image smoke checks should import direct-reference requirements by distribution name."""
+    assert requirement_line_to_package_name("esm @ git+https://github.com/Biohub/esm.git@c94ed8d") == "esm"
+    assert requirement_line_to_package_name("git+https://github.com/Biohub/esm.git@c94ed8d#egg=esm") == "esm"
+    assert requirement_line_to_package_name("torch>=2.6.0,<2.7.0") == "torch"
+
+
 def test_iter_image_targets_uses_canonical_cuda_tags() -> None:
     """Image smoke targets should honor CUDA-qualified tag selection."""
     targets = iter_image_targets("0.3.0", ["12.6"], docker_repository="example")
@@ -158,3 +171,8 @@ def test_iter_image_targets_uses_canonical_cuda_tags() -> None:
     assert references["chai"].endswith(":cuda12.6-0.3.0")
     assert references["esm"].endswith(":cuda12.6-0.3.0")
     assert references["esm3"].endswith(":cuda12.6-0.3.0")
+    assert references["esmfold2"].startswith("docker.io/example/")
+    assert references["boltz"].endswith(":cuda12.6-0.3.0")
+    assert references["chai"].endswith(":cuda12.6-0.3.0")
+    assert references["esm"].endswith(":cuda12.6-0.3.0")
+    assert references["esmfold2"].endswith(":cuda12.6-0.3.0")

@@ -86,6 +86,13 @@ MODEL_IMAGE_SPECS: Final[tuple[RuntimeImageSpec, ...]] = (
         context_relative_path="boileroom/models/esm3",
         config_relative_path="boileroom/models/esm3/config.yaml",
     ),
+    RuntimeImageSpec(
+        key="esmfold2",
+        image_name="boileroom-esmfold2",
+        dockerfile_relative_path="boileroom/models/esmfold2/Dockerfile",
+        context_relative_path="boileroom/models/esmfold2",
+        config_relative_path="boileroom/models/esmfold2/config.yaml",
+    ),
 )
 
 MODEL_IMAGE_SPECS_BY_KEY: Final = {spec.key: spec for spec in MODEL_IMAGE_SPECS}

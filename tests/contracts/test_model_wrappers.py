@@ -12,6 +12,7 @@ from boileroom.models.boltz.types import Boltz2Output
 from boileroom.models.chai.types import Chai1Output
 from boileroom.models.esm.types import ESM2Output, ESMFoldOutput
 from boileroom.models.esm3.types import ESM3Output, ESMCOutput
+from boileroom.models.esmfold2.types import ESMFold2Output
 from boileroom.models.registry import CHAI1_SPEC, ESM2_SPEC, MODEL_SPECS, ModelSpec, get_model_spec, resolve_object
 
 pytestmark = pytest.mark.contract
@@ -21,6 +22,7 @@ SAMPLE_INPUTS: dict[str, Any] = {
     "esm2": ["MALWMRLLPLLALLALWGPDPAAA"],
     "esmc": ["ACD:EF"],
     "esm3": ["ACD:EF"],
+    "esmfold2": "MLKNVHVLVLGAGDVGSVVVRLLEK",
     "chai1": (
         "ICLQKTSNQILKPKLISYTLGQSGTCITDPLLAMDEGYFAYSHLERIGSCSRGVSKQRIIGVGEVLDRGDEVPSLFMTNVWTPPNPNTVYHCSAVYNNEFYYVLCAVSTVGD"
         "PILNSTYWSGSLMMTRLAVKPKSNGGGYNQHQLALRSIEKGRYDKVMPYGPSGIKQGDTLYFPAVGFLVRTEFKYNDSNCPITKCQYSKPENCRLSMGIRPNSHYILRSGLLKYN"
@@ -69,6 +71,9 @@ def _make_output(spec: ModelSpec) -> object:
 
     if spec.key == "esmfold":
         return ESMFoldOutput(metadata=_make_metadata(spec.public_name), atom_array=[object()])
+
+    if spec.key == "esmfold2":
+        return ESMFold2Output(metadata=_make_metadata(spec.public_name), atom_array=[object()])
 
     if spec.key == "chai1":
         return Chai1Output(metadata=_make_metadata(spec.public_name), atom_array=[object()])

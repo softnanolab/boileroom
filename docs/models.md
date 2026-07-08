@@ -86,3 +86,42 @@ Optional fields:
 - `include_fields=["lm_logits"]` requests residue-aligned sequence logits when the SDK returns them.
 - `include_fields=["hidden_states"]` is supported for ESM-C when provided by the SDK. ESM3 raises a clear `ValueError` for hidden-state requests.
 - `include_fields=["*"]` means all supported optional fields for that model.
+
+### ESMFold2
+- ESMFold2 uses Biohub's ESMFold2 model family through the `esm` package and Biohub's Transformers fork, so it has its own runtime image instead of sharing the ESMFold/ESM-2 image.
+- String inputs follow the existing BoilerRoom convention: `model.fold("AAA:BBB")` predicts one multichain complex, while `model.fold(["AAA", "BBB"])` predicts a batch of independent proteins.
+- For all-atom complexes, pass lightweight input dataclasses from `boileroom.models.esmfold2.types` such as `ProteinInput`, `DNAInput`, `RNAInput`, `LigandInput`, and `StructurePredictionInput`.
+- For explicit in-memory MSAs, use the shared `boileroom.inputs.MSAInput` abstraction; ESMFold2 also re-exports it from `boileroom.models.esmfold2` for compatibility. File-backed MSA paths are reserved for adapters such as Boltz-2 and are not consumed by ESMFold2 yet.
+
+Example usage:
+```python
+from boileroom import ESMFold2
+from boileroom.inputs import MSAInput
+from boileroom.models.esmfold2.types import DNAInput, LigandInput, ProteinInput, StructurePredictionInput
+
+model = ESMFold2(
+    backend="modal",
+    device="L4",
+    config={"model_name": "biohub/ESMFold2-Fast"},
+)
+
+result = model.fold(
+    "MQIFVKTLTGKTITLEVEPSDTIENVKAKIQDKEGIPPDQQRLIFAGKQLEDGRTLSDYNIQKESTLHLVLRLRGG",
+    options={"include_fields": ["plddt", "ptm", "cif"], "num_sampling_steps": 50, "seed": 0},
+)
+
+result.atom_array[0]
+result.plddt[0]
+result.ptm[0]
+result.cif[0]
+
+complex_input = StructurePredictionInput(
+    sequences=[
+        ProteinInput(id="A", sequence="MIEIKDKQLTGLRFIDLFAGLGGFRLALESCGAECVYSNEWDKYAQEVYEMNFGEKPEG"),
+        ProteinInput(id="M", sequence="ACD", msa=MSAInput(sequences=["ACD", "ACE"])),
+        DNAInput(id="B", sequence="GATAGCGCTATC"),
+        LigandInput(id="L", ccd=["SAH"]),
+    ]
+)
+complex_result = model.fold(complex_input, options={"include_fields": ["cif", "iptm"]})
+```

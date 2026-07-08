@@ -14,6 +14,7 @@ Legend:
 |------------|:--------:|:------------:|
 | Boltz-2    | 🍊       | 🍊           |
 | Chai-1     | 🍊       | 🍊           |
+| ESMFold2   | 🍊       | 🍊           |
 | ESMFold    | ✅       | 🍊           |
 
 ### Embedding Algorithms

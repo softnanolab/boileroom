@@ -11,6 +11,7 @@ TaskKind = Literal["structure", "embedding"]
 
 ESM_IMAGE_NAME = get_model_image_spec("esm").image_name
 ESM3_IMAGE_NAME = get_model_image_spec("esm3").image_name
+ESMFOLD2_IMAGE_NAME = get_model_image_spec("esmfold2").image_name
 CHAI_IMAGE_NAME = get_model_image_spec("chai").image_name
 BOLTZ_IMAGE_NAME = get_model_image_spec("boltz").image_name
 
@@ -158,6 +159,36 @@ ESM3_SPEC = ModelSpec(
     ),
 )
 
+ESMFOLD2_SPEC = ModelSpec(
+    key="esmfold2",
+    public_name="ESMFold2",
+    family="esmfold2",
+    wrapper_class_path="boileroom.models.esmfold2.esmfold2.ESMFold2",
+    modal_class_path="boileroom.models.esmfold2.esmfold2.ModalESMFold2",
+    apptainer_core_class_path="boileroom.models.esmfold2.core.ESMFold2Core",
+    apptainer_image_name=ESMFOLD2_IMAGE_NAME,
+    supported_backends=("modal", "apptainer"),
+    contract=ModelContract(
+        task_method="fold",
+        task_kind="structure",
+        static_config_keys=frozenset({"device", "model_name", "cache_dir", "ccd_cache_dir", "dtype"}),
+        minimal_output_fields=("metadata", "atom_array"),
+        optional_output_fields=(
+            "plddt",
+            "ptm",
+            "iptm",
+            "pae",
+            "distogram",
+            "pair_chains_iptm",
+            "residue_index",
+            "entity_id",
+            "pdb",
+            "cif",
+        ),
+        supports_multimer=True,
+    ),
+)
+
 CHAI1_SPEC = ModelSpec(
     key="chai1",
     public_name="Chai1",
@@ -211,7 +242,7 @@ BOLTZ2_SPEC = ModelSpec(
     ),
 )
 
-MODEL_SPECS = (ESMFOLD_SPEC, ESM2_SPEC, ESMC_SPEC, ESM3_SPEC, CHAI1_SPEC, BOLTZ2_SPEC)
+MODEL_SPECS = (ESMFOLD_SPEC, ESM2_SPEC, ESMFOLD2_SPEC, ESMC_SPEC, ESM3_SPEC, CHAI1_SPEC, BOLTZ2_SPEC)
 MODEL_SPECS_BY_KEY = {spec.key: spec for spec in MODEL_SPECS}
 MODEL_SPECS_BY_PUBLIC_NAME = {spec.public_name: spec for spec in MODEL_SPECS}
 
@@ -232,6 +263,7 @@ __all__ = [
     "ESM2_SPEC",
     "ESM3_SPEC",
     "ESMC_SPEC",
+    "ESMFOLD2_SPEC",
     "ESMFOLD_SPEC",
     "MODEL_SPECS",
     "MODEL_SPECS_BY_KEY",
