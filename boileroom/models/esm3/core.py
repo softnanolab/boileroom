@@ -309,6 +309,24 @@ class _BaseESM3EmbeddingCore(EmbeddingAlgorithm):
         compute_hidden_states: bool,
         track_flags: dict[str, bool] | None = None,
     ) -> Any:
+        """Run the SDK ``logits`` call, requesting embeddings plus any enabled tracks.
+
+        Parameters
+        ----------
+        encoded : Any
+            The SDK-encoded protein to score.
+        compute_lm_logits : bool
+            Whether to request sequence (masked-LM) logits.
+        compute_hidden_states : bool
+            Whether to request per-layer hidden states.
+        track_flags : dict[str, bool] | None
+            Extra ``LogitsConfig`` track flags to enable (e.g. ``{"sasa": True}``).
+
+        Returns
+        -------
+        Any
+            The SDK ``LogitsOutput`` for the encoded input.
+        """
         from esm.sdk.api import LogitsConfig
 
         assert self.model is not None, "Model not loaded"
