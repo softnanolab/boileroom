@@ -60,7 +60,7 @@ embedding_result.embeddings.shape  # (1, 5, features), residue-only
 embedding_result.chain_index       # [[0, 0, 0, 1, 1]]
 ```
 
-ESM-C and ESM3 use the EvolutionaryScale/Biohub `esm` SDK in a separate `esm3` runtime image. Some weights are gated; accept the upstream license and provide a Hugging Face token when required. Set `MODEL_DIR` to control the shared model-weight cache.
+ESM-C and ESM3 use the MIT-licensed 2026 Chan Zuckerberg Biohub `esm` fork (weights `biohub/esmc-*-2024-12` and `biohub/esm3-sm-open-v1`). They share the Biohub `esmfold2` runtime image — the same `esm` package backs all three. Set `MODEL_DIR` to control the shared model-weight cache.
 
 Confidence metrics returned by structure wrappers use a consistent public shape: `plddt` entries are unit-scale
 per-residue arrays on `[0, 1]`, and scalar scores such as `ptm` and `iptm` are returned as shape-`(1,)` arrays.
@@ -73,10 +73,12 @@ In `0.3.1`, this replaces ESMFold's old padded pLDDT batch array and moves Boltz
 |------------|--------|------------------------------------------------|--------------------------------------------------------|
 | ESMFold    | ✅      | Fast protein structure prediction   | [Facebook (now Meta)](https://github.com/facebookresearch/esm)     |
 | ESM-2    | ✅      | MSA-free embedding model   | [Facebook (now Meta)](https://github.com/facebookresearch/esm)     |
-| ESM-C    | ✅      | EvolutionaryScale embedding-only model | [EvolutionaryScale](https://github.com/evolutionaryscale/esm) |
-| ESM3     | ✅      | EvolutionaryScale multimodal model, embedding-only in Boileroom | [EvolutionaryScale](https://github.com/evolutionaryscale/esm) |
+| ESM-C    | ✅      | MIT-licensed embedding-only model | [Chan Zuckerberg Biohub](https://github.com/Biohub/esm) |
+| ESM3     | ✅      | MIT-licensed multimodal model, embedding-only in Boileroom | [Chan Zuckerberg Biohub](https://github.com/Biohub/esm) |
 | Chai-1    | ✅      | Protein design and structure prediction model | [Chai Discovery](https://github.com/chaidiscovery/chai-lab) |
 | Boltz-2   | ✅      | Diffusion-based protein structure prediction | [Boltz / MIT](https://github.com/jwohlwend/boltz) |
+
+> **Licensing:** all bundled model weights are MIT-licensed except **Chai-1**, whose weights are released under the non-commercial Chai Discovery Community License. Review Chai Discovery's terms before using Chai-1 outside research.
 
 ## Development
 

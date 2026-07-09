@@ -37,7 +37,7 @@ class ESM3ParsedSequence:
 def parse_esm3_sequences(sequences: str | Sequence[str]) -> list[ESM3ParsedSequence]:
     """Parse ESM-C/ESM3 inputs and map colon chain separators to SDK breaks.
 
-    ``AAA:BBB`` is submitted to the EvolutionaryScale SDK as ``AAA|BBB`` while
+    ``AAA:BBB`` is submitted to the Biohub ESM SDK as ``AAA|BBB`` while
     residue indices remain aligned to the original residues only.
     """
 
@@ -148,7 +148,7 @@ class _BaseESM3EmbeddingCore(EmbeddingAlgorithm):
         self._load()
 
     def _load(self) -> None:
-        """Load the configured EvolutionaryScale SDK model."""
+        """Load the configured Biohub MIT ``esm`` SDK model."""
 
         if self.model is not None:
             return
@@ -188,7 +188,7 @@ class _BaseESM3EmbeddingCore(EmbeddingAlgorithm):
             raise ValueError("hidden_states are not supported for ESM3 embeddings by the current SDK wrapper.")
 
     def embed(self, sequences: str | Sequence[str], options: dict | None = None) -> ESMEmbeddingOutput:
-        """Compute residue-only embeddings using the EvolutionaryScale ESM SDK."""
+        """Compute residue-only embeddings using the Biohub MIT ESM SDK."""
 
         effective_config = self._merge_options(options)
         include_fields = effective_config.get("include_fields")
@@ -284,6 +284,10 @@ class _BaseESM3EmbeddingCore(EmbeddingAlgorithm):
     @staticmethod
     def _to_numpy(value: Any) -> np.ndarray:
         if isinstance(value, torch.Tensor):
+            # The Biohub ESM-C/ESM3 SDK runs in bfloat16 on CUDA; NumPy has no
+            # bfloat16, so upcast floating tensors to float32 before conversion.
+            if value.is_floating_point():
+                value = value.to(torch.float32)
             return value.detach().cpu().numpy()
         return np.asarray(value)
 

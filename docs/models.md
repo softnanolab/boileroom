@@ -61,12 +61,13 @@ top_tokens = [id_to_token[token_id] for token_id in top_token_ids]
 
 ### ESM-C and ESM3
 - `ESMC` and `ESM3` are embedding-only in this release. Boileroom does not expose ESM3 generation or folding APIs yet.
-- Both wrappers use the EvolutionaryScale/Biohub `esm` SDK in the separate `esm3` runtime image and support Modal and Apptainer through the shared `embed` contract.
-- Supported ESM-C model names are `esmc_300m` and `esmc_600m`. The cheap/default config is `esmc_300m`.
-- Supported ESM3 model names are `esm3_sm_open_v1` plus aliases `esm3-open`, `esm3-sm-open-v1`, and `esm3-open-2024-03`.
+- Both wrappers use the MIT-licensed 2026 Chan Zuckerberg Biohub [`esm`](https://github.com/Biohub/esm) fork (the same package that backs ESMFold2) and support Modal and Apptainer through the shared `embed` contract. They run on the shared `esmfold2` Biohub runtime image rather than a separate one.
+- Supported ESM-C model names are `esmc_300m` and `esmc_600m` (weights `biohub/esmc-300m-2024-12` / `biohub/esmc-600m-2024-12`). The cheap/default config is `esmc_300m`.
+- Supported ESM3 model names are `esm3_sm_open_v1` plus aliases `esm3-open`, `esm3-sm-open-v1`, and `esm3-open-2024-03` (weights `biohub/esm3-sm-open-v1`).
+- All ESM-C and ESM3 weights are MIT-licensed via the Biohub Hugging Face repositories.
 - Outputs are residue-only arrays shaped `(batch, residues, features)`. BOS/EOS, chain-break, and other special-token rows are stripped. Batched outputs pad embeddings/logits with zeros and pad `chain_index` / `residue_index` with `-1`.
 - Colon-separated input such as `"ACD:EF"` means multiple chains. Boileroom maps `:` to the SDK chain-break syntax internally and returns `chain_index=[0,0,0,1,1]`, `residue_index=[0,1,2,0,1]` for the residues.
-- Some upstream weights are gated. Accept the relevant Hugging Face license and provide `HF_TOKEN` / logged-in Hugging Face credentials when required. Set `MODEL_DIR` to control the model cache used by Modal/Apptainer runtimes.
+- Set `MODEL_DIR` to control the model cache used by Modal/Apptainer runtimes.
 
 Example usage:
 ```python

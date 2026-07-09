@@ -37,6 +37,15 @@ class RuntimeImageSpec:
     context_relative_path: str
     config_relative_path: str | None = None
     modal_runtime_env: tuple[tuple[str, str], ...] = ()
+    # Extra model-family keys served by this same image (no separate image is
+    # built for them). Used when families share one runtime image, e.g. ESM-C /
+    # ESM3 run on the ESMFold2 Biohub image.
+    shared_family_keys: tuple[str, ...] = ()
+
+    @property
+    def family_keys(self) -> tuple[str, ...]:
+        """Return every model-family key this image serves (primary + shared)."""
+        return (self.key, *self.shared_family_keys)
 
     @property
     def dockerfile_path(self) -> Path:
@@ -80,22 +89,18 @@ MODEL_IMAGE_SPECS: Final[tuple[RuntimeImageSpec, ...]] = (
         config_relative_path="boileroom/models/esm/config.yaml",
     ),
     RuntimeImageSpec(
-        key="esm3",
-        image_name="boileroom-esm3",
-        dockerfile_relative_path="boileroom/models/esm3/Dockerfile",
-        context_relative_path="boileroom/models/esm3",
-        config_relative_path="boileroom/models/esm3/config.yaml",
-    ),
-    RuntimeImageSpec(
         key="esmfold2",
         image_name="boileroom-esmfold2",
         dockerfile_relative_path="boileroom/models/esmfold2/Dockerfile",
         context_relative_path="boileroom/models/esmfold2",
         config_relative_path="boileroom/models/esmfold2/config.yaml",
+        # ESM-C and ESM3 (the ``esm3`` family) use the same Biohub ``esm``
+        # package, so they share this image instead of building their own.
+        shared_family_keys=("esm3",),
     ),
 )
 
-MODEL_IMAGE_SPECS_BY_KEY: Final = {spec.key: spec for spec in MODEL_IMAGE_SPECS}
+MODEL_IMAGE_SPECS_BY_KEY: Final = {family_key: spec for spec in MODEL_IMAGE_SPECS for family_key in spec.family_keys}
 MODEL_IMAGE_SPECS_BY_NAME: Final = {spec.image_name: spec for spec in MODEL_IMAGE_SPECS}
 
 

@@ -87,6 +87,18 @@ def test_pad_residue_arrays_rejects_empty_batches() -> None:
         pad_residue_arrays(embeddings=[], chain_index=[], residue_index=[])
 
 
+def test_to_numpy_upcasts_bfloat16_tensors() -> None:
+    # The Biohub ESM-C/ESM3 SDK returns bfloat16 tensors on CUDA, which NumPy
+    # cannot convert directly; the core must upcast them to float32 first.
+    torch = pytest.importorskip("torch")
+    from boileroom.models.esm3.core import _BaseESM3EmbeddingCore
+
+    array = _BaseESM3EmbeddingCore._to_numpy(torch.ones(2, 3, dtype=torch.bfloat16))
+
+    assert array.dtype == np.float32
+    assert array.tolist() == [[1.0, 1.0, 1.0], [1.0, 1.0, 1.0]]
+
+
 class _FakeProtein:
     def __init__(self, sequence: str) -> None:
         self.sequence = sequence
