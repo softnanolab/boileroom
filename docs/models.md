@@ -86,6 +86,7 @@ esm3_result = esm3.embed(["ACD", "EF"])
 Optional fields:
 - `include_fields=["lm_logits"]` requests residue-aligned sequence logits when the SDK returns them.
 - `include_fields=["hidden_states"]` is supported for ESM-C when provided by the SDK. ESM3 raises a clear `ValueError` for hidden-state requests.
+- `include_fields=["sasa_logits"]` is supported for **ESM3 only**: per-residue logits over the discretized SASA token vocabulary, predicted from sequence (structure input is optional, not required). Decode to a SASA estimate via the SDK's SASA tokenizer bins. Requesting it on ESM-C raises a clear `ValueError`.
 - `include_fields=["*"]` means all supported optional fields for that model.
 
 ### ESMFold2

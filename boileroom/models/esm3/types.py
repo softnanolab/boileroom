@@ -21,6 +21,11 @@ class ESMEmbeddingOutput(EmbeddingPrediction):
     residue_index: np.ndarray
     hidden_states: np.ndarray | None = None
     lm_logits: np.ndarray | None = None
+    # ESM3-only: per-residue logits over the discretized SASA token vocabulary,
+    # predicted from sequence (structure input is optional, not required). Decode
+    # to a SASA estimate downstream via the SDK's SASA tokenizer bins. None unless
+    # "sasa_logits" was requested and the model is ESM3.
+    sasa_logits: np.ndarray | None = None
 
 
 ESMCOutput = ESMEmbeddingOutput

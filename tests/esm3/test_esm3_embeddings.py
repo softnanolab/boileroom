@@ -64,7 +64,7 @@ def test_parse_sequences_rejects_empty_batches() -> None:
 def test_pad_residue_arrays_zero_and_minus_one_padding() -> None:
     from boileroom.models.esm3.core import pad_residue_arrays
 
-    embeddings, hidden_states, lm_logits, chain_index, residue_index = pad_residue_arrays(
+    embeddings, hidden_states, lm_logits, chain_index, residue_index, sasa_logits = pad_residue_arrays(
         embeddings=[np.ones((5, 2), dtype=np.float32), np.full((2, 2), 2, dtype=np.float32)],
         chain_index=[np.array([0, 0, 0, 1, 1]), np.array([0, 0])],
         residue_index=[np.array([0, 1, 2, 0, 1]), np.array([0, 1])],
@@ -78,6 +78,7 @@ def test_pad_residue_arrays_zero_and_minus_one_padding() -> None:
     assert residue_index.tolist() == [[0, 1, 2, 0, 1], [0, 1, -1, -1, -1]]
     assert hidden_states is None
     assert lm_logits is None
+    assert sasa_logits is None
 
 
 def test_pad_residue_arrays_rejects_empty_batches() -> None:
@@ -115,12 +116,13 @@ class _FakeEncoded:
 
 
 class _FakeForwardTrackData:
-    def __init__(self, sequence: Any | None) -> None:
+    def __init__(self, sequence: Any | None, sasa: Any | None = None) -> None:
         self.sequence = sequence
+        self.sasa = sasa
 
 
 class _FakeLogitsOutput:
-    def __init__(self, sequence: str, include_hidden: bool, include_logits: bool) -> None:
+    def __init__(self, sequence: str, include_hidden: bool, include_logits: bool, include_sasa: bool = False) -> None:
         torch = pytest.importorskip("torch")
         token_count = len(sequence) + 2
         values = torch.arange(token_count * 3, dtype=torch.float32).reshape(token_count, 3)
@@ -129,7 +131,10 @@ class _FakeLogitsOutput:
         sequence_logits = (
             torch.arange(token_count * 4, dtype=torch.float32).reshape(token_count, 4) if include_logits else None
         )
-        self.logits = _FakeForwardTrackData(sequence_logits)
+        sasa_logits = (
+            torch.arange(token_count * 5, dtype=torch.float32).reshape(token_count, 5) if include_sasa else None
+        )
+        self.logits = _FakeForwardTrackData(sequence_logits, sasa_logits)
 
 
 class _FakeSDKModel:
@@ -159,6 +164,7 @@ class _FakeSDKModel:
             encoded.sequence,
             include_hidden=bool(config.kwargs.get("return_hidden_states")),
             include_logits=bool(config.kwargs.get("sequence")),
+            include_sasa=bool(config.kwargs.get("sasa")),
         )
 
 
@@ -233,7 +239,27 @@ def test_esm3_wildcard_requests_supported_logits_only(fake_esm_sdk: type[_FakeSD
     result = ESM3Core(config={"device": "cpu"}).embed("ACD", options={"include_fields": ["*"]})
 
     assert result.lm_logits is not None and result.lm_logits.shape == (1, 3, 4)
+    assert result.sasa_logits is not None and result.sasa_logits.shape == (1, 3, 5)
     assert result.hidden_states is None
+
+
+def test_esm3_core_returns_sasa_logits(fake_esm_sdk: type[_FakeSDKModel]) -> None:
+    from boileroom.models.esm3.core import ESM3Core
+
+    result = ESM3Core(config={"device": "cpu"}).embed("ACD", options={"include_fields": ["sasa_logits"]})
+
+    # The SASA track must have been requested from the SDK, and only it (not sequence logits).
+    assert fake_esm_sdk.logits_configs[-1]["sasa"] is True
+    assert fake_esm_sdk.logits_configs[-1]["sequence"] is False
+    assert result.sasa_logits is not None and result.sasa_logits.shape == (1, 3, 5)
+    assert result.lm_logits is None
+
+
+def test_esmc_rejects_sasa_logits(fake_esm_sdk: type[_FakeSDKModel]) -> None:
+    from boileroom.models.esm3.core import ESMCCore
+
+    with pytest.raises(ValueError, match=r"sasa_logits.*ESM3"):
+        ESMCCore(config={"device": "cpu"}).embed("ACD", options={"include_fields": ["sasa_logits"]})
 
 
 def test_esm3_alias_model_names_are_valid(fake_esm_sdk: type[_FakeSDKModel]) -> None:

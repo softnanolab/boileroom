@@ -85,7 +85,8 @@ def pad_residue_arrays(
     residue_index: list[np.ndarray],
     hidden_states: list[np.ndarray] | None = None,
     lm_logits: list[np.ndarray] | None = None,
-) -> tuple[np.ndarray, np.ndarray | None, np.ndarray | None, np.ndarray, np.ndarray]:
+    sasa_logits: list[np.ndarray] | None = None,
+) -> tuple[np.ndarray, np.ndarray | None, np.ndarray | None, np.ndarray, np.ndarray, np.ndarray | None]:
     """Pad residue-aligned arrays to a common batch length."""
 
     padded_embeddings = _pad_and_stack(embeddings, residue_axis=0, pad_value=0)
@@ -93,9 +94,17 @@ def pad_residue_arrays(
         _pad_and_stack(hidden_states, residue_axis=1, pad_value=0).swapaxes(0, 1) if hidden_states else None
     )
     padded_lm_logits = _pad_and_stack(lm_logits, residue_axis=0, pad_value=0) if lm_logits else None
+    padded_sasa_logits = _pad_and_stack(sasa_logits, residue_axis=0, pad_value=0) if sasa_logits else None
     padded_chain_index = _pad_and_stack(chain_index, residue_axis=0, pad_value=-1).astype(np.int32, copy=False)
     padded_residue_index = _pad_and_stack(residue_index, residue_axis=0, pad_value=-1).astype(np.int32, copy=False)
-    return padded_embeddings, padded_hidden_states, padded_lm_logits, padded_chain_index, padded_residue_index
+    return (
+        padded_embeddings,
+        padded_hidden_states,
+        padded_lm_logits,
+        padded_chain_index,
+        padded_residue_index,
+        padded_sasa_logits,
+    )
 
 
 class _BaseESM3EmbeddingCore(EmbeddingAlgorithm):
@@ -207,6 +216,9 @@ class _BaseESM3EmbeddingCore(EmbeddingAlgorithm):
 
         compute_hidden_states = self._include_requested(include_fields, "hidden_states")
         compute_lm_logits = self._include_requested(include_fields, "lm_logits")
+        compute_sasa = self._include_requested(include_fields, "sasa_logits")
+        if compute_sasa and "sasa_logits" not in self.SUPPORTED_OPTIONAL_FIELDS:
+            raise ValueError(f"sasa_logits are only available for ESM3, not {self.MODEL_DISPLAY_NAME}.")
 
         with Timer(f"{self.MODEL_DISPLAY_NAME} preprocessing") as preprocess_timer:
             encoded_inputs = [self._encode_sequence(parsed.sdk_sequence) for parsed in parsed_sequences]
@@ -214,10 +226,11 @@ class _BaseESM3EmbeddingCore(EmbeddingAlgorithm):
         embeddings: list[np.ndarray] = []
         hidden_states: list[np.ndarray] | None = [] if compute_hidden_states else None
         lm_logits: list[np.ndarray] | None = [] if compute_lm_logits else None
+        sasa_logits: list[np.ndarray] | None = [] if compute_sasa else None
 
         with Timer("Model Inference") as inference_timer, torch.inference_mode():
             for parsed, encoded in zip(parsed_sequences, encoded_inputs, strict=True):
-                raw_output = self._run_logits(encoded, compute_lm_logits, compute_hidden_states)
+                raw_output = self._run_logits(encoded, compute_lm_logits, compute_hidden_states, compute_sasa)
                 keep_indices = self._residue_token_indices(parsed.sdk_sequence)
                 embeddings.append(
                     self._select_residue_rows(self._extract_array(raw_output, "embeddings"), keep_indices)
@@ -234,16 +247,22 @@ class _BaseESM3EmbeddingCore(EmbeddingAlgorithm):
                     if logits_array is None:
                         raise ValueError("lm_logits were requested but the ESM SDK did not return sequence logits.")
                     lm_logits.append(self._select_residue_rows(logits_array, keep_indices))
+                if sasa_logits is not None:
+                    sasa_array = self._extract_optional_array(raw_output, "logits.sasa", "sasa")
+                    if sasa_array is None:
+                        raise ValueError("sasa_logits were requested but the ESM SDK did not return SASA logits.")
+                    sasa_logits.append(self._select_residue_rows(sasa_array, keep_indices))
 
         with Timer(f"{self.MODEL_DISPLAY_NAME} postprocessing") as postprocess_timer:
             padded = pad_residue_arrays(
                 embeddings=embeddings,
                 hidden_states=hidden_states,
                 lm_logits=lm_logits,
+                sasa_logits=sasa_logits,
                 chain_index=[parsed.chain_index for parsed in parsed_sequences],
                 residue_index=[parsed.residue_index for parsed in parsed_sequences],
             )
-            embeddings_out, hidden_out, logits_out, chain_out, residue_out = padded
+            embeddings_out, hidden_out, logits_out, chain_out, residue_out, sasa_out = padded
             metadata.preprocessing_time = preprocess_timer.duration
             metadata.inference_time = inference_timer.duration
             metadata.postprocessing_time = postprocess_timer.duration
@@ -252,6 +271,7 @@ class _BaseESM3EmbeddingCore(EmbeddingAlgorithm):
                 embeddings=embeddings_out,
                 hidden_states=hidden_out,
                 lm_logits=logits_out,
+                sasa_logits=sasa_out,
                 chain_index=chain_out,
                 residue_index=residue_out,
             )
@@ -264,12 +284,15 @@ class _BaseESM3EmbeddingCore(EmbeddingAlgorithm):
         assert self.model is not None, "Model not loaded"
         return self.model.encode(ESMProtein(sequence=sdk_sequence))
 
-    def _run_logits(self, encoded: Any, compute_lm_logits: bool, compute_hidden_states: bool) -> Any:
+    def _run_logits(
+        self, encoded: Any, compute_lm_logits: bool, compute_hidden_states: bool, compute_sasa: bool = False
+    ) -> Any:
         from esm.sdk.api import LogitsConfig
 
         assert self.model is not None, "Model not loaded"
         config_kwargs = {
             "sequence": compute_lm_logits,
+            "sasa": compute_sasa,
             "return_embeddings": True,
             "return_hidden_states": compute_hidden_states,
         }
@@ -370,7 +393,7 @@ class ESM3Core(_BaseESM3EmbeddingCore):
         "esm3-sm-open-v1": "esm3_sm_open_v1",
         "esm3-open-2024-03": "esm3_sm_open_v1",
     }
-    SUPPORTED_OPTIONAL_FIELDS: ClassVar[frozenset[str]] = frozenset({"lm_logits"})
+    SUPPORTED_OPTIONAL_FIELDS: ClassVar[frozenset[str]] = frozenset({"lm_logits", "sasa_logits"})
 
     def embed(self, sequences: str | Sequence[str], options: dict | None = None) -> ESM3Output:
         return cast(ESM3Output, super().embed(sequences, options=options))
