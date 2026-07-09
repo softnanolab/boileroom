@@ -86,7 +86,11 @@ esm3_result = esm3.embed(["ACD", "EF"])
 Optional fields:
 - `include_fields=["lm_logits"]` requests residue-aligned sequence logits when the SDK returns them.
 - `include_fields=["hidden_states"]` is supported for ESM-C when provided by the SDK. ESM3 raises a clear `ValueError` for hidden-state requests.
-- `include_fields=["sasa_logits"]` is supported for **ESM3 only**: per-residue logits over the discretized SASA token vocabulary, predicted from sequence (structure input is optional, not required). Decode to a SASA estimate via the SDK's SASA tokenizer bins. Requesting it on ESM-C raises a clear `ValueError`.
+- **ESM3-only track logits** — ESM3 is an all-to-all masked model, so it can predict its other tracks from sequence alone (structure input is optional, not required). Each is a per-residue logits array; decode to an estimate downstream via the SDK's per-track tokenizer. Requesting any of these on ESM-C raises a clear `ValueError`. The structure/folding track is not exposed.
+    - `sasa_logits` — over the discretized SASA token vocabulary.
+    - `secondary_structure_logits` — over the SS8 vocabulary.
+    - `function_logits` — over the function-annotation vocabulary.
+    - `residue_annotation_logits` — multi-hot residue-annotation logits.
 - `include_fields=["*"]` means all supported optional fields for that model.
 
 ### ESMFold2
