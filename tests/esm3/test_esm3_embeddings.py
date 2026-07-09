@@ -62,6 +62,7 @@ def test_parse_sequences_rejects_empty_batches() -> None:
 
 
 def test_pad_residue_arrays_zero_and_minus_one_padding() -> None:
+    """Residue arrays pad with zeros; chain/residue indices pad with -1."""
     from boileroom.models.esm3.core import pad_residue_arrays
 
     embeddings, hidden_states, lm_logits, chain_index, residue_index = pad_residue_arrays(
@@ -115,13 +116,35 @@ class _FakeEncoded:
 
 
 class _FakeForwardTrackData:
-    def __init__(self, sequence: Any | None) -> None:
+    def __init__(
+        self,
+        sequence: Any | None,
+        sasa: Any | None = None,
+        secondary_structure: Any | None = None,
+        function: Any | None = None,
+    ) -> None:
+        """Store fake per-track logits for a ForwardTrackData stand-in."""
         self.sequence = sequence
+        self.sasa = sasa
+        self.secondary_structure = secondary_structure
+        self.function = function
 
 
 class _FakeLogitsOutput:
-    def __init__(self, sequence: str, include_hidden: bool, include_logits: bool) -> None:
+    # Per-track fake vocab sizes, so tests can assert distinct output shapes.
+    _TRACK_VOCAB: ClassVar[dict[str, int]] = {
+        "sasa": 5,
+        "secondary_structure": 6,
+        "function": 7,
+        "residue_annotations": 8,
+    }
+
+    def __init__(
+        self, sequence: str, include_hidden: bool, include_logits: bool, tracks: set[str] | None = None
+    ) -> None:
+        """Build fake embeddings, hidden states, and logits for the requested tracks."""
         torch = pytest.importorskip("torch")
+        tracks = tracks or set()
         token_count = len(sequence) + 2
         values = torch.arange(token_count * 3, dtype=torch.float32).reshape(token_count, 3)
         self.embeddings = values
@@ -129,7 +152,22 @@ class _FakeLogitsOutput:
         sequence_logits = (
             torch.arange(token_count * 4, dtype=torch.float32).reshape(token_count, 4) if include_logits else None
         )
-        self.logits = _FakeForwardTrackData(sequence_logits)
+
+        def _track(name: str) -> Any | None:
+            """Return fake logits for track ``name`` when requested, else ``None``."""
+            if name not in tracks:
+                return None
+            vocab = self._TRACK_VOCAB[name]
+            return torch.arange(token_count * vocab, dtype=torch.float32).reshape(token_count, vocab)
+
+        self.logits = _FakeForwardTrackData(
+            sequence_logits,
+            sasa=_track("sasa"),
+            secondary_structure=_track("secondary_structure"),
+            function=_track("function"),
+        )
+        # Residue-annotation logits live at the top level of LogitsOutput.
+        self.residue_annotation_logits = _track("residue_annotations")
 
 
 class _FakeSDKModel:
@@ -154,11 +192,18 @@ class _FakeSDKModel:
         return _FakeEncoded(protein.sequence)
 
     def logits(self, encoded: _FakeEncoded, config: _FakeLogitsConfig) -> _FakeLogitsOutput:
+        """Record the requested LogitsConfig and return fake logits for its tracks."""
         self.logits_configs.append(config.kwargs)
+        tracks = {
+            name
+            for name in ("sasa", "secondary_structure", "function", "residue_annotations")
+            if bool(config.kwargs.get(name))
+        }
         return _FakeLogitsOutput(
             encoded.sequence,
             include_hidden=bool(config.kwargs.get("return_hidden_states")),
             include_logits=bool(config.kwargs.get("sequence")),
+            tracks=tracks,
         )
 
 
@@ -227,13 +272,53 @@ def test_esm3_core_hidden_states_are_rejected(fake_esm_sdk: type[_FakeSDKModel])
         ESM3Core(config={"device": "cpu"}).embed("ACD", options={"include_fields": ["hidden_states"]})
 
 
-def test_esm3_wildcard_requests_supported_logits_only(fake_esm_sdk: type[_FakeSDKModel]) -> None:
+# (output field, LogitsConfig kwarg, fake vocab size) for each ESM3 track logit.
+_ESM3_TRACK_CASES = [
+    ("sasa_logits", "sasa", 5),
+    ("secondary_structure_logits", "secondary_structure", 6),
+    ("function_logits", "function", 7),
+    ("residue_annotation_logits", "residue_annotations", 8),
+]
+
+
+def test_esm3_wildcard_requests_all_supported_tracks(fake_esm_sdk: type[_FakeSDKModel]) -> None:
+    """``["*"]`` requests every ESM3-supported track logit, but not hidden states."""
     from boileroom.models.esm3.core import ESM3Core
 
     result = ESM3Core(config={"device": "cpu"}).embed("ACD", options={"include_fields": ["*"]})
 
     assert result.lm_logits is not None and result.lm_logits.shape == (1, 3, 4)
+    assert result.sasa_logits is not None and result.sasa_logits.shape == (1, 3, 5)
+    assert result.secondary_structure_logits is not None and result.secondary_structure_logits.shape == (1, 3, 6)
+    assert result.function_logits is not None and result.function_logits.shape == (1, 3, 7)
+    assert result.residue_annotation_logits is not None and result.residue_annotation_logits.shape == (1, 3, 8)
+    # hidden_states is not an ESM3-supported optional field, so "*" must not request it.
     assert result.hidden_states is None
+
+
+@pytest.mark.parametrize(("field", "kwarg", "vocab"), _ESM3_TRACK_CASES)
+def test_esm3_returns_requested_track_logits(
+    fake_esm_sdk: type[_FakeSDKModel], field: str, kwarg: str, vocab: int
+) -> None:
+    """Each ESM3 track can be requested on its own and returns its own logits shape."""
+    from boileroom.models.esm3.core import ESM3Core
+
+    result = ESM3Core(config={"device": "cpu"}).embed("ACD", options={"include_fields": [field]})
+
+    # Only the requested track (and not sequence logits) must be asked of the SDK.
+    assert fake_esm_sdk.logits_configs[-1][kwarg] is True
+    assert fake_esm_sdk.logits_configs[-1]["sequence"] is False
+    assert getattr(result, field) is not None and getattr(result, field).shape == (1, 3, vocab)
+    assert result.lm_logits is None
+
+
+@pytest.mark.parametrize(("field", "kwarg", "vocab"), _ESM3_TRACK_CASES)
+def test_esmc_rejects_esm3_track_logits(fake_esm_sdk: type[_FakeSDKModel], field: str, kwarg: str, vocab: int) -> None:
+    """ESM-C rejects ESM3-only track requests with a clear ``ValueError``."""
+    from boileroom.models.esm3.core import ESMCCore
+
+    with pytest.raises(ValueError, match=rf"{field}.*ESM3"):
+        ESMCCore(config={"device": "cpu"}).embed("ACD", options={"include_fields": [field]})
 
 
 def test_esm3_alias_model_names_are_valid(fake_esm_sdk: type[_FakeSDKModel]) -> None:

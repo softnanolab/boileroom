@@ -98,6 +98,20 @@ def pad_residue_arrays(
     return padded_embeddings, padded_hidden_states, padded_lm_logits, padded_chain_index, padded_residue_index
 
 
+# ESM3-only optional per-residue "track logit" outputs. ESM3 is an all-to-all
+# masked model, so any track can be predicted from sequence alone. Each entry maps
+# the public output field to (LogitsConfig kwarg, source attribute paths on the SDK
+# LogitsOutput to try in order). The structure/folding track is intentionally
+# excluded. Residue-annotation logits live at the top level of LogitsOutput (they
+# are multi-hot), the rest under ``logits.<track>``.
+ESM3_TRACK_LOGIT_FIELDS: dict[str, tuple[str, tuple[str, ...]]] = {
+    "sasa_logits": ("sasa", ("logits.sasa", "sasa")),
+    "secondary_structure_logits": ("secondary_structure", ("logits.secondary_structure", "secondary_structure")),
+    "function_logits": ("function", ("logits.function", "function")),
+    "residue_annotation_logits": ("residue_annotations", ("residue_annotation_logits", "residue_annotations")),
+}
+
+
 class _BaseESM3EmbeddingCore(EmbeddingAlgorithm):
     """Shared SDK-backed embedding logic for ESM-C and ESM3."""
 
@@ -112,6 +126,9 @@ class _BaseESM3EmbeddingCore(EmbeddingAlgorithm):
     VALID_MODEL_NAMES: ClassVar[frozenset[str]]
     MODEL_ALIASES: ClassVar[dict[str, str]] = {}
     SUPPORTED_OPTIONAL_FIELDS: ClassVar[frozenset[str]] = frozenset({"lm_logits"})
+    # Per-residue track-logit outputs this model can produce (empty by default;
+    # ESM3 populates it). See ESM3_TRACK_LOGIT_FIELDS for the value shape.
+    TRACK_LOGIT_FIELDS: ClassVar[dict[str, tuple[str, tuple[str, ...]]]] = {}
 
     def __init__(self, config: dict | None = None) -> None:
         super().__init__(config)
@@ -208,16 +225,27 @@ class _BaseESM3EmbeddingCore(EmbeddingAlgorithm):
         compute_hidden_states = self._include_requested(include_fields, "hidden_states")
         compute_lm_logits = self._include_requested(include_fields, "lm_logits")
 
+        # ESM3-only per-residue track logits (SASA, secondary structure, function,
+        # residue annotations). Reject any requested on a model that lacks the track.
+        for field in ESM3_TRACK_LOGIT_FIELDS:
+            if self._include_requested(include_fields, field) and field not in self.TRACK_LOGIT_FIELDS:
+                raise ValueError(f"{field} are only available for ESM3, not {self.MODEL_DISPLAY_NAME}.")
+        requested_tracks = [
+            field for field in self.TRACK_LOGIT_FIELDS if self._include_requested(include_fields, field)
+        ]
+        track_flags = {self.TRACK_LOGIT_FIELDS[field][0]: True for field in requested_tracks}
+
         with Timer(f"{self.MODEL_DISPLAY_NAME} preprocessing") as preprocess_timer:
             encoded_inputs = [self._encode_sequence(parsed.sdk_sequence) for parsed in parsed_sequences]
 
         embeddings: list[np.ndarray] = []
         hidden_states: list[np.ndarray] | None = [] if compute_hidden_states else None
         lm_logits: list[np.ndarray] | None = [] if compute_lm_logits else None
+        track_arrays: dict[str, list[np.ndarray]] = {field: [] for field in requested_tracks}
 
         with Timer("Model Inference") as inference_timer, torch.inference_mode():
             for parsed, encoded in zip(parsed_sequences, encoded_inputs, strict=True):
-                raw_output = self._run_logits(encoded, compute_lm_logits, compute_hidden_states)
+                raw_output = self._run_logits(encoded, compute_lm_logits, compute_hidden_states, track_flags)
                 keep_indices = self._residue_token_indices(parsed.sdk_sequence)
                 embeddings.append(
                     self._select_residue_rows(self._extract_array(raw_output, "embeddings"), keep_indices)
@@ -234,6 +262,12 @@ class _BaseESM3EmbeddingCore(EmbeddingAlgorithm):
                     if logits_array is None:
                         raise ValueError("lm_logits were requested but the ESM SDK did not return sequence logits.")
                     lm_logits.append(self._select_residue_rows(logits_array, keep_indices))
+                for field in requested_tracks:
+                    sources = self.TRACK_LOGIT_FIELDS[field][1]
+                    track_array = self._extract_optional_array(raw_output, *sources)
+                    if track_array is None:
+                        raise ValueError(f"{field} were requested but the ESM SDK did not return them.")
+                    track_arrays[field].append(self._select_residue_rows(track_array, keep_indices))
 
         with Timer(f"{self.MODEL_DISPLAY_NAME} postprocessing") as postprocess_timer:
             padded = pad_residue_arrays(
@@ -244,6 +278,9 @@ class _BaseESM3EmbeddingCore(EmbeddingAlgorithm):
                 residue_index=[parsed.residue_index for parsed in parsed_sequences],
             )
             embeddings_out, hidden_out, logits_out, chain_out, residue_out = padded
+            padded_tracks = {
+                field: _pad_and_stack(arrays, residue_axis=0, pad_value=0) for field, arrays in track_arrays.items()
+            }
             metadata.preprocessing_time = preprocess_timer.duration
             metadata.inference_time = inference_timer.duration
             metadata.postprocessing_time = postprocess_timer.duration
@@ -254,6 +291,7 @@ class _BaseESM3EmbeddingCore(EmbeddingAlgorithm):
                 lm_logits=logits_out,
                 chain_index=chain_out,
                 residue_index=residue_out,
+                **padded_tracks,
             )
             filtered = self._filter_include_fields(full_output, cast(list[str] | None, include_fields))
             return cast(ESMEmbeddingOutput, filtered)
@@ -264,15 +302,41 @@ class _BaseESM3EmbeddingCore(EmbeddingAlgorithm):
         assert self.model is not None, "Model not loaded"
         return self.model.encode(ESMProtein(sequence=sdk_sequence))
 
-    def _run_logits(self, encoded: Any, compute_lm_logits: bool, compute_hidden_states: bool) -> Any:
+    def _run_logits(
+        self,
+        encoded: Any,
+        compute_lm_logits: bool,
+        compute_hidden_states: bool,
+        track_flags: dict[str, bool] | None = None,
+    ) -> Any:
+        """Run the SDK ``logits`` call, requesting embeddings plus any enabled tracks.
+
+        Parameters
+        ----------
+        encoded : Any
+            The SDK-encoded protein to score.
+        compute_lm_logits : bool
+            Whether to request sequence (masked-LM) logits.
+        compute_hidden_states : bool
+            Whether to request per-layer hidden states.
+        track_flags : dict[str, bool] | None
+            Extra ``LogitsConfig`` track flags to enable (e.g. ``{"sasa": True}``).
+
+        Returns
+        -------
+        Any
+            The SDK ``LogitsOutput`` for the encoded input.
+        """
         from esm.sdk.api import LogitsConfig
 
         assert self.model is not None, "Model not loaded"
-        config_kwargs = {
+        config_kwargs: dict[str, Any] = {
             "sequence": compute_lm_logits,
             "return_embeddings": True,
             "return_hidden_states": compute_hidden_states,
         }
+        if track_flags:
+            config_kwargs.update(track_flags)
         return self.model.logits(encoded, LogitsConfig(**config_kwargs))
 
     @staticmethod
@@ -370,7 +434,8 @@ class ESM3Core(_BaseESM3EmbeddingCore):
         "esm3-sm-open-v1": "esm3_sm_open_v1",
         "esm3-open-2024-03": "esm3_sm_open_v1",
     }
-    SUPPORTED_OPTIONAL_FIELDS: ClassVar[frozenset[str]] = frozenset({"lm_logits"})
+    TRACK_LOGIT_FIELDS: ClassVar[dict[str, tuple[str, tuple[str, ...]]]] = ESM3_TRACK_LOGIT_FIELDS
+    SUPPORTED_OPTIONAL_FIELDS: ClassVar[frozenset[str]] = frozenset({"lm_logits", *ESM3_TRACK_LOGIT_FIELDS})
 
     def embed(self, sequences: str | Sequence[str], options: dict | None = None) -> ESM3Output:
         return cast(ESM3Output, super().embed(sequences, options=options))

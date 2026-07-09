@@ -18,7 +18,7 @@ def test_main_version_uses_commit_count_after_baseline(monkeypatch) -> None:
 
     monkeypatch.setattr(derive_version, "run_git", fake_run_git)
 
-    assert derive_version.main_version() == "0.3.2-alpha.7"
+    assert derive_version.main_version() == "0.4.1-alpha.7"
 
 
 def test_main_version_counts_from_latest_stable_release_tag(monkeypatch) -> None:

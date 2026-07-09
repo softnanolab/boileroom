@@ -153,7 +153,13 @@ ESM3_SPEC = ModelSpec(
         task_kind="embedding",
         static_config_keys=frozenset({"device", "model_name"}),
         minimal_output_fields=("metadata", "embeddings", "chain_index", "residue_index"),
-        optional_output_fields=("lm_logits",),
+        optional_output_fields=(
+            "lm_logits",
+            "sasa_logits",
+            "secondary_structure_logits",
+            "function_logits",
+            "residue_annotation_logits",
+        ),
         supports_multimer=True,
     ),
 )
