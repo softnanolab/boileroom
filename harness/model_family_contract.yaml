@@ -1,11 +1,16 @@
 version: 1
 
 model_family:
+  # Files every model family must provide.
   required_files:
     - __init__.py
     - core.py
     - types.py
     - image.py
+  # Files required only for families that build their own runtime image.
+  # Families that share another family's image (e.g. esm3 reusing the esmfold2
+  # Biohub image) are exempt from these.
+  image_owner_files:
     - Dockerfile
     - requirements.txt
     - config.yaml

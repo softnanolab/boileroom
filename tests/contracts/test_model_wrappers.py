@@ -11,6 +11,7 @@ from boileroom.images.metadata import IMAGE_TAG_ENV, get_default_image_tag
 from boileroom.models.boltz.types import Boltz2Output
 from boileroom.models.chai.types import Chai1Output
 from boileroom.models.esm.types import ESM2Output, ESMFoldOutput
+from boileroom.models.esm3.types import ESM3Output, ESMCOutput
 from boileroom.models.esmfold2.types import ESMFold2Output
 from boileroom.models.registry import CHAI1_SPEC, ESM2_SPEC, MODEL_SPECS, ModelSpec, get_model_spec, resolve_object
 
@@ -19,6 +20,8 @@ pytestmark = pytest.mark.contract
 SAMPLE_INPUTS: dict[str, Any] = {
     "esmfold": "MLKNVHVLVLGAGDVGSVVVRLLEK",
     "esm2": ["MALWMRLLPLLALLALWGPDPAAA"],
+    "esmc": ["ACD:EF"],
+    "esm3": ["ACD:EF"],
     "esmfold2": "MLKNVHVLVLGAGDVGSVVVRLLEK",
     "chai1": (
         "ICLQKTSNQILKPKLISYTLGQSGTCITDPLLAMDEGYFAYSHLERIGSCSRGVSKQRIIGVGEVLDRGDEVPSLFMTNVWTPPNPNTVYHCSAVYNNEFYYVLCAVSTVGD"
@@ -38,6 +41,26 @@ def _make_metadata(model_name: str) -> PredictionMetadata:
 def _make_output(spec: ModelSpec) -> object:
     if spec.key == "esm2":
         return ESM2Output(
+            embeddings=np.zeros((1, 3, 8), dtype=np.float32),
+            metadata=_make_metadata(spec.public_name),
+            chain_index=np.zeros((1, 3), dtype=np.int64),
+            residue_index=np.arange(3, dtype=np.int64)[None, :],
+            hidden_states=None,
+            lm_logits=None,
+        )
+
+    if spec.key == "esmc":
+        return ESMCOutput(
+            embeddings=np.zeros((1, 3, 8), dtype=np.float32),
+            metadata=_make_metadata(spec.public_name),
+            chain_index=np.zeros((1, 3), dtype=np.int64),
+            residue_index=np.arange(3, dtype=np.int64)[None, :],
+            hidden_states=None,
+            lm_logits=None,
+        )
+
+    if spec.key == "esm3":
+        return ESM3Output(
             embeddings=np.zeros((1, 3, 8), dtype=np.float32),
             metadata=_make_metadata(spec.public_name),
             chain_index=np.zeros((1, 3), dtype=np.int64),
