@@ -53,6 +53,7 @@ smoke target coverage. See [docs/agent_harness.md](docs/agent_harness.md).
 - Runtime defaults also follow the installed boileroom package version unless you explicitly override the image tag.
 - Merging to `main` triggers `.github/workflows/build-docker-images.yml`, which publishes Docker Hub tags for the current alpha prerelease.
 - Stable Docker tags and PyPI publication are separate manual release steps and happen from full GitHub release tags such as `v0.3.1`.
+- GitHub releases need to have a legitimate version in the format `vX.X.X`, otherwise PyPI publishing is going to fail.
 - GitHub releases marked as pre-releases do not publish stable Docker or PyPI artifacts.
 - In practice, Docker Hub can act as the earlier staging/public channel while PyPI remains the later package release step.
 - After a stable release, bump `project.version` to the next intended stable version so subsequent `main` builds become the next alpha series.
