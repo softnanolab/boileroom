@@ -72,6 +72,7 @@ In `0.3.1`, this replaces ESMFold's old padded pLDDT batch array and moves Boltz
 | Model      | Status | Description                                    | Reference                                              |
 |------------|--------|------------------------------------------------|--------------------------------------------------------|
 | ESMFold    | ✅      | Fast protein structure prediction   | [Facebook (now Meta)](https://github.com/facebookresearch/esm)     |
+| ESMFold2   | ✅      | MIT-licensed all-atom structure prediction model | [Chan Zuckerberg Biohub](https://github.com/Biohub/esm) |
 | ESM-2    | ✅      | MSA-free embedding model   | [Facebook (now Meta)](https://github.com/facebookresearch/esm)     |
 | ESM-C    | ✅      | MIT-licensed embedding-only model | [Chan Zuckerberg Biohub](https://github.com/Biohub/esm) |
 | ESM3     | ✅      | MIT-licensed multimodal model, embedding-only in Boileroom | [Chan Zuckerberg Biohub](https://github.com/Biohub/esm) |
