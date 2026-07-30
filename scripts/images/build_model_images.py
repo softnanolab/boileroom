@@ -7,6 +7,7 @@ import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 
 import click
@@ -21,6 +22,7 @@ from boileroom.images.metadata import (  # noqa: E402
     CUDA_TORCH_WHEEL_INDEX,
     DEFAULT_DOCKER_REPOSITORY,
     MODEL_IMAGE_SPECS,
+    MODEL_IMAGE_SELECTOR_KEYS,
     RuntimeImageSpec,
     SUPPORTED_CUDA_VERSIONS,
     get_supported_cuda,
@@ -28,8 +30,15 @@ from boileroom.images.metadata import (  # noqa: E402
     normalize_cuda_version,
     normalize_requested_tag,
     published_image_references,
+    select_model_image_specs,
 )
-from scripts.cli_utils import CONTEXT_SETTINGS, all_cuda_option, cuda_version_option, none_if_empty  # noqa: E402
+from scripts.cli_utils import (  # noqa: E402
+    CONTEXT_SETTINGS,
+    all_cuda_option,
+    cuda_version_option,
+    model_option,
+    none_if_empty,
+)
 
 _CUDA_TAG_PATTERN = re.compile(r"^cuda\d+\.\d+(?:-.+)?$")
 
@@ -43,6 +52,14 @@ class BuildTask:
     base_image_reference: str
     docker_repository: str
     tag: str
+
+
+class BaseMode(StrEnum):
+    """How a build invocation should handle the shared base image."""
+
+    BUILD = "build"
+    EXISTING = "existing"
+    ONLY = "only"
 
 
 @dataclass(frozen=True)
@@ -62,6 +79,8 @@ class BuildOptions:
     force_rebuild: bool
     max_workers: int
     local_base: bool
+    model_keys: list[str] | None = None
+    base_mode: BaseMode = BaseMode.BUILD
 
 
 class Colors:
@@ -441,9 +460,24 @@ def run_build(options: BuildOptions) -> None:
         tag = resolve_publish_tag(options.tag)
         docker_repository = normalize_docker_repository(options.docker_user)
         cuda_versions = compute_cuda_versions(options.cuda_versions, options.all_cuda)
+        model_specs = select_model_image_specs(options.model_keys)
+        if options.base_mode is BaseMode.ONLY and options.model_keys:
+            raise ValueError("--base-mode=only cannot be combined with --model.")
+        unsupported_selections = [
+            spec.key
+            for spec in model_specs
+            if options.model_keys and not set(cuda_versions).intersection(get_supported_cuda(spec))
+        ]
+        if unsupported_selections:
+            raise ValueError(
+                "Requested model image(s) do not support the selected CUDA versions: "
+                + ", ".join(unsupported_selections)
+            )
         output_flag = resolve_output_flag(options.push, options.load, options.platform)
         use_local_docker_build = should_use_local_docker_build(options.push, options.platform)
         if options.local_base:
+            if options.base_mode is BaseMode.EXISTING:
+                raise ValueError("--local-base cannot be combined with --base-mode=existing.")
             if not options.push:
                 raise ValueError("--local-base only applies to pushed builds.")
             if "," in options.platform:
@@ -471,7 +505,10 @@ def run_build(options: BuildOptions) -> None:
 
     log_info(Colors.wrap(f"Boileroom repo root: {REPO_ROOT}", Colors.magenta))
     log_info(f"Docker repository: {docker_repository}")
-    log_info(f"Model images: {', '.join(spec.image_name for spec in MODEL_IMAGE_SPECS)}")
+    if options.base_mode is BaseMode.ONLY:
+        log_info("Model images: none (base-only build)")
+    else:
+        log_info(f"Model images: {', '.join(spec.image_name for spec in model_specs)}")
     log_info(f"CUDA versions: {', '.join(cuda_versions)}")
     log_info(f"Platforms: {options.platform}")
     if options.verbose:
@@ -498,7 +535,10 @@ def run_build(options: BuildOptions) -> None:
                 tag,
                 docker_repository,
             )[0]
-            if options.skip_existing and not options.force_rebuild and image_reference_exists(target_base_reference):
+            if options.base_mode is BaseMode.EXISTING:
+                log_info(f"Using existing base image for CUDA {cuda_version}: {target_base_reference}")
+                base_reference = target_base_reference
+            elif options.skip_existing and not options.force_rebuild and image_reference_exists(target_base_reference):
                 log_info(
                     f"Skipping base build for CUDA {cuda_version}; existing tag already present: "
                     f"{target_base_reference}"
@@ -522,7 +562,10 @@ def run_build(options: BuildOptions) -> None:
 
         published_references.append(base_reference)
 
-        for image_spec in MODEL_IMAGE_SPECS:
+        if options.base_mode is BaseMode.ONLY:
+            continue
+
+        for image_spec in model_specs:
             supported_cuda = get_supported_cuda(image_spec)
             if cuda_version not in supported_cuda:
                 log_warn(
@@ -548,7 +591,7 @@ def run_build(options: BuildOptions) -> None:
                 )
             )
 
-    if not tasks:
+    if not tasks and options.base_mode is not BaseMode.ONLY:
         log_warn("No model images matched the requested CUDA selection.")
     elif options.max_workers <= 1 or len(tasks) == 1:
         for task in tasks:
@@ -614,6 +657,10 @@ def run_build(options: BuildOptions) -> None:
 )
 @cuda_version_option("CUDA version to build (repeatable). Supported values: 11.8, 12.6.")
 @all_cuda_option("Build all supported CUDA variants.")
+@model_option(
+    MODEL_IMAGE_SELECTOR_KEYS,
+    "Build only this model image (repeatable). The shared base is still built unless --skip-existing finds it.",
+)
 @click.option(
     "--docker-user",
     default=DEFAULT_DOCKER_REPOSITORY,
@@ -658,10 +705,18 @@ def run_build(options: BuildOptions) -> None:
         "from that local base before pushing their tags."
     ),
 )
+@click.option(
+    "--base-mode",
+    type=click.Choice(tuple(mode.value for mode in BaseMode)),
+    default=BaseMode.BUILD.value,
+    show_default=True,
+    help="Build the base, use an existing registry base, or build only the base.",
+)
 def cli(
     tag: str | None,
     cuda_versions: tuple[str, ...],
     all_cuda: bool,
+    model_keys: tuple[str, ...],
     docker_user: str,
     platform: str,
     push: bool,
@@ -672,6 +727,7 @@ def cli(
     force_rebuild: bool,
     max_workers: int,
     local_base: bool,
+    base_mode: str,
 ) -> None:
     """Run the Docker image build Click command."""
 
@@ -690,6 +746,8 @@ def cli(
             force_rebuild=force_rebuild,
             max_workers=max_workers,
             local_base=local_base,
+            model_keys=none_if_empty(model_keys),
+            base_mode=BaseMode(base_mode),
         )
     )
 

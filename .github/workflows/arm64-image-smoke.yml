@@ -11,10 +11,96 @@ permissions:
 concurrency: arm64-image-smoke-${{ github.ref }}
 
 jobs:
+  prepare-arm64-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      default_cuda_version: ${{ steps.image_metadata.outputs.default_cuda_version }}
+      models: ${{ steps.image_metadata.outputs.models }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Determine ARM64 image matrix
+        id: image_metadata
+        run: |
+          uv run --no-project --with pyyaml python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+
+          from boileroom.images.metadata import DEFAULT_CUDA_VERSION, MODEL_IMAGE_SPECS, get_supported_cuda
+
+          models = [spec.key for spec in MODEL_IMAGE_SPECS if DEFAULT_CUDA_VERSION in get_supported_cuda(spec)]
+          print(f"default_cuda_version={DEFAULT_CUDA_VERSION}")
+          print(f"models={json.dumps(models, separators=(',', ':'))}")
+          PY
+
+  build-arm64-base:
+    needs: prepare-arm64-matrix
+    name: ARM64 Base Smoke
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-suffix: arm64-base-smoke
+
+      - name: Prepare image script dependencies
+        run: uv run --no-project --with click --with pyyaml python -c "import click, yaml"
+
+      - name: Build ARM64 base image
+        run: |
+          uv run --no-project --with click --with pyyaml python scripts/images/build_model_images.py \
+            --cuda-version=${{ needs.prepare-arm64-matrix.outputs.default_cuda_version }} \
+            --tag=arm64-ci \
+            --platform=linux/arm64 \
+            --base-mode=only \
+            --max-workers=1 \
+            --verbose
+
+      - name: Export ARM64 base image
+        env:
+          CUDA_VERSION: ${{ needs.prepare-arm64-matrix.outputs.default_cuda_version }}
+        run: |
+          docker save \
+            --output /tmp/boileroom-arm64-base.tar \
+            "docker.io/jakublala/boileroom-base:cuda${CUDA_VERSION}-arm64-ci"
+
+      - name: Upload ARM64 base image
+        uses: actions/upload-artifact@v4
+        with:
+          name: arm64-base-${{ github.run_id }}
+          path: /tmp/boileroom-arm64-base.tar
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
+          overwrite: true
+
   arm64-image-smoke:
-    name: ARM64 Image Smoke
+    needs: [prepare-arm64-matrix, build-arm64-base]
+    name: ARM64 Image Smoke (${{ matrix.model }})
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        model: ${{ fromJSON(needs.prepare-arm64-matrix.outputs.models) }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -33,32 +119,43 @@ jobs:
       - name: Prepare image smoke script dependencies
         run: uv run --no-project --with click --with pyyaml python -c "import click, yaml"
 
-      - name: Determine default CUDA version
-        id: image_metadata
+      - name: Download ARM64 base image
+        uses: actions/download-artifact@v4
+        with:
+          name: arm64-base-${{ github.run_id }}
+          path: /tmp/boileroom-arm64-base
+
+      - name: Load ARM64 base image
         run: |
-          uv run --no-project --with pyyaml python - <<'PY' >> "$GITHUB_OUTPUT"
-          from boileroom.images.metadata import DEFAULT_CUDA_VERSION
+          docker load --input /tmp/boileroom-arm64-base/boileroom-arm64-base.tar
+          rm -- /tmp/boileroom-arm64-base/boileroom-arm64-base.tar
 
-          print(f"default_cuda_version={DEFAULT_CUDA_VERSION}")
-          PY
-
-      - name: Build ARM64 image set
+      - name: Build ARM64 model image
         run: |
           uv run --no-project --with click --with pyyaml python scripts/images/build_model_images.py \
-            --cuda-version=${{ steps.image_metadata.outputs.default_cuda_version }} \
+            --cuda-version=${{ needs.prepare-arm64-matrix.outputs.default_cuda_version }} \
+            --model=${{ matrix.model }} \
             --tag=arm64-ci \
             --platform=linux/arm64 \
-            --max-workers=3 \
+            --base-mode=existing \
+            --max-workers=1 \
             --verbose
 
       - name: Run ARM64 import smoke
         run: |
           uv run --no-project --with click --with pyyaml python scripts/images/check_model_imports.py \
-            --cuda-version=${{ steps.image_metadata.outputs.default_cuda_version }} \
+            --cuda-version=${{ needs.prepare-arm64-matrix.outputs.default_cuda_version }} \
+            --model=${{ matrix.model }} \
             --tag=arm64-ci
 
       - name: Run ARM64 server health smoke
         run: |
           uv run --no-project --with click --with pyyaml python scripts/images/check_model_server_health.py \
-            --cuda-version=${{ steps.image_metadata.outputs.default_cuda_version }} \
-            --tag=arm64-ci
+            --cuda-version=${{ needs.prepare-arm64-matrix.outputs.default_cuda_version }} \
+            --model=${{ matrix.model }} \
+            --tag=arm64-ci \
+            --cleanup
+
+      - name: Free disk space after build
+        if: always()
+        run: docker builder prune --all --force

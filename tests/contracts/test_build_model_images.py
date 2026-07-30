@@ -96,6 +96,7 @@ def test_cli_exposes_documented_flags(monkeypatch: MonkeyPatch) -> None:
             "--force-rebuild",
             "--verbose",
             "--local-base",
+            "--model=esm3",
             "--docker-user=example",
         ],
     )
@@ -116,8 +117,22 @@ def test_cli_exposes_documented_flags(monkeypatch: MonkeyPatch) -> None:
             force_rebuild=True,
             max_workers=1,
             local_base=True,
+            model_keys=["esm3"],
         )
     ]
+
+
+def test_cli_rejects_model_selection_with_base_mode_only(monkeypatch: MonkeyPatch) -> None:
+    """A base-only build must not silently ignore an explicit model selector."""
+    monkeypatch.setattr(build_model_images, "ensure_docker", lambda: None)
+
+    result = CliRunner().invoke(
+        build_model_images.cli,
+        ["--cuda-version=12.6", "--model=esm", "--base-mode=only"],
+    )
+
+    assert result.exit_code == 1
+    assert "--base-mode=only cannot be combined with --model" in result.output
 
 
 def test_cli_rejects_unknown_flags(monkeypatch: MonkeyPatch) -> None:
@@ -167,6 +182,42 @@ def test_run_build_validates_cuda_selection_before_docker(
     assert exc_info.value.code == 1
     assert docker_checked is False
     assert "Specify at least one --cuda-version or use --all-cuda." in capsys.readouterr().err
+
+
+def test_run_build_rejects_unsupported_explicit_model_cuda_before_docker(
+    monkeypatch: MonkeyPatch, capsys: CaptureFixture[str]
+) -> None:
+    """Explicit matrix selections should fail instead of reporting an empty successful build."""
+    options = build_model_images.BuildOptions(
+        tag="sha-test",
+        docker_user="docker.io/jakublala",
+        cuda_versions=["11.8"],
+        all_cuda=False,
+        platform="linux/amd64",
+        push=False,
+        load=False,
+        no_cache=False,
+        verbose=False,
+        skip_existing=False,
+        force_rebuild=False,
+        max_workers=1,
+        local_base=False,
+        model_keys=["boltz"],
+    )
+    docker_checked = False
+
+    def fake_ensure_docker() -> None:
+        nonlocal docker_checked
+        docker_checked = True
+
+    monkeypatch.setattr(build_model_images, "ensure_docker", fake_ensure_docker)
+
+    with pytest.raises(SystemExit) as exc_info:
+        build_model_images.run_build(options)
+
+    assert exc_info.value.code == 1
+    assert docker_checked is False
+    assert "do not support the selected CUDA versions: boltz" in capsys.readouterr().err
 
 
 def test_build_base_verbose_echoes_plain_progress(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
@@ -340,6 +391,90 @@ def test_main_skips_existing_base_and_model_tags(monkeypatch: MonkeyPatch, tmp_p
         f"docker.io/jakublala/boileroom-esm:cuda{DEFAULT_CUDA_VERSION}-sha-test",
         f"docker.io/jakublala/boileroom-esmfold2:cuda{DEFAULT_CUDA_VERSION}-sha-test",
     ]
+
+
+def test_base_only_build_skips_model_tasks(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
+    """The base-image matrix job should not enqueue any model image builds."""
+    options = build_model_images.BuildOptions(
+        tag="sha-test",
+        docker_user="docker.io/jakublala",
+        cuda_versions=[DEFAULT_CUDA_VERSION],
+        all_cuda=False,
+        platform="linux/amd64",
+        push=True,
+        load=False,
+        no_cache=False,
+        verbose=False,
+        skip_existing=False,
+        force_rebuild=False,
+        max_workers=1,
+        local_base=False,
+        base_mode=build_model_images.BaseMode.ONLY,
+    )
+    built_bases: list[str] = []
+    built_models: list[str] = []
+
+    def fake_build_base(cuda_version: str, *_args, **_kwargs) -> str:
+        built_bases.append(cuda_version)
+        return f"docker.io/jakublala/boileroom-base:cuda{cuda_version}-sha-test"
+
+    def fake_build_model(task, *_args, **_kwargs):
+        built_models.append(task.image_spec.key)
+        return ()
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(build_model_images, "ensure_docker", lambda: None)
+    monkeypatch.setattr(build_model_images, "ensure_buildx_builder", lambda: None)
+    monkeypatch.setattr(build_model_images, "build_base", fake_build_base)
+    monkeypatch.setattr(build_model_images, "build_model", fake_build_model)
+    monkeypatch.setattr(build_model_images, "log_info", lambda *args, **kwargs: None)
+    monkeypatch.setattr(build_model_images, "log_success", lambda *args, **kwargs: None)
+
+    build_model_images.run_build(options)
+
+    assert built_bases == [DEFAULT_CUDA_VERSION]
+    assert built_models == []
+
+
+def test_model_selection_builds_only_requested_image(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
+    """A per-model matrix job should enqueue only its selected image."""
+    options = build_model_images.BuildOptions(
+        tag="sha-test",
+        docker_user="docker.io/jakublala",
+        cuda_versions=[DEFAULT_CUDA_VERSION],
+        all_cuda=False,
+        platform="linux/amd64",
+        push=True,
+        load=False,
+        no_cache=False,
+        verbose=False,
+        skip_existing=True,
+        force_rebuild=False,
+        max_workers=1,
+        local_base=False,
+        model_keys=["esm"],
+        base_mode=build_model_images.BaseMode.EXISTING,
+    )
+    built_models: list[str] = []
+
+    def fake_image_reference_exists(_image_reference: str) -> bool:
+        return False
+
+    def fake_build_model(task, *_args, **_kwargs):
+        built_models.append(task.image_spec.key)
+        return ()
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(build_model_images, "ensure_docker", lambda: None)
+    monkeypatch.setattr(build_model_images, "ensure_buildx_builder", lambda: None)
+    monkeypatch.setattr(build_model_images, "image_reference_exists", fake_image_reference_exists)
+    monkeypatch.setattr(build_model_images, "build_model", fake_build_model)
+    monkeypatch.setattr(build_model_images, "log_info", lambda *args, **kwargs: None)
+    monkeypatch.setattr(build_model_images, "log_success", lambda *args, **kwargs: None)
+
+    build_model_images.run_build(options)
+
+    assert built_models == ["esm"]
 
 
 def test_local_base_push_builds_locally_then_pushes(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
