@@ -23,6 +23,7 @@ from boileroom.images.metadata import (
     published_tags,
     render_modal_runtime_env,
     resolve_registry_tag,
+    select_model_image_specs,
 )
 
 
@@ -173,3 +174,10 @@ def test_iter_image_targets_uses_canonical_cuda_tags() -> None:
     assert references["chai"].endswith(":cuda12.6-0.3.0")
     assert references["esm"].endswith(":cuda12.6-0.3.0")
     assert references["esmfold2"].endswith(":cuda12.6-0.3.0")
+
+
+def test_select_model_image_specs_preserves_order_and_deduplicates_shared_aliases() -> None:
+    """Per-model CI selectors should resolve aliases without duplicate builds."""
+    specs = select_model_image_specs(["esmfold2", "esm3", "chai"])
+
+    assert [spec.key for spec in specs] == ["esmfold2", "chai"]
