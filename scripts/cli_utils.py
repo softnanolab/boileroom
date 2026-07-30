@@ -60,6 +60,24 @@ def all_cuda_option(help_text: str) -> Callable[[F], F]:
     return decorator
 
 
+def model_option(model_keys: Sequence[str], help_text: str) -> Callable[[F], F]:
+    """Return a reusable repeatable model-image selector."""
+
+    def decorator(function: F) -> F:
+        return cast(
+            F,
+            click.option(
+                "--model",
+                "model_keys",
+                multiple=True,
+                type=click.Choice(tuple(model_keys)),
+                help=help_text,
+            )(function),
+        )
+
+    return decorator
+
+
 def pull_option(function: F) -> F:
     """Add the shared Docker pull flag."""
 

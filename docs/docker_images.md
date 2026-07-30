@@ -19,7 +19,7 @@ Dockerfiles are the canonical image definition for all runtimes. Docker/Apptaine
 Use the Python helper to build all images (base + models) with a single global worker limit.
 
 ```bash
-uv run python scripts/images/build_model_images.py --cuda-version=12.6 --platform=linux/amd64 --max-workers=4
+uv run python scripts/images/build_model_images.py --cuda-version=12.6 --platform=linux/amd64 --max-workers=1
 
 # Optional flags
 uv run python scripts/images/build_model_images.py --no-cache ...
@@ -27,6 +27,8 @@ uv run python scripts/images/build_model_images.py --verbose ...
 uv run python scripts/images/build_model_images.py --all-cuda --tag=0.3.0 --push ...
 uv run python scripts/images/build_model_images.py --cuda-version=12.6 --tag=0.3.0 --push --local-base ...
 uv run python scripts/images/build_model_images.py --cuda-version=12.6 --tag=sha-$(git rev-parse --short HEAD) --push ...
+uv run python scripts/images/build_model_images.py --cuda-version=12.6 --model=esmfold2 ...
+uv run python scripts/images/build_model_images.py --cuda-version=12.6 --base-mode=only --push ...
 ```
 
 Images publish to `docker.io/jakublala` by default. If `--tag` is omitted, image helpers use the current boileroom package version from `pyproject.toml`. Pass `--docker-user` and `--tag` to build or publish a specific tag under another Docker Hub namespace:
@@ -64,13 +66,14 @@ For lower-level runtime configuration outside pytest, `BOILEROOM_IMAGE_TAG` is t
 
 Single-platform non-push builds auto-load into the local Docker daemon. Multi-platform builds should generally be paired with `--push`.
 Pushed buildx builds import and export stable per-image registry caches such as `boileroom-chai1:buildcache-cuda12.6`, so GitHub Actions runners can reuse dependency layers across validation tags and releases. Pass `--no-cache` to bypass those caches.
-Model Dockerfiles also mount a shared BuildKit uv cache for the active CUDA line, for example `boileroom-uv-cu12.6`, so parallel model builds in the same GitHub Actions matrix job can reuse downloaded wheels even when a full dependency-install layer has to run again.
+Model Dockerfiles also mount a BuildKit uv cache scoped to the active CUDA line, for example `boileroom-uv-cu12.6`, so repeated builds can reuse downloaded wheels even when a full dependency-install layer has to run again.
 Pass `--verbose` to stream Docker build output and plain BuildKit progress while still writing per-image log files.
-In CI, the release workflow splits CUDA lines across separate GitHub-hosted runners and passes `--max-workers` within each CUDA job. That keeps the base image dependency order intact while letting model image builds and Docker Hub transfers overlap.
+In CI, the release workflow first publishes one AMD64 base image per CUDA line, then builds each model/CUDA pair on a fresh runner with `--max-workers=1`. Model jobs push directly from BuildKit, prune the build cache, and pull only their own image for smoke checks. This isolates disk usage so one large model cannot exhaust a runner used by the others.
+ARM64 validation also uses one fresh runner per model. A dedicated ARM64 runner builds the base once, exports it as a one-day run artifact, and each model runner loads that exact base locally; the published base tag remains AMD64-only.
 For single-platform publishing, pass `--local-base` to build and tag images with `buildx --load` before pushing. This keeps dependent model builds from waiting on Docker Hub to receive and then re-serve the base image. Model builds also receive the loaded base tag as a named `docker-image://` build context so their `FROM` instruction resolves locally while preserving BuildKit registry cache import/export.
 
 ### ARM64 smoke workflow
-The `.github/workflows/arm64-image-smoke.yml` workflow runs on pull requests to `main` and on manual dispatch. It uses an `ubuntu-24.04-arm` runner, builds the image set for `linux/arm64` with the `arm64-ci` tag, and then runs the import and server-health smoke checks. It is informational and does not push images.
+The `.github/workflows/arm64-image-smoke.yml` workflow runs on pull requests to `main` and on manual dispatch. It builds one ARM64 base artifact, then uses one `ubuntu-24.04-arm` runner per model to build `linux/arm64` images with the `arm64-ci` tag and run the import and server-health smoke checks. It is informational and does not push images.
 
 The workflow does not install the full project dependency set on the host runner. Host-side image scripts run with `uv run --no-project --with pyyaml`, while heavy model dependencies such as PyTorch and SciPy are validated inside the Docker images themselves.
 
@@ -79,9 +82,9 @@ On `main`, ARM64 image smoke is folded into the Docker publishing workflow inste
 To reproduce the same path locally on an ARM64 machine, run:
 
 ```bash
-uv run python scripts/images/build_model_images.py --cuda-version=12.6 --tag=arm64-ci --platform=linux/arm64 --max-workers=3
-uv run python scripts/images/check_model_imports.py --cuda-version=12.6 --tag=arm64-ci
-uv run python scripts/images/check_model_server_health.py --cuda-version=12.6 --tag=arm64-ci
+uv run python scripts/images/build_model_images.py --cuda-version=12.6 --model=esmfold2 --tag=arm64-ci --platform=linux/arm64 --max-workers=1
+uv run python scripts/images/check_model_imports.py --cuda-version=12.6 --model=esmfold2 --tag=arm64-ci
+uv run python scripts/images/check_model_server_health.py --cuda-version=12.6 --model=esmfold2 --tag=arm64-ci
 ```
 
 The build helper also supports `--skip-existing` and `--force-rebuild` for registry-aware rebuilds.
@@ -164,11 +167,12 @@ This publishes:
 
 ### 📦 CI publishing (production)
 GitHub Actions at `.github/workflows/build-docker-images.yml` now drives the image publishing pipeline:
-- Triggers automatically on pushes to `main`, on published GitHub releases, and can also be run manually via **Run workflow** from `main`.
-- Manual runs can also be dispatched from a non-`main` branch with `promote` left disabled. That validation-only path builds and pushes temporary `sha-<commit>` validation images, runs the local AMD64 and ARM64 smoke checks, and skips public version-tag publishing.
-- Pushes to `main` build and validate an automatically derived alpha prerelease tag from `scripts/ci/derive_version.py`, such as `0.3.1-alpha.1`. Full GitHub releases build and validate the stable release tag.
-- Builds each CUDA line in its own job, with model images parallelized behind the matching locally available base image by `--local-base` and `--max-workers`.
-- Verifies canonical CUDA-qualified tags from the same runner-local images after each CUDA build. The default-CUDA alias is checked locally in the `12.6` job.
+- Triggers automatically on non-documentation pushes to `main`, on published GitHub releases, and can also be run manually via **Run workflow** from `main`.
+- Manual runs can also be dispatched from a non-`main` branch with `promote` left disabled. That validation-only path builds and pushes temporary `sha-<commit>` validation images, runs the AMD64 and ARM64 smoke checks, and skips public version-tag publishing.
+- Pushes to `main` build and validate an automatically derived alpha prerelease tag from `scripts/ci/derive_version.py`, such as `0.4.2-alpha.1`. Full GitHub releases build and validate the stable release tag.
+- Publishes one AMD64 base image per CUDA line, then builds every supported model/CUDA pair in a separate matrix job with `--max-workers=1`.
+- Prunes BuildKit state before verification and pulls only the selected model image. The default-CUDA alias is checked in that model's `12.6` job.
+- Builds the ARM64 base once per run and shares it as a short-lived artifact across isolated ARM64 model jobs.
 - Runs the ARM64 smoke build and checks in the same publishing workflow on `main`; the standalone ARM64 workflow is reserved for pull requests and manual runs.
 - The alpha suffix counts commits since the latest reachable stable release tag, for example `0.3.1-alpha.1`, `0.3.1-alpha.2`, and so on. Before the first stable release tag, the count falls back to the configured CI baseline.
 - Each successful run publishes canonical CUDA-qualified tags and the unqualified version alias for the default `12.6` line.

@@ -6,6 +6,7 @@ import importlib.metadata
 import os
 import re
 import tomllib
+from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
@@ -102,6 +103,7 @@ MODEL_IMAGE_SPECS: Final[tuple[RuntimeImageSpec, ...]] = (
 
 MODEL_IMAGE_SPECS_BY_KEY: Final = {family_key: spec for spec in MODEL_IMAGE_SPECS for family_key in spec.family_keys}
 MODEL_IMAGE_SPECS_BY_NAME: Final = {spec.image_name: spec for spec in MODEL_IMAGE_SPECS}
+MODEL_IMAGE_SELECTOR_KEYS: Final = tuple(family_key for spec in MODEL_IMAGE_SPECS for family_key in spec.family_keys)
 
 
 def get_repo_root() -> Path:
@@ -253,6 +255,22 @@ def get_model_image_spec(identifier: str) -> RuntimeImageSpec:
     if identifier in MODEL_IMAGE_SPECS_BY_NAME:
         return MODEL_IMAGE_SPECS_BY_NAME[identifier]
     raise KeyError(f"Unknown image spec: {identifier}")
+
+
+def select_model_image_specs(identifiers: Sequence[str] | None) -> tuple[RuntimeImageSpec, ...]:
+    """Return the requested model image specs in stable, de-duplicated order."""
+    if not identifiers:
+        return MODEL_IMAGE_SPECS
+
+    selected: list[RuntimeImageSpec] = []
+    seen_image_names: set[str] = set()
+    for identifier in identifiers:
+        spec = get_model_image_spec(identifier)
+        if spec.image_name in seen_image_names:
+            continue
+        selected.append(spec)
+        seen_image_names.add(spec.image_name)
+    return tuple(selected)
 
 
 @cache
