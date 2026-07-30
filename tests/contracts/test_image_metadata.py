@@ -181,3 +181,9 @@ def test_select_model_image_specs_preserves_order_and_deduplicates_shared_aliase
     specs = select_model_image_specs(["esmfold2", "esm3", "chai"])
 
     assert [spec.key for spec in specs] == ["esmfold2", "chai"]
+
+
+def test_select_model_image_specs_rejects_unknown_identifier() -> None:
+    """Unknown selectors should fail loudly for direct callers."""
+    with pytest.raises(KeyError):
+        select_model_image_specs(["not-a-model"])

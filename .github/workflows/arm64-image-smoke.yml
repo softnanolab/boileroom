@@ -46,6 +46,9 @@ jobs:
     name: ARM64 Base Smoke
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 60
+    env:
+      CUDA_VERSION: ${{ needs.prepare-arm64-matrix.outputs.default_cuda_version }}
+      DOCKER_REPOSITORY: docker.io/jakublala
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -67,7 +70,8 @@ jobs:
       - name: Build ARM64 base image
         run: |
           uv run --no-project --with click --with pyyaml python scripts/images/build_model_images.py \
-            --cuda-version=${{ needs.prepare-arm64-matrix.outputs.default_cuda_version }} \
+            --cuda-version="${CUDA_VERSION}" \
+            --docker-user="${DOCKER_REPOSITORY}" \
             --tag=arm64-ci \
             --platform=linux/arm64 \
             --base-mode=only \
@@ -75,12 +79,10 @@ jobs:
             --verbose
 
       - name: Export ARM64 base image
-        env:
-          CUDA_VERSION: ${{ needs.prepare-arm64-matrix.outputs.default_cuda_version }}
         run: |
           docker save \
             --output /tmp/boileroom-arm64-base.tar \
-            "docker.io/jakublala/boileroom-base:cuda${CUDA_VERSION}-arm64-ci"
+            "${DOCKER_REPOSITORY}/boileroom-base:cuda${CUDA_VERSION}-arm64-ci"
 
       - name: Upload ARM64 base image
         uses: actions/upload-artifact@v4
@@ -97,6 +99,10 @@ jobs:
     name: ARM64 Image Smoke (${{ matrix.model }})
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 180
+    env:
+      CUDA_VERSION: ${{ needs.prepare-arm64-matrix.outputs.default_cuda_version }}
+      DOCKER_REPOSITORY: docker.io/jakublala
+      MODEL: ${{ matrix.model }}
     strategy:
       fail-fast: false
       matrix:
@@ -133,8 +139,9 @@ jobs:
       - name: Build ARM64 model image
         run: |
           uv run --no-project --with click --with pyyaml python scripts/images/build_model_images.py \
-            --cuda-version=${{ needs.prepare-arm64-matrix.outputs.default_cuda_version }} \
-            --model=${{ matrix.model }} \
+            --cuda-version="${CUDA_VERSION}" \
+            --docker-user="${DOCKER_REPOSITORY}" \
+            --model="${MODEL}" \
             --tag=arm64-ci \
             --platform=linux/arm64 \
             --base-mode=existing \
@@ -144,15 +151,17 @@ jobs:
       - name: Run ARM64 import smoke
         run: |
           uv run --no-project --with click --with pyyaml python scripts/images/check_model_imports.py \
-            --cuda-version=${{ needs.prepare-arm64-matrix.outputs.default_cuda_version }} \
-            --model=${{ matrix.model }} \
+            --cuda-version="${CUDA_VERSION}" \
+            --docker-user="${DOCKER_REPOSITORY}" \
+            --model="${MODEL}" \
             --tag=arm64-ci
 
       - name: Run ARM64 server health smoke
         run: |
           uv run --no-project --with click --with pyyaml python scripts/images/check_model_server_health.py \
-            --cuda-version=${{ needs.prepare-arm64-matrix.outputs.default_cuda_version }} \
-            --model=${{ matrix.model }} \
+            --cuda-version="${CUDA_VERSION}" \
+            --docker-user="${DOCKER_REPOSITORY}" \
+            --model="${MODEL}" \
             --tag=arm64-ci \
             --cleanup
 
