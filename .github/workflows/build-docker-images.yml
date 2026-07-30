@@ -53,7 +53,6 @@ jobs:
       image_tag: ${{ steps.image_tag.outputs.value }}
       cuda_versions: ${{ steps.image_metadata.outputs.cuda_versions }}
       default_cuda_version: ${{ steps.image_metadata.outputs.default_cuda_version }}
-      docker_repository: ${{ steps.image_metadata.outputs.docker_repository }}
       amd64_model_matrix: ${{ steps.image_metadata.outputs.amd64_model_matrix }}
       arm64_model_matrix: ${{ steps.image_metadata.outputs.arm64_model_matrix }}
     steps:
@@ -82,6 +81,26 @@ jobs:
         with:
           enable-cache: true
           cache-suffix: image-prepare
+
+      - name: Validate Docker publishing configuration
+        env:
+          DOCKERHUB_TOKEN_FOR_RUN: ${{ secrets[env.DOCKERHUB_TOKEN_SECRET_FOR_RUN] }}
+        run: |
+          if [ -z "${DOCKERHUB_USERNAME_FOR_RUN}" ]; then
+            echo "Docker Hub username must not be empty."
+            exit 1
+          fi
+          if [ -z "${DOCKERHUB_TOKEN_FOR_RUN}" ]; then
+            echo "Docker Hub token secret '${DOCKERHUB_TOKEN_SECRET_FOR_RUN}' is missing or empty."
+            exit 1
+          fi
+          uv run --no-project --with pyyaml python - <<'PY'
+          import os
+
+          from boileroom.images.metadata import normalize_docker_repository
+
+          normalize_docker_repository(os.environ["DOCKER_REPOSITORY_FOR_RUN"])
+          PY
 
       - name: Determine Boileroom version
         id: version
@@ -113,14 +132,12 @@ jobs:
         run: |
           uv run --no-project --with pyyaml python - <<'PY' >> "$GITHUB_OUTPUT"
           import json
-          import os
 
           from boileroom.images.metadata import (
               DEFAULT_CUDA_VERSION,
               MODEL_IMAGE_SPECS,
               SUPPORTED_CUDA_VERSIONS,
               get_supported_cuda,
-              normalize_docker_repository,
           )
 
           amd64_model_matrix = {
@@ -140,7 +157,6 @@ jobs:
 
           print(f"cuda_versions={json.dumps(sorted(SUPPORTED_CUDA_VERSIONS))}")
           print(f"default_cuda_version={DEFAULT_CUDA_VERSION}")
-          print(f"docker_repository={normalize_docker_repository(os.environ['DOCKER_REPOSITORY_FOR_RUN'])}")
           print(f"amd64_model_matrix={json.dumps(amd64_model_matrix, separators=(',', ':'))}")
           print(f"arm64_model_matrix={json.dumps(arm64_model_matrix, separators=(',', ':'))}")
           PY
@@ -150,6 +166,9 @@ jobs:
     name: Build Base (linux/amd64, CUDA ${{ matrix.cuda_version }})
     runs-on: ubuntu-latest
     timeout-minutes: 180
+    env:
+      CUDA_VERSION: ${{ matrix.cuda_version }}
+      IMAGE_TAG: ${{ needs.prepare-release.outputs.image_tag }}
     strategy:
       fail-fast: false
       matrix:
@@ -182,9 +201,9 @@ jobs:
       - name: Build and push base image
         run: |
           uv run --no-project --with click --with pyyaml python ./scripts/images/build_model_images.py \
-            --cuda-version=${{ matrix.cuda_version }} \
-            --tag=${{ needs.prepare-release.outputs.image_tag }} \
-            --docker-user="${{ needs.prepare-release.outputs.docker_repository }}" \
+            --cuda-version="${CUDA_VERSION}" \
+            --tag="${IMAGE_TAG}" \
+            --docker-user="${DOCKER_REPOSITORY_FOR_RUN}" \
             --platform=linux/amd64 \
             --base-mode=only \
             --push \
@@ -200,6 +219,10 @@ jobs:
     name: Build Model (${{ matrix.model }}, linux/amd64, CUDA ${{ matrix.cuda_version }})
     runs-on: ubuntu-latest
     timeout-minutes: 180
+    env:
+      CUDA_VERSION: ${{ matrix.cuda_version }}
+      IMAGE_TAG: ${{ needs.prepare-release.outputs.image_tag }}
+      MODEL: ${{ matrix.model }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.prepare-release.outputs.amd64_model_matrix) }}
@@ -231,10 +254,10 @@ jobs:
       - name: Build and push model image
         run: |
           uv run --no-project --with click --with pyyaml python ./scripts/images/build_model_images.py \
-            --cuda-version=${{ matrix.cuda_version }} \
-            --model=${{ matrix.model }} \
-            --tag=${{ needs.prepare-release.outputs.image_tag }} \
-            --docker-user="${{ needs.prepare-release.outputs.docker_repository }}" \
+            --cuda-version="${CUDA_VERSION}" \
+            --model="${MODEL}" \
+            --tag="${IMAGE_TAG}" \
+            --docker-user="${DOCKER_REPOSITORY_FOR_RUN}" \
             --platform=linux/amd64 \
             --base-mode=existing \
             --push \
@@ -247,37 +270,37 @@ jobs:
       - name: Verify canonical image imports
         run: |
           uv run --no-project --with click --with pyyaml python ./scripts/images/check_model_imports.py \
-            --cuda-version=${{ matrix.cuda_version }} \
-            --model=${{ matrix.model }} \
-            --docker-user="${{ needs.prepare-release.outputs.docker_repository }}" \
-            --tag=${{ needs.prepare-release.outputs.image_tag }} \
+            --cuda-version="${CUDA_VERSION}" \
+            --model="${MODEL}" \
+            --docker-user="${DOCKER_REPOSITORY_FOR_RUN}" \
+            --tag="${IMAGE_TAG}" \
             --pull
 
       - name: Verify canonical image server health
         run: |
           uv run --no-project --with click --with pyyaml python ./scripts/images/check_model_server_health.py \
-            --cuda-version=${{ matrix.cuda_version }} \
-            --model=${{ matrix.model }} \
-            --docker-user="${{ needs.prepare-release.outputs.docker_repository }}" \
-            --tag=${{ needs.prepare-release.outputs.image_tag }} \
+            --cuda-version="${CUDA_VERSION}" \
+            --model="${MODEL}" \
+            --docker-user="${DOCKER_REPOSITORY_FOR_RUN}" \
+            --tag="${IMAGE_TAG}" \
             --cleanup
 
       - name: Verify default-CUDA alias image imports
         if: matrix.cuda_version == needs.prepare-release.outputs.default_cuda_version
         run: |
           uv run --no-project --with click --with pyyaml python ./scripts/images/check_model_imports.py \
-            --model=${{ matrix.model }} \
-            --docker-user="${{ needs.prepare-release.outputs.docker_repository }}" \
-            --tag=${{ needs.prepare-release.outputs.image_tag }} \
+            --model="${MODEL}" \
+            --docker-user="${DOCKER_REPOSITORY_FOR_RUN}" \
+            --tag="${IMAGE_TAG}" \
             --pull
 
       - name: Verify default-CUDA alias image server health
         if: matrix.cuda_version == needs.prepare-release.outputs.default_cuda_version
         run: |
           uv run --no-project --with click --with pyyaml python ./scripts/images/check_model_server_health.py \
-            --model=${{ matrix.model }} \
-            --docker-user="${{ needs.prepare-release.outputs.docker_repository }}" \
-            --tag=${{ needs.prepare-release.outputs.image_tag }} \
+            --model="${MODEL}" \
+            --docker-user="${DOCKER_REPOSITORY_FOR_RUN}" \
+            --tag="${IMAGE_TAG}" \
             --cleanup
 
       - name: Free disk space after build
@@ -289,6 +312,9 @@ jobs:
     name: Build Base (linux/arm64, CUDA ${{ needs.prepare-release.outputs.default_cuda_version }})
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 60
+    env:
+      CUDA_VERSION: ${{ needs.prepare-release.outputs.default_cuda_version }}
+      IMAGE_TAG: ${{ needs.prepare-release.outputs.image_tag }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -307,22 +333,28 @@ jobs:
       - name: Prepare image script dependencies
         run: uv run --no-project --with click --with pyyaml python -c "import click, yaml"
 
+      - name: Normalize Docker repository
+        run: |
+          uv run --no-project --with pyyaml python - <<'PY' >> "$GITHUB_ENV"
+          import os
+
+          from boileroom.images.metadata import normalize_docker_repository
+
+          print(f"DOCKER_REPOSITORY={normalize_docker_repository(os.environ['DOCKER_REPOSITORY_FOR_RUN'])}")
+          PY
+
       - name: Build ARM64 base image locally
         run: |
           uv run --no-project --with click --with pyyaml python ./scripts/images/build_model_images.py \
-            --cuda-version=${{ needs.prepare-release.outputs.default_cuda_version }} \
-            --tag=${{ needs.prepare-release.outputs.image_tag }} \
-            --docker-user="${{ needs.prepare-release.outputs.docker_repository }}" \
+            --cuda-version="${CUDA_VERSION}" \
+            --tag="${IMAGE_TAG}" \
+            --docker-user="${DOCKER_REPOSITORY}" \
             --platform=linux/arm64 \
             --base-mode=only \
             --max-workers=${IMAGE_BUILD_MAX_WORKERS} \
             --verbose
 
       - name: Export ARM64 base image
-        env:
-          CUDA_VERSION: ${{ needs.prepare-release.outputs.default_cuda_version }}
-          DOCKER_REPOSITORY: ${{ needs.prepare-release.outputs.docker_repository }}
-          IMAGE_TAG: ${{ needs.prepare-release.outputs.image_tag }}
         run: |
           docker save \
             --output /tmp/boileroom-arm64-base.tar \
@@ -343,6 +375,10 @@ jobs:
     name: Build Model (${{ matrix.model }}, linux/arm64, CUDA ${{ matrix.cuda_version }})
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 180
+    env:
+      CUDA_VERSION: ${{ matrix.cuda_version }}
+      IMAGE_TAG: ${{ needs.prepare-release.outputs.image_tag }}
+      MODEL: ${{ matrix.model }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.prepare-release.outputs.arm64_model_matrix) }}
@@ -378,10 +414,10 @@ jobs:
       - name: Build model image locally
         run: |
           uv run --no-project --with click --with pyyaml python ./scripts/images/build_model_images.py \
-            --cuda-version=${{ matrix.cuda_version }} \
-            --model=${{ matrix.model }} \
-            --tag=${{ needs.prepare-release.outputs.image_tag }} \
-            --docker-user="${{ needs.prepare-release.outputs.docker_repository }}" \
+            --cuda-version="${CUDA_VERSION}" \
+            --model="${MODEL}" \
+            --tag="${IMAGE_TAG}" \
+            --docker-user="${DOCKER_REPOSITORY_FOR_RUN}" \
             --platform=linux/arm64 \
             --base-mode=existing \
             --max-workers=${IMAGE_BUILD_MAX_WORKERS} \
@@ -390,33 +426,33 @@ jobs:
       - name: Verify canonical image imports
         run: |
           uv run --no-project --with click --with pyyaml python ./scripts/images/check_model_imports.py \
-            --cuda-version=${{ matrix.cuda_version }} \
-            --model=${{ matrix.model }} \
-            --docker-user="${{ needs.prepare-release.outputs.docker_repository }}" \
-            --tag=${{ needs.prepare-release.outputs.image_tag }}
+            --cuda-version="${CUDA_VERSION}" \
+            --model="${MODEL}" \
+            --docker-user="${DOCKER_REPOSITORY_FOR_RUN}" \
+            --tag="${IMAGE_TAG}"
 
       - name: Verify canonical image server health
         run: |
           uv run --no-project --with click --with pyyaml python ./scripts/images/check_model_server_health.py \
-            --cuda-version=${{ matrix.cuda_version }} \
-            --model=${{ matrix.model }} \
-            --docker-user="${{ needs.prepare-release.outputs.docker_repository }}" \
-            --tag=${{ needs.prepare-release.outputs.image_tag }} \
+            --cuda-version="${CUDA_VERSION}" \
+            --model="${MODEL}" \
+            --docker-user="${DOCKER_REPOSITORY_FOR_RUN}" \
+            --tag="${IMAGE_TAG}" \
             --cleanup
 
       - name: Verify local alias image imports
         run: |
           uv run --no-project --with click --with pyyaml python ./scripts/images/check_model_imports.py \
-            --model=${{ matrix.model }} \
-            --docker-user="${{ needs.prepare-release.outputs.docker_repository }}" \
-            --tag=${{ needs.prepare-release.outputs.image_tag }}
+            --model="${MODEL}" \
+            --docker-user="${DOCKER_REPOSITORY_FOR_RUN}" \
+            --tag="${IMAGE_TAG}"
 
       - name: Verify local alias image server health
         run: |
           uv run --no-project --with click --with pyyaml python ./scripts/images/check_model_server_health.py \
-            --model=${{ matrix.model }} \
-            --docker-user="${{ needs.prepare-release.outputs.docker_repository }}" \
-            --tag=${{ needs.prepare-release.outputs.image_tag }} \
+            --model="${MODEL}" \
+            --docker-user="${DOCKER_REPOSITORY_FOR_RUN}" \
+            --tag="${IMAGE_TAG}" \
             --cleanup
 
       - name: Free disk space after build
