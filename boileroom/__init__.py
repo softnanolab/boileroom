@@ -29,7 +29,11 @@ def __getattr__(name: str):
         from .models import Boltz2
 
         return Boltz2
+    if name == "SAE":
+        from .models import SAE
+
+        return SAE
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
-__all__ = ["ESMFold", "ESM2", "ESMFold2", "ESMC", "ESM3", "Chai1", "Boltz2"]
+__all__ = ["ESMFold", "ESM2", "ESMFold2", "ESMC", "ESM3", "Chai1", "Boltz2", "SAE"]
