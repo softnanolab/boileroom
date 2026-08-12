@@ -247,7 +247,43 @@ BOLTZ2_SPEC = ModelSpec(
     ),
 )
 
-MODEL_SPECS = (ESMFOLD_SPEC, ESM2_SPEC, ESMFOLD2_SPEC, ESMC_SPEC, ESM3_SPEC, CHAI1_SPEC, BOLTZ2_SPEC)
+SAE_SPEC = ModelSpec(
+    key="sae",
+    public_name="SAE",
+    family="sae",
+    wrapper_class_path="boileroom.models.sae.sae.SAE",
+    modal_class_path="boileroom.models.sae.sae.ModalSAE",
+    apptainer_core_class_path="boileroom.models.sae.core.SAECore",
+    # Reuses the shared Biohub ESM runtime image (same as ESM-C / ESM3 / ESMFold2).
+    apptainer_image_name=ESMFOLD2_IMAGE_NAME,
+    supported_backends=("modal", "apptainer"),
+    contract=ModelContract(
+        task_method="embed",
+        task_kind="embedding",
+        static_config_keys=frozenset(
+            {
+                "device",
+                "feature_source",
+                "normalize_features",
+                "num_features",
+                "k",
+                "sae_layer",
+                "activation",
+                "esmc_model_name",
+                "sae_repo_id",
+                "forge_model",
+                "forge_sae_model",
+                "forge_url",
+                "forge_token",
+            }
+        ),
+        minimal_output_fields=("metadata", "pooled_features", "chain_index", "residue_index"),
+        optional_output_fields=("features",),
+        supports_multimer=True,
+    ),
+)
+
+MODEL_SPECS = (ESMFOLD_SPEC, ESM2_SPEC, ESMFOLD2_SPEC, ESMC_SPEC, ESM3_SPEC, CHAI1_SPEC, BOLTZ2_SPEC, SAE_SPEC)
 MODEL_SPECS_BY_KEY = {spec.key: spec for spec in MODEL_SPECS}
 MODEL_SPECS_BY_PUBLIC_NAME = {spec.public_name: spec for spec in MODEL_SPECS}
 
@@ -273,6 +309,7 @@ __all__ = [
     "MODEL_SPECS",
     "MODEL_SPECS_BY_KEY",
     "MODEL_SPECS_BY_PUBLIC_NAME",
+    "SAE_SPEC",
     "ModelContract",
     "ModelSpec",
     "get_model_spec",

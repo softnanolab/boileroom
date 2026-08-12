@@ -29,6 +29,10 @@ def __getattr__(name: str):
         from .boltz.boltz2 import Boltz2
 
         return Boltz2
+    if name == "SAE":
+        from .sae.sae import SAE
+
+        return SAE
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
@@ -40,4 +44,5 @@ __all__ = [
     "ESMFold2",
     "Chai1",
     "Boltz2",
+    "SAE",
 ]

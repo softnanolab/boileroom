@@ -95,8 +95,9 @@ MODEL_IMAGE_SPECS: Final[tuple[RuntimeImageSpec, ...]] = (
         context_relative_path="boileroom/models/esmfold2",
         config_relative_path="boileroom/models/esmfold2/config.yaml",
         # ESM-C and ESM3 (the ``esm3`` family) use the same Biohub ``esm``
-        # package, so they share this image instead of building their own.
-        shared_family_keys=("esm3",),
+        # package, so they share this image instead of building their own. The
+        # SAE feature model reuses ESM-C hidden states and shares it too.
+        shared_family_keys=("esm3", "sae"),
     ),
 )
 
