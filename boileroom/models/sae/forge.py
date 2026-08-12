@@ -83,6 +83,11 @@ class ForgeSAEBackend:
         )
         if getattr(output, "sae_outputs", None) is None:
             raise ValueError(f"Forge returned no sae_outputs for SAE model {self.sae_model!r}.")
+        if self.sae_model not in output.sae_outputs:
+            raise ValueError(
+                f"Forge returned no activations for SAE model {self.sae_model!r}; "
+                f"available keys: {sorted(output.sae_outputs)}."
+            )
         sae_tensor = output.sae_outputs[self.sae_model]
         dense = sae_tensor.to_dense() if hasattr(sae_tensor, "to_dense") else sae_tensor
         array = dense.cpu().numpy() if hasattr(dense, "cpu") else np.asarray(dense)

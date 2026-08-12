@@ -264,6 +264,7 @@ SAE_SPEC = ModelSpec(
             {
                 "device",
                 "feature_source",
+                "normalize_features",
                 "num_features",
                 "k",
                 "sae_layer",

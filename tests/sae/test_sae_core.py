@@ -84,16 +84,23 @@ def test_pooled_matches_manual_max_over_valid_residues() -> None:
 
 
 def test_padding_residue_excluded_from_pool() -> None:
-    core, embedder, sae, hidden, chain_index = _make_core()
+    layer = 1  # matches the default sae_layer used by _make_core
+    core, _embedder, sae, hidden, chain_index = _make_core(layer=layer)
+    # Make the padded residue of sequence 0 dominate the hidden states; its (large)
+    # activation must not leak into the pooled vector because it is masked out.
+    hidden[layer, 0, -1, :] = 1e4
     out_padded = core.embed(["ACD", "ACDE"])
-    # Manually build a version where the padded residue has a huge activation;
-    # it must not leak into the pooled vector.
     with torch.no_grad():
-        layer_states = torch.as_tensor(hidden[1, 0], dtype=torch.float32)
+        layer_states = torch.as_tensor(hidden[layer, 0], dtype=torch.float32)
         acts = sae.encode(layer_states)
         valid = torch.as_tensor(chain_index[0] != -1)
         max_valid = float(acts[valid].max())
-    assert out_padded.pooled_features[0].max() == pytest.approx(max_valid, rel=1e-5)
+        all_max = float(acts.max())
+    pooled_max = float(out_padded.pooled_features[0].max())
+    assert pooled_max == pytest.approx(max_valid, rel=1e-5)
+    # Guard that the test is meaningful: the masked padded residue really is the
+    # dominant activation, so a broken mask would produce a strictly larger pool.
+    assert all_max > pooled_max
 
 
 def test_include_per_residue_returns_dense_activations() -> None:

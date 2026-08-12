@@ -101,6 +101,29 @@ def test_from_state_dict_strict_raises_on_missing() -> None:
         SparseAutoencoder.from_state_dict({"encoder.weight": torch.randn(8, 16)}, cfg, strict=True)
 
 
+def test_from_state_dict_applies_normalize_decoder() -> None:
+    # Decoder rows in the checkpoint are deliberately non-unit-norm; the loaded
+    # module must unit-normalize them when normalize_decoder=True.
+    cfg = SAEModuleConfig(d_model=8, num_features=16, k=3, normalize_decoder=True)
+    foreign = {
+        "W_enc": torch.randn(8, 16),
+        "b_enc": torch.randn(16),
+        "W_dec": torch.randn(16, 8) * 7.0,
+        "b_pre": torch.randn(8),
+    }
+    sae = SparseAutoencoder.from_state_dict(foreign, cfg)
+    row_norms = sae.W_dec.norm(dim=1)
+    assert torch.allclose(row_norms, torch.ones_like(row_norms), atol=1e-5)
+
+
+def test_from_state_dict_preserves_decoder_when_not_normalizing() -> None:
+    cfg = SAEModuleConfig(d_model=8, num_features=16, k=3, normalize_decoder=False)
+    w_dec = torch.randn(16, 8) * 7.0
+    foreign = {"W_enc": torch.randn(8, 16), "b_enc": torch.randn(16), "W_dec": w_dec, "b_pre": torch.randn(8)}
+    sae = SparseAutoencoder.from_state_dict(foreign, cfg)
+    assert torch.allclose(sae.W_dec, w_dec)
+
+
 def test_max_pool_features_masks_padding() -> None:
     acts = torch.tensor([[1.0, 0.0], [0.0, 9.0], [5.0, 5.0]])
     mask = torch.tensor([True, True, False])  # drop the last residue

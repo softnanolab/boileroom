@@ -7,6 +7,10 @@ without the ``esm`` SDK, a token, or the network.
 import numpy as np
 import pytest
 
+# ``core`` imports torch at module scope; skip the whole module when torch is absent
+# instead of failing collection (the forge backend itself stays torch-free).
+pytest.importorskip("torch")
+
 from boileroom.models.sae.core import SAECore  # noqa: E402
 from boileroom.models.sae.forge import ForgeSAEBackend  # noqa: E402
 
@@ -84,6 +88,19 @@ def test_forge_batch_padding():
     assert out.pooled_features.shape == (2, 8)
     assert out.chain_index.shape == (2, 4)  # padded to the longest
     assert out.chain_index[1].tolist() == [0, 0, -1, -1]
+
+
+def test_forge_wrong_token_row_count_raises():
+    class _BadForge(_FakeForge):
+        def features(self, sdk_sequence: str) -> np.ndarray:
+            # Return one fewer row than BOS + tokens + EOS to simulate a
+            # tokenization change; the core must reject it rather than misalign.
+            return np.zeros((len(sdk_sequence) + 1, self.num_features), dtype=np.float32)
+
+    core = SAECore(config={"feature_source": "forge", "num_features": 8}, forge_backend=_BadForge())
+    core._load()
+    with pytest.raises(ValueError, match="token rows"):
+        core.embed(["ACDE"])
 
 
 def test_invalid_feature_source_raises():

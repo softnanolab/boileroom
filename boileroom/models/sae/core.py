@@ -111,6 +111,10 @@ class SAECore(EmbeddingAlgorithm):
         {
             "device",
             "feature_source",
+            # normalize_features is baked into the Forge backend at construction and
+            # applied at encode time locally; keep it init-only so both backends stay
+            # consistent (it cannot be overridden per-call on the hosted path).
+            "normalize_features",
             "num_features",
             "k",
             "sae_layer",
@@ -346,9 +350,18 @@ class SAECore(EmbeddingAlgorithm):
                 dense = np.asarray(self._forge.features(item.sdk_sequence), dtype=np.float32)
                 if dense.ndim != 2:
                     raise ValueError(f"Forge features must be 2-D (tokens, num_features); got shape {dense.shape}.")
+                # Forge returns BOS + one row per SDK token (residues and chain-break
+                # '|' tokens) + EOS. Verify that layout before indexing so a change in
+                # SDK tokenization surfaces as an explicit error, not silent misalignment.
+                expected_rows = len(item.sdk_sequence) + 2
+                if dense.shape[0] != expected_rows:
+                    raise ValueError(
+                        f"Forge returned {dense.shape[0]} token rows for an SDK sequence of "
+                        f"{len(item.sdk_sequence)} tokens; expected {expected_rows} (BOS + tokens + EOS)."
+                    )
                 # Residue token positions: BOS is index 0, chain-break '|' tokens are
                 # dropped, EOS is the trailing token.
-                keep = [i + 1 for i, token in enumerate(item.sdk_sequence) if token != "|"]
+                keep = [i + 1 for i, tok in enumerate(item.sdk_sequence) if tok != "|"]
                 residue_feats = dense[keep]  # (residues, num_features)
                 num_features = residue_feats.shape[1]
                 pooled_list.append(residue_feats.max(axis=0) if residue_feats.shape[0] else np.zeros(num_features))

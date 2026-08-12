@@ -5,6 +5,8 @@ Public entry point is :class:`SAE`. The sparse-autoencoder math lives in
 and tested in isolation.
 """
 
+from typing import Any
+
 from .sae_module import SAEModuleConfig, SparseAutoencoder, max_pool_features, topk_activation
 from .types import SAEFeaturesOutput
 
@@ -18,7 +20,7 @@ __all__ = [
 ]
 
 
-def __getattr__(name: str):
+def __getattr__(name: str) -> Any:
     # Lazy import so the public wrapper (which imports modal) is only pulled in on
     # demand, mirroring boileroom/__init__.py.
     if name == "SAE":

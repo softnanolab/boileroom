@@ -269,6 +269,11 @@ class SparseAutoencoder(nn.Module):
         missing = module.load_state_dict(remapped, strict=False)
         if strict and missing.missing_keys:
             raise KeyError(f"Missing parameters after remap: {missing.missing_keys}.")
+        # load_state_dict overwrites the decoder with checkpoint values, so re-apply
+        # the unit-normalization contract that reset_parameters established.
+        if config.normalize_decoder:
+            with torch.no_grad():
+                module._unit_normalize_decoder()
         return module.eval()
 
     @staticmethod
@@ -342,7 +347,10 @@ class SparseAutoencoder(nn.Module):
             activation=activation,
             normalize_decoder=normalize_decoder,
         )
-        module = cls.from_state_dict(state_dict, config)
+        # Load strictly: a downloaded checkpoint whose parameter names fall outside
+        # _KEY_ALIASES would otherwise silently keep the random init and return
+        # meaningless features.
+        module = cls.from_state_dict(state_dict, config, strict=True)
         if device is not None:
             module = module.to(device)
         return module.eval()
