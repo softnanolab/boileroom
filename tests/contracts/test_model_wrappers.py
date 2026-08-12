@@ -13,8 +13,8 @@ from boileroom.models.chai.types import Chai1Output
 from boileroom.models.esm.types import ESM2Output, ESMFoldOutput
 from boileroom.models.esm3.types import ESM3Output, ESMCOutput
 from boileroom.models.esmfold2.types import ESMFold2Output
-from boileroom.models.sae.types import SAEFeaturesOutput
 from boileroom.models.registry import CHAI1_SPEC, ESM2_SPEC, MODEL_SPECS, ModelSpec, get_model_spec, resolve_object
+from boileroom.models.sae.types import SAEFeaturesOutput
 
 pytestmark = pytest.mark.contract
 

@@ -140,9 +140,7 @@ class SAECore(EmbeddingAlgorithm):
         self._embedder = embedder
         self._sae = sae
         self._forge = forge_backend
-        model_version = (
-            str(self.config["forge_sae_model"]) if source == "forge" else str(self.config["sae_repo_id"])
-        )
+        model_version = str(self.config["forge_sae_model"]) if source == "forge" else str(self.config["sae_repo_id"])
         self._metadata_template = self._initialize_metadata(
             model_name=self.MODEL_DISPLAY_NAME, model_version=model_version
         )
@@ -203,7 +201,12 @@ class SAECore(EmbeddingAlgorithm):
     # ------------------------------------------------------------------
     # Inference
     # ------------------------------------------------------------------
-    def embed(self, sequences: str | Sequence[str], options: dict | None = None) -> SAEFeaturesOutput:
+    # SAE deliberately returns pooled feature vectors (``pooled_features``) rather
+    # than a residue ``EmbeddingPrediction``, so its ``embed`` return type is
+    # intentionally narrower/different from the base ``EmbeddingAlgorithm``.
+    def embed(  # type: ignore[override]
+        self, sequences: str | Sequence[str], options: dict | None = None
+    ) -> SAEFeaturesOutput:
         """Compute SAE features for one or more sequences.
 
         Parameters

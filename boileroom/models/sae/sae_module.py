@@ -261,7 +261,9 @@ class SparseAutoencoder(nn.Module):
                     break
             if tensor is None:
                 if strict:
-                    raise KeyError(f"Could not resolve parameter {canonical!r} from state dict keys {sorted(state_dict)}.")
+                    raise KeyError(
+                        f"Could not resolve parameter {canonical!r} from state dict keys {sorted(state_dict)}."
+                    )
                 continue
             remapped[canonical] = cls._orient(canonical, torch.as_tensor(tensor), config)
         missing = module.load_state_dict(remapped, strict=False)

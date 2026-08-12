@@ -76,7 +76,9 @@ class ForgeSAEBackend:
         protein_tensor = self._client.encode(ESMProtein(sequence=sdk_sequence))  # type: ignore[attr-defined]
         output = self._client.logits(  # type: ignore[attr-defined]
             protein_tensor,
-            config=LogitsConfig(sae_config=SAEConfig(models=[self.sae_model], normalize_features=self.normalize_features)),
+            config=LogitsConfig(
+                sae_config=SAEConfig(models=[self.sae_model], normalize_features=self.normalize_features)
+            ),
             return_bytes=False,
         )
         if getattr(output, "sae_outputs", None) is None:

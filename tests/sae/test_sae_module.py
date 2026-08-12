@@ -1,6 +1,5 @@
 """Unit tests for the sparse-autoencoder module (torch-only, no model deps)."""
 
-import numpy as np
 import pytest
 
 torch = pytest.importorskip("torch")
