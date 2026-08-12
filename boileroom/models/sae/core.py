@@ -201,9 +201,12 @@ class SAECore(EmbeddingAlgorithm):
     # ------------------------------------------------------------------
     # Inference
     # ------------------------------------------------------------------
-    # SAE deliberately returns pooled feature vectors (``pooled_features``) rather
-    # than a residue ``EmbeddingPrediction``, so its ``embed`` return type is
-    # intentionally narrower/different from the base ``EmbeddingAlgorithm``.
+    # SAE returns a ``SAEFeaturesOutput`` (always the pooled per-protein feature
+    # vectors ``pooled_features``, plus optional dense per-residue activations in
+    # ``features`` when ``include_per_residue=True``). That output intentionally
+    # does not implement the base ``EmbeddingPrediction`` protocol -- it has no
+    # ``embeddings``/``hidden_states`` fields -- so this override deliberately
+    # narrows the ``EmbeddingAlgorithm.embed`` return type.
     def embed(  # type: ignore[override]
         self, sequences: str | Sequence[str], options: dict | None = None
     ) -> SAEFeaturesOutput:
