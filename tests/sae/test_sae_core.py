@@ -140,6 +140,37 @@ def test_layer_out_of_range_raises() -> None:
         core.embed(["ACDE", "ACDE"])
 
 
+def test_local_defaults_resolve_per_model() -> None:
+    # Default local model is esmc_600m -> its repo + representative layer 27.
+    core = SAECore(config={"feature_source": "local"})
+    assert core.config["esmc_model_name"] == "esmc_600m"
+    assert core.config["sae_layer"] == 27
+    assert core.config["sae_repo_id"] == "biohub/ESMC-600M-sae-k64-codebook16384"
+    # 300m selects its own repo + layer.
+    core_300 = SAECore(config={"feature_source": "local", "esmc_model_name": "esmc_300m"})
+    assert core_300.config["sae_layer"] == 22
+    assert core_300.config["sae_repo_id"] == "biohub/ESMC-300M-sae-k64-codebook16384"
+
+
+def test_local_defaults_do_not_override_explicit_values() -> None:
+    core = SAECore(
+        config={
+            "feature_source": "local",
+            "esmc_model_name": "esmc_600m",
+            "sae_layer": 12,
+            "sae_repo_id": "acme/custom-sae",
+        }
+    )
+    assert core.config["sae_layer"] == 12
+    assert core.config["sae_repo_id"] == "acme/custom-sae"
+
+
+def test_forge_default_layer_is_unaffected_by_local_resolution() -> None:
+    core = SAECore()
+    assert core.config["feature_source"] == "forge"
+    assert core.config["sae_layer"] == 60
+
+
 def test_infer_d_model_unknown_model() -> None:
     sae = SparseAutoencoder(SAEModuleConfig(d_model=8, num_features=16, k=3))
     core = SAECore(

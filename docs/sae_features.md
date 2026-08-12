@@ -52,15 +52,15 @@ Request dense per-residue activations with `options={"include_per_residue": True
 | `feature_source` | `forge` | `forge` or `local`. |
 | `num_features` | `16384` | Codebook / feature-space size. |
 | `k` | `64` | Active features per residue (TopK). |
-| `sae_layer` | `60` | Transformer layer the SAE was trained on. `60` matches the default Forge/ESMC-6B SAE; the local 300M/600M SAEs live at different layers, so set `sae_layer` (and a matching `sae_repo_id`) for the `local` backend — the example above uses layer `27`. An out-of-range layer raises at inference. |
+| `sae_layer` | `60` (forge) / per-model (local) | Transformer layer the SAE was trained on. `60` matches the default Forge/ESMC-6B SAE. For the `local` backend it defaults per model to a layer at the same relative depth (`27` for `esmc_600m`, `22` for `esmc_300m`); override to target another layer. An out-of-range layer raises at inference. |
 | `normalize_features` | `True` | Set at initialization (not per-call). Forge: TF-IDF normalization. Local: L2-normalize per-residue activations before pooling. |
 | `include_per_residue` | `False` | Also return dense per-residue activations. |
 | **Forge** `forge_model` | `esmc-6b-2024-12` | Forge ESM-C model id. |
 | **Forge** `forge_sae_model` | `esmc-6b-2024-12-sae-layer60-k64-codebook16384` | Forge SAE model id. |
 | **Forge** `forge_url` | `https://biohub.ai` | Forge base URL. |
 | **Forge** `forge_token` | `None` | API token; falls back to `ESM_API_KEY`. |
-| **Local** `esmc_model_name` | `esmc_600m` | ESM-C variant (`esmc_300m` / `esmc_600m`). |
-| **Local** `sae_repo_id` | `biohub/ESMC-600M-sae-k64-codebook16384` | HF repo with per-layer weights. Confirm ids against the [Biohub SAE collection](https://huggingface.co/collections/biohub/esmc-saes-for-hidden-states-all-layers). |
+| **Local** `esmc_model_name` | `esmc_600m` | ESM-C variant (`esmc_300m` / `esmc_600m`); selects the local `sae_repo_id` / `sae_layer` defaults. |
+| **Local** `sae_repo_id` | per-model (`biohub/ESMC-600M-sae-k64-codebook16384` for `esmc_600m`) | HF repo with per-layer weights; defaults to the repo matching `esmc_model_name` unless set. Confirm ids against the [Biohub SAE collection](https://huggingface.co/collections/biohub/esmc-saes-for-hidden-states-all-layers). |
 | **Local** `activation` | `topk` | `topk` or `relu`. |
 
 ## Weights (local backend)

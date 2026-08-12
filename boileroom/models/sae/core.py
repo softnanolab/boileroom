@@ -47,6 +47,19 @@ ESMC_D_MODEL: dict[str, int] = {
     "esmc_6b": 2560,
 }
 
+# Per-model defaults for the *local* backend: the released Biohub per-layer SAE
+# repo and a representative transformer layer for each locally runnable ESM-C
+# model. The base DEFAULT_CONFIG sae_layer/sae_repo_id target the default Forge
+# ESMC-6B / layer-60 SAE, which is wrong for the local 300M/600M models (600M has
+# no layer 60). The collection ships an SAE per layer; these defaults pick the
+# layer at the same relative depth (~0.75) as the paper's featured 6B / layer-60
+# SAE (60 of 6B's 80 layers), i.e. layer 27 for the 36-layer 600M model and layer
+# 22 for the 30-layer 300M model. Override ``sae_layer`` to target another layer.
+LOCAL_SAE_DEFAULTS: dict[str, dict[str, str | int]] = {
+    "esmc_300m": {"sae_repo_id": "biohub/ESMC-300M-sae-k64-codebook16384", "sae_layer": 22},
+    "esmc_600m": {"sae_repo_id": "biohub/ESMC-600M-sae-k64-codebook16384", "sae_layer": 27},
+}
+
 
 class _Embedder(Protocol):
     """Minimal interface the local SAE path needs from an ESM-C embedder."""
@@ -141,6 +154,8 @@ class SAECore(EmbeddingAlgorithm):
         if source not in ("forge", "local"):
             raise ValueError(f"feature_source must be 'forge' or 'local'; got {source!r}.")
         self._source = source
+        if source == "local":
+            self._apply_local_defaults(config or {})
         self._embedder = embedder
         self._sae = sae
         self._forge = forge_backend
@@ -148,6 +163,27 @@ class SAECore(EmbeddingAlgorithm):
         self._metadata_template = self._initialize_metadata(
             model_name=self.MODEL_DISPLAY_NAME, model_version=model_version
         )
+
+    def _apply_local_defaults(self, user_config: dict) -> None:
+        """Resolve model-appropriate local SAE defaults not set explicitly.
+
+        The base :attr:`DEFAULT_CONFIG` ``sae_repo_id`` / ``sae_layer`` match the
+        default Forge ESMC-6B / layer-60 SAE. For the local backend they must match
+        the selected ESM-C model instead, so fill them from :data:`LOCAL_SAE_DEFAULTS`
+        for ``esmc_model_name`` unless the caller provided them.
+
+        Parameters
+        ----------
+        user_config : dict
+            The raw, unmerged config passed to ``__init__`` — used to tell an
+            explicit override apart from an inherited default.
+        """
+        defaults = LOCAL_SAE_DEFAULTS.get(str(self.config["esmc_model_name"]))
+        if defaults is None:
+            return
+        for key, value in defaults.items():
+            if key not in user_config:
+                self.config[key] = value
 
     # ------------------------------------------------------------------
     # Loading
