@@ -164,7 +164,7 @@ class SAECore(EmbeddingAlgorithm):
             model_name=self.MODEL_DISPLAY_NAME, model_version=model_version
         )
 
-    def _apply_local_defaults(self, user_config: dict) -> None:
+    def _apply_local_defaults(self, user_config: dict[str, Any]) -> None:
         """Resolve model-appropriate local SAE defaults not set explicitly.
 
         The base :attr:`DEFAULT_CONFIG` ``sae_repo_id`` / ``sae_layer`` match the
@@ -248,7 +248,7 @@ class SAECore(EmbeddingAlgorithm):
     # ``embeddings``/``hidden_states`` fields -- so this override deliberately
     # narrows the ``EmbeddingAlgorithm.embed`` return type.
     def embed(  # type: ignore[override]
-        self, sequences: str | Sequence[str], options: dict | None = None
+        self, sequences: str | Sequence[str], options: dict[str, Any] | None = None
     ) -> SAEFeaturesOutput:
         """Compute SAE features for one or more sequences.
 
