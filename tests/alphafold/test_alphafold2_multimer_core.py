@@ -219,3 +219,17 @@ def test_command_env_preserves_backend_device_by_default(monkeypatch, core_class
     assert command_env(core_class().config)["CUDA_VISIBLE_DEVICES"] == "7"
     assert command_env({**core_class().config, "device": "cuda:1"})["CUDA_VISIBLE_DEVICES"] == "1"
     assert command_env({**core_class().config, "device": "cpu"})["CUDA_VISIBLE_DEVICES"] == ""
+
+
+def test_command_env_disables_colabfold_unified_memory(monkeypatch, core_class) -> None:
+    """ColabFold's unified-memory default stalls on Modal; the core must opt out unless the user overrides."""
+    from boileroom.models.alphafold.core import _command_env
+
+    monkeypatch.delenv("TF_FORCE_UNIFIED_MEMORY", raising=False)
+    monkeypatch.delenv("XLA_PYTHON_CLIENT_MEM_FRACTION", raising=False)
+    env = _command_env(core_class().config)
+    assert env["TF_FORCE_UNIFIED_MEMORY"] == "0"
+    assert env["XLA_PYTHON_CLIENT_MEM_FRACTION"] == "0.9"
+
+    monkeypatch.setenv("TF_FORCE_UNIFIED_MEMORY", "1")
+    assert _command_env(core_class().config)["TF_FORCE_UNIFIED_MEMORY"] == "1"

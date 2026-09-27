@@ -19,7 +19,7 @@ def test_alphafold2_multimer_modal_fold_basic(backend_option: str, device_option
     chain = "GSHMKQLEDKVEELLSKNYHLENEVARLKKLVGER"
     sequence = f"{chain}:{chain}"
     config = {"num_models": 1, "num_recycle": 1, "num_seeds": 1}
-    options = {"include_fields": ["plddt", "ptm", "iptm", "pae", "cif"]}
+    options = {"include_fields": ["plddt", "ptm", "iptm", "pae", "cif", "ranking"]}
 
     with output_ctx(), AlphaFold2Multimer(backend=backend_option, device=device_option, config=config) as model:
         result = model.fold(sequence, options=options)

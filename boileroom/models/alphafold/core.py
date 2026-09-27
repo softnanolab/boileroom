@@ -240,7 +240,7 @@ class AlphaFold2MultimerCore(FoldingAlgorithm):
         return command
 
     def _run_command(self, command: list[str], config: dict[str, Any]) -> None:
-        run_command(command, "AlphaFold2-Multimer", command_env(config), config.get("timeout_seconds"))
+        run_command(command, "AlphaFold2-Multimer", _command_env(config), config.get("timeout_seconds"))
 
     # -- Output collection ----------------------------------------------------
 
@@ -354,6 +354,16 @@ def _pdb_for_scores(score_path: Path, *, relaxed: bool) -> Path:
     tag = "_relaxed_" if relaxed else "_unrelaxed_"
     name = score_path.name.replace("_scores_", tag).replace(".json", ".pdb")
     return score_path.with_name(name)
+
+
+# ColabFold defaults to CUDA unified memory (TF_FORCE_UNIFIED_MEMORY=1, fraction 4.0)
+# unless these are already set. Managed allocations stall for hours on Modal's
+# sandboxed runtime, so use ordinary device memory instead.
+_JAX_MEMORY_ENV = {"TF_FORCE_UNIFIED_MEMORY": "0", "XLA_PYTHON_CLIENT_MEM_FRACTION": "0.9"}
+
+
+def _command_env(config: dict[str, Any]) -> dict[str, str]:
+    return command_env(config, _JAX_MEMORY_ENV)
 
 
 def _rank_score(rank_by: str, ptm: np.ndarray | None, iptm: np.ndarray | None) -> float:
