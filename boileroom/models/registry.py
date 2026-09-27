@@ -261,7 +261,19 @@ PROTENIX_SPEC = ModelSpec(
     contract=ModelContract(
         task_method="fold",
         task_kind="structure",
-        static_config_keys=frozenset({"device", "protenix_command"}),
+        static_config_keys=frozenset(
+            {
+                "device",
+                "model_name",
+                "msa_server_url",
+                "use_template",
+                "trimul_kernel",
+                "triatt_kernel",
+                "enable_cache",
+                "enable_fusion",
+                "enable_tf32",
+            }
+        ),
         minimal_output_fields=("metadata", "atom_array"),
         optional_output_fields=(
             "confidence",

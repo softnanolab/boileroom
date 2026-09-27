@@ -24,12 +24,12 @@ def test_runtime_reuses_weights_and_resets_request_state(monkeypatch, tmp_path) 
     runner.update_model_configs = Mock()
     runner.init_basics = Mock()
     runner.init_dumper = Mock()
-    batch = ModuleType("runner.batch_inference")
+    batch = SimpleNamespace()
     batch.get_default_runner = Mock(return_value=runner)
     batch.inference_configs = {}
     batch.init_logging = Mock()
     batch.preprocess_input = Mock(side_effect=lambda path, **kwargs: path)
-    inference = ModuleType("runner.inference")
+    inference = SimpleNamespace()
     calls = []
 
     def predict(current_runner, config):

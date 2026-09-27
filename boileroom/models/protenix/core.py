@@ -1,4 +1,4 @@
-"""Core Protenix implementation backed by the official CLI."""
+"""Core Protenix implementation backed by a persistent inference runner."""
 
 from __future__ import annotations
 
@@ -17,9 +17,10 @@ from biotite.structure.io.pdbx import CIFFile, get_structure
 
 from ...base import FoldingAlgorithm, PredictionMetadata
 from ...utils import Timer, get_model_cache_dir
-from .._cli import bool_arg, command_env, include_field, run_command
+from .._cli import command_env, include_field
 from .outputs import read_json, read_token_confidence, sample_identity
 from .types import ProtenixOutput
+from .worker import ProtenixWorker
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +30,6 @@ class ProtenixCore(FoldingAlgorithm):
 
     DEFAULT_CONFIG: ClassVar[dict[str, Any]] = {
         "device": None,
-        "protenix_command": "protenix",
         "model_name": "protenix-v2",
         "seeds": "101",
         "cycle": 10,
@@ -51,25 +51,48 @@ class ProtenixCore(FoldingAlgorithm):
         "include_fields": None,
         "timeout_seconds": 3500,
     }
-    STATIC_CONFIG_KEYS: ClassVar[frozenset[str]] = frozenset({"device", "protenix_command"})
+    STATIC_CONFIG_KEYS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "device",
+            "model_name",
+            "msa_server_url",
+            "use_template",
+            "trimul_kernel",
+            "triatt_kernel",
+            "enable_cache",
+            "enable_fusion",
+            "enable_tf32",
+        }
+    )
 
     def __init__(self, config: dict[str, Any] | None = None) -> None:
-        """Create a Protenix CLI-backed core instance."""
+        """Create a Protenix core with one reusable model worker."""
+        if config and "protenix_command" in config:
+            raise ValueError("protenix_command is no longer supported; Protenix uses its Python runner")
         super().__init__(config or {})
+        self._worker: ProtenixWorker | None = None
         self._metadata_template = self._initialize_metadata(
             model_name="Protenix",
             model_version=str(self.config["model_name"]),
         )
 
     def _initialize(self) -> None:
-        """Mark the CLI-backed core ready."""
+        """Load the Protenix model into its persistent worker."""
         self._load()
 
     def _load(self) -> None:
-        """Validate static configuration and mark the core ready."""
-        if not str(self.config.get("protenix_command", "")).strip():
-            raise ValueError("protenix_command must not be empty")
+        """Validate configuration and load model weights once per core."""
+        _validate_config(self.config)
+        if self._worker is None:
+            self._worker = ProtenixWorker(self.config, _command_env(self.config))
+        self._worker.start()
         self.ready = True
+
+    def close(self) -> None:
+        """Release the persistent worker and its model weights."""
+        if self._worker is not None:
+            self._worker.close()
+        self.ready = False
 
     def fold(self, sequences: str | Sequence[str], options: dict | None = None) -> ProtenixOutput:
         """Run Protenix prediction for one sequence entry.
@@ -98,10 +121,12 @@ class ProtenixCore(FoldingAlgorithm):
                 )
                 output_dir = buffer_path / "outputs"
                 output_dir.mkdir(parents=True, exist_ok=True)
-                command = self._build_command(input_json, output_dir, effective_config)
 
             with Timer("Protenix inference") as inference_timer:
-                self._run_command(command, effective_config)
+                if not self.ready:
+                    self._load()
+                assert self._worker is not None
+                self._worker.predict(str(input_json), str(output_dir), effective_config)
 
             with Timer("Protenix postprocessing") as postprocess_timer:
                 output = self._collect_outputs(output_dir, metadata, effective_config)
@@ -145,54 +170,6 @@ class ProtenixCore(FoldingAlgorithm):
         input_json = buffer_path / "input.json"
         input_json.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
         return input_json
-
-    def _build_command(self, input_json: Path, output_dir: Path, config: dict[str, Any]) -> list[str]:
-        command = [
-            str(config["protenix_command"]),
-            "pred",
-            "--input",
-            str(input_json),
-            "--out_dir",
-            str(output_dir),
-            "--seeds",
-            str(config["seeds"]),
-            "--model_name",
-            str(config["model_name"]),
-            "--cycle",
-            str(int(config["cycle"])),
-            "--step",
-            str(int(config["step"])),
-            "--sample",
-            str(int(config["sample"])),
-            "--dtype",
-            str(config["dtype"]),
-            "--use_msa",
-            bool_arg(config["use_msa"]),
-            "--use_template",
-            bool_arg(config["use_template"]),
-            "--use_default_params",
-            bool_arg(config["use_default_params"]),
-            "--trimul_kernel",
-            str(config["trimul_kernel"]),
-            "--triatt_kernel",
-            str(config["triatt_kernel"]),
-            "--enable_cache",
-            bool_arg(config["enable_cache"]),
-            "--enable_fusion",
-            bool_arg(config["enable_fusion"]),
-            "--enable_tf32",
-            bool_arg(config["enable_tf32"]),
-            "--need_atom_confidence",
-            "true",
-        ]
-        if config.get("use_seeds_in_json"):
-            command.extend(["--use_seeds_in_json", "true"])
-        if config.get("use_tfg_guidance"):
-            command.extend(["--use_tfg_guidance", "true"])
-        return command
-
-    def _run_command(self, command: list[str], config: dict[str, Any]) -> None:
-        run_command(command, "Protenix", _command_env(config), config.get("timeout_seconds"))
 
     def _collect_outputs(
         self,
@@ -276,6 +253,13 @@ def _parse_seeds(value: str) -> list[int]:
 
 def _validate_config(config: dict[str, Any]) -> None:
     _parse_seeds(config["seeds"])
+    if config["dtype"] not in {"bf16", "fp16", "fp32"}:
+        raise ValueError("dtype must be bf16, fp16, or fp32")
+    timeout = config["timeout_seconds"]
+    if timeout is not None and (
+        not isinstance(timeout, int | float) or isinstance(timeout, bool) or not 0 < timeout < float("inf")
+    ):
+        raise ValueError("timeout_seconds must be a positive finite number or None")
     for field in ("sample", "cycle", "step"):
         if not isinstance(config[field], int) or isinstance(config[field], bool) or config[field] < 1:
             raise ValueError(f"{field} must be a positive integer")

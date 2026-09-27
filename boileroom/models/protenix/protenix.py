@@ -37,6 +37,10 @@ class ModalProtenix:
         self._core = ProtenixCore(json.loads(self.config.decode("utf-8")))
         self._core._initialize()
 
+    @modal.exit()
+    def _shutdown(self) -> None:
+        self._core.close()
+
     @modal.method()
     def fold(self, sequences: str | Sequence[str], options: dict | None = None) -> "ProtenixOutput":
         return self._core.fold(sequences, options=options)

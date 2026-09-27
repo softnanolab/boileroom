@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import atexit
+import contextlib
 import multiprocessing
 import os
 import threading
@@ -22,7 +23,10 @@ def _serve(connection: Connection, config: dict[str, Any], env: dict[str, str]) 
             runtime = ProtenixRuntime(config, work_dir)
             connection.send(None)
             while True:
-                input_json, output_dir, options = connection.recv()
+                request = connection.recv()
+                if request is None:
+                    break
+                input_json, output_dir, options = request
                 runtime.predict(input_json, output_dir, options)
                 connection.send(None)
     except EOFError:
@@ -92,9 +96,13 @@ class ProtenixWorker:
         """Stop the worker and release its model and IPC resources."""
         with self._lock:
             if self._connection is not None:
+                with contextlib.suppress(EOFError, OSError):
+                    self._connection.send(None)
                 self._connection.close()
                 self._connection = None
             if self._process is not None:
+                if self._process.pid is not None:
+                    self._process.join(timeout=1)
                 if self._process.is_alive():
                     self._process.terminate()
                     self._process.join(timeout=5)

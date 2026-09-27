@@ -12,9 +12,12 @@ def _fake_worker(connection, config, env):
     connection.send(None)
     while True:
         try:
-            action, output, options = connection.recv()
+            request = connection.recv()
         except EOFError:
             return
+        if request is None:
+            return
+        action, output, options = request
         if action == "hang":
             time.sleep(30)
         if action == "crash":
@@ -49,7 +52,9 @@ def test_worker_reuses_process_across_requests(worker, tmp_path) -> None:
     assert worker._process is None and worker._connection is None
 
 
-@pytest.mark.parametrize("action, message", [("hang", "timed out"), ("crash", "exited"), ("error", "checkpoint failure")])
+@pytest.mark.parametrize(
+    "action, message", [("hang", "timed out"), ("crash", "exited"), ("error", "checkpoint failure")]
+)
 def test_worker_failure_releases_process_and_next_request_recovers(worker, tmp_path, action, message) -> None:
     """Timeouts, process death and upstream errors do not poison later calls."""
     with pytest.raises(RuntimeError, match=message):

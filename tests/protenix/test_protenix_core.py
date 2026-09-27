@@ -29,39 +29,10 @@ def test_protenix_writes_protein_chain_json(tmp_path: Path, core_class) -> None:
     assert [item["proteinChain"]["id"] for item in chains] == [["A"], ["B"]]
 
 
-def test_protenix_builds_official_cli_command(tmp_path: Path, core_class) -> None:
-    """The core should map boileroom config to the official `protenix pred` CLI."""
-    core = core_class({"protenix_command": "protenix-bin"})
-    assert core.config["model_name"] == "protenix-v2"
-
-    command = core._build_command(
-        tmp_path / "input.json",
-        tmp_path / "out",
-        {
-            **core.config,
-            "model_name": "protenix-v2",
-            "seeds": "101,102",
-            "cycle": 4,
-            "step": 20,
-            "sample": 1,
-            "dtype": "fp32",
-            "use_msa": False,
-            "use_template": True,
-            "use_default_params": False,
-            "trimul_kernel": "torch",
-            "triatt_kernel": "torch",
-            "enable_cache": False,
-            "enable_fusion": False,
-            "enable_tf32": False,
-        },
-    )
-
-    assert command[:2] == ["protenix-bin", "pred"]
-    assert command[command.index("--model_name") + 1] == "protenix-v2"
-    assert command[command.index("--use_msa") + 1] == "false"
-    assert command[command.index("--use_template") + 1] == "true"
-    assert command[command.index("--use_default_params") + 1] == "false"
-    assert command[command.index("--need_atom_confidence") + 1] == "true"
+def test_protenix_rejects_obsolete_command_override(core_class) -> None:
+    """The removed CLI escape hatch must not be silently ignored."""
+    with pytest.raises(ValueError, match="no longer supported"):
+        core_class({"protenix_command": "protenix-bin"})
 
 
 @pytest.fixture

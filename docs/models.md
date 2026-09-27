@@ -27,7 +27,7 @@ In `0.3.1`, this replaces ESMFold's old padded pLDDT batch array and moves Boltz
 `confidence` dictionaries to top-level fields.
 
 ### Protenix
-`Protenix` wraps the official `protenix pred` CLI (`protenix==2.0.0`, default checkpoint `protenix-v2`). A single
+`Protenix` loads the official Python inference runner (`protenix==2.0.0`, default checkpoint `protenix-v2`) once per backend instance and reuses its weights across calls. A single
 `fold()` call accepts one sequence entry; use `:` to join multiple protein chains. On Modal it defaults to an
 `A100-40GB` GPU.
 
@@ -64,7 +64,7 @@ exposes the raw `confidence` summary, `pae`, `token_chain_ids`/`token_res_ids`, 
 MSA handling:
 - **Server (default):** `use_msa=True` sends the search to the ColabFold MMseqs2 server at `msa_server_url`
   (default `https://api.colabfold.com`, the same as AlphaFold2-Multimer and Boltz). Protenix's own default
-  server can queue jobs for a long time, so Boileroom points the CLI at the configured server via
+  server can queue jobs for a long time, so Boileroom points the worker at the configured server via
   `MMSEQS_SERVICE_HOST_URL`.
 - **Provided MSA:** pass `config={"unpaired_msa": [a3m_chain_a, None, ...]}` with one A3M string (or `None` for
   query-only) per chain; no server call is made.
@@ -75,6 +75,10 @@ Sampling is controlled by `seeds` (comma-separated), `sample` (diffusion samples
 and RNA-MSA searches require the external tools and databases expected by Protenix. The runtime image installs
 `hmmer` and `kalign`, but database paths still need to be available inside the container when those features are
 enabled.
+
+Protenix keeps its runner in a persistent worker, retaining a hard `timeout_seconds` limit (3500 seconds by default, `None` disables it). A timeout or inference failure discards the worker; the next call reloads cleanly. Use one model context for repeated predictions. Seeds, cycle/step/sample counts, dtype, MSA inputs and output selection remain per-call options; each request gets fresh output paths and inference settings.
+
+The prerelease CLI setting `protenix_command` has been removed. `model_name`, `device`, `msa_server_url`, `use_template`, `trimul_kernel`, `triatt_kernel`, `enable_cache`, `enable_fusion`, and `enable_tf32` are now initialization-only settings. Create a new instance to change them.
 
 ### AlphaFold2-Multimer
 `AlphaFold2Multimer` drives ColabFold's `colabfold_batch` with `--model-type alphafold2_multimer_v3`. MSAs are

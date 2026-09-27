@@ -1,5 +1,7 @@
 """Protenix integration tests against a real backend."""
 
+import time
+
 import numpy as np
 import pytest
 
@@ -22,7 +24,21 @@ def test_protenix_modal_fold_basic(backend_option: str, device_option: str | Non
     options = {"include_fields": ["plddt", "ptm", "iptm", "pae", "cif", "token_chain_ids", "confidence"]}
 
     with output_ctx(), Protenix(backend=backend_option, device=device_option, config=config) as model:
+        started = time.monotonic()
         result = model.fold(sequence, options=options)
+        cold_seconds = time.monotonic() - started
+        started = time.monotonic()
+        warm = model.fold(sequence, options={**options, "seeds": "102"})
+        warm_seconds = time.monotonic() - started
+        monomer = model.fold(chain, options={**options, "seeds": "103", "cycle": 2, "step": 20})
+        print(f"Protenix cold={cold_seconds:.2f}s warm={warm_seconds:.2f}s")
+
+    assert result.seeds == [101] and warm.seeds == [102] and monomer.seeds == [103]
+    assert warm.pae is not None and warm.pae[0].shape == (2 * len(chain), 2 * len(chain))
+    assert np.isfinite(warm.pae[0]).all()
+    assert monomer.pae is not None and monomer.pae[0].shape == (len(chain), len(chain))
+    assert np.isfinite(monomer.pae[0]).all()
+    assert monomer.metadata.sequence_lengths == [len(chain)]
 
     expected_length = 2 * len(chain)
     assert result.metadata.sequence_lengths == [expected_length]

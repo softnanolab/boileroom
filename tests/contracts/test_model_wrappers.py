@@ -369,7 +369,7 @@ def test_cli_wrappers_reject_multiple_top_level_sequences(
 
 @pytest.mark.parametrize(
     ("spec", "static_key"),
-    [(PROTENIX_SPEC, "protenix_command"), (ALPHAFOLD2_MULTIMER_SPEC, "data_dir")],
+    [(PROTENIX_SPEC, "model_name"), (ALPHAFOLD2_MULTIMER_SPEC, "data_dir")],
     ids=lambda item: item.public_name if isinstance(item, ModelSpec) else item,
 )
 def test_cli_wrappers_reject_static_option_overrides(
