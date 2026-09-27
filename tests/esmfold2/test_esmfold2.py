@@ -313,3 +313,47 @@ def test_esmfold2_rejects_empty_chain() -> None:
 
     with pytest.raises(ValueError, match="empty chain"):
         core._coerce_requests("A::B")
+
+
+def test_esmfold2_ccd_cache_ignores_legacy_file_and_reuses_pinned_snapshot(monkeypatch, tmp_path) -> None:
+    """An old unpinned CCD must never satisfy a new revision-pinned load."""
+    from pathlib import Path
+
+    from boileroom.models.esmfold2.core import ESMFOLD2_HF_REPO, ESMFOLD2_HF_REVISION
+
+    legacy = tmp_path / "ccd.pkl"
+    legacy.write_text("legacy snapshot")
+    calls = []
+
+    def download(**kwargs):
+        calls.append(kwargs)
+        directory = Path(kwargs["local_dir"])
+        directory.mkdir(parents=True)
+        (directory / "ccd.pkl").write_text("pinned snapshot")
+
+    monkeypatch.setitem(sys.modules, "huggingface_hub", SimpleNamespace(hf_hub_download=download))
+    directory = _core_cls()._ensure_ccd_cache(tmp_path)
+    assert directory == tmp_path / ESMFOLD2_HF_REVISION
+    assert (directory / "ccd.pkl").read_text() == "pinned snapshot"
+    assert legacy.read_text() == "legacy snapshot"
+    assert _core_cls()._ensure_ccd_cache(tmp_path) == directory
+    assert calls == [
+        {
+            "repo_id": ESMFOLD2_HF_REPO,
+            "filename": "ccd.pkl",
+            "revision": ESMFOLD2_HF_REVISION,
+            "local_dir": str(directory),
+        }
+    ]
+
+
+def test_esmfold2_ccd_download_failure_is_not_treated_as_cache_hit(monkeypatch, tmp_path) -> None:
+    """A failed pinned download must surface even when a legacy file exists."""
+    (tmp_path / "ccd.pkl").write_text("legacy snapshot")
+
+    def download(**kwargs):
+        raise OSError("download failed")
+
+    monkeypatch.setitem(sys.modules, "huggingface_hub", SimpleNamespace(hf_hub_download=download))
+    with pytest.raises(OSError, match="download failed"):
+        _core_cls()._ensure_ccd_cache(tmp_path)
