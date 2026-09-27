@@ -23,6 +23,7 @@ from boileroom.images.metadata import (  # noqa: E402
     current_docker_platform,
     normalize_docker_repository,
     normalize_requested_tag,
+    resolve_model_image_specs,
 )
 from scripts.cli_utils import (  # noqa: E402
     CONTEXT_SETTINGS,
@@ -45,6 +46,7 @@ class ImportCheckOptions:
     all_cuda: bool
     pull: bool
     cleanup: bool
+    only: tuple[str, ...] = ()
 
 
 def ensure_docker() -> None:
@@ -164,6 +166,7 @@ def run_import_checks(options: ImportCheckOptions) -> None:
         options.tag,
         cuda_versions,
         docker_repository=docker_repository,
+        image_specs=resolve_model_image_specs(options.only),
         platform=current_docker_platform(),
     )
     if not targets:
@@ -182,6 +185,11 @@ def run_import_checks(options: ImportCheckOptions) -> None:
 @all_cuda_option("Validate all supported CUDA variants canonically.")
 @pull_option
 @cleanup_option
+@click.option(
+    "--only",
+    multiple=True,
+    help="Check only the given model image(s), by family key or image name. Repeatable. Defaults to all.",
+)
 def cli(
     tag: str | None,
     docker_user: str,
@@ -189,6 +197,7 @@ def cli(
     all_cuda: bool,
     pull: bool,
     cleanup: bool,
+    only: tuple[str, ...],
 ) -> None:
     """Run the image import-check Click command."""
 
@@ -200,6 +209,7 @@ def cli(
             all_cuda=all_cuda,
             pull=pull,
             cleanup=cleanup,
+            only=only,
         )
     )
 

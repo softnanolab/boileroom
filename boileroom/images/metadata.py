@@ -7,6 +7,7 @@ import os
 import platform as platform_module
 import re
 import tomllib
+from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
@@ -302,6 +303,43 @@ def get_model_image_spec(identifier: str) -> RuntimeImageSpec:
     if identifier in MODEL_IMAGE_SPECS_BY_NAME:
         return MODEL_IMAGE_SPECS_BY_NAME[identifier]
     raise KeyError(f"Unknown image spec: {identifier}")
+
+
+def resolve_model_image_specs(only: Sequence[str]) -> tuple[RuntimeImageSpec, ...]:
+    """Resolve a selection of model image specs by family key or image name.
+
+    Parameters
+    ----------
+    only : Sequence[str]
+        Model family keys (e.g. ``alphafold``) or image names (e.g.
+        ``boileroom-alphafold2-multimer``). An empty selection returns every
+        model image spec.
+
+    Returns
+    -------
+    tuple[RuntimeImageSpec, ...]
+        The selected specs in canonical order, de-duplicated by image name.
+
+    Raises
+    ------
+    ValueError
+        If any identifier does not match a known model image.
+    """
+    if not only:
+        return MODEL_IMAGE_SPECS
+
+    selected: dict[str, RuntimeImageSpec] = {}
+    unknown: list[str] = []
+    for identifier in only:
+        spec = MODEL_IMAGE_SPECS_BY_KEY.get(identifier) or MODEL_IMAGE_SPECS_BY_NAME.get(identifier)
+        if spec is None:
+            unknown.append(identifier)
+        else:
+            selected[spec.image_name] = spec
+    if unknown:
+        known = ", ".join(sorted({spec.key for spec in MODEL_IMAGE_SPECS}))
+        raise ValueError(f"Unknown model selection(s): {', '.join(unknown)}. Known models: {known}.")
+    return tuple(spec for spec in MODEL_IMAGE_SPECS if spec.image_name in selected)
 
 
 @cache

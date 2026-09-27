@@ -28,6 +28,11 @@ on:
         required: true
         type: string
         default: DOCKERHUB_TOKEN
+      models:
+        description: Space-separated model family keys to build, e.g. "alphafold". Empty builds all models. Only honored on validation-only runs.
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -40,6 +45,9 @@ env:
   DOCKERHUB_TOKEN_SECRET_FOR_RUN: ${{ github.event.inputs.dockerhub_token_secret || 'DOCKERHUB_TOKEN' }}
   IMAGE_BUILD_MAX_WORKERS: "3"
   SHOULD_PROMOTE: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'release' && github.event.release.prerelease == false) || inputs.promote }}
+  # Optional model filter for validation-only dispatch runs. Ignored when promoting
+  # so that published tags always cover the full model set.
+  MODELS_FOR_RUN: ${{ (github.event.inputs.promote == 'true') && '' || github.event.inputs.models || '' }}
 
 jobs:
   prepare-release:
@@ -160,6 +168,9 @@ jobs:
           if [ "${{ matrix.platform }}" = "linux/amd64" ]; then
             build_args+=(--push --local-base)
           fi
+          for model in ${MODELS_FOR_RUN}; do
+            build_args+=(--only "${model}")
+          done
 
           uv run --no-project --with click --with pyyaml python ./scripts/images/build_model_images.py \
             --cuda-version=${{ matrix.cuda_version }} \
@@ -172,31 +183,51 @@ jobs:
 
       - name: Verify local canonical image imports
         run: |
+          only_args=()
+          for model in ${MODELS_FOR_RUN}; do
+            only_args+=(--only "${model}")
+          done
           uv run --no-project --with click --with pyyaml python ./scripts/images/check_model_imports.py \
             --cuda-version=${{ matrix.cuda_version }} \
             --docker-user="${DOCKER_REPOSITORY_FOR_RUN}" \
-            --tag=${{ needs.prepare-release.outputs.image_tag }}
+            --tag=${{ needs.prepare-release.outputs.image_tag }} \
+            "${only_args[@]}"
 
       - name: Verify local canonical image server health
         run: |
+          only_args=()
+          for model in ${MODELS_FOR_RUN}; do
+            only_args+=(--only "${model}")
+          done
           uv run --no-project --with click --with pyyaml python ./scripts/images/check_model_server_health.py \
             --cuda-version=${{ matrix.cuda_version }} \
             --docker-user="${DOCKER_REPOSITORY_FOR_RUN}" \
-            --tag=${{ needs.prepare-release.outputs.image_tag }}
+            --tag=${{ needs.prepare-release.outputs.image_tag }} \
+            "${only_args[@]}"
 
       - name: Verify local alias image imports
         if: matrix.platform == 'linux/amd64' && matrix.cuda_version == needs.prepare-release.outputs.default_cuda_version
         run: |
+          only_args=()
+          for model in ${MODELS_FOR_RUN}; do
+            only_args+=(--only "${model}")
+          done
           uv run --no-project --with click --with pyyaml python ./scripts/images/check_model_imports.py \
             --docker-user="${DOCKER_REPOSITORY_FOR_RUN}" \
-            --tag=${{ needs.prepare-release.outputs.image_tag }}
+            --tag=${{ needs.prepare-release.outputs.image_tag }} \
+            "${only_args[@]}"
 
       - name: Verify local alias image server health
         if: matrix.platform == 'linux/amd64' && matrix.cuda_version == needs.prepare-release.outputs.default_cuda_version
         run: |
+          only_args=()
+          for model in ${MODELS_FOR_RUN}; do
+            only_args+=(--only "${model}")
+          done
           uv run --no-project --with click --with pyyaml python ./scripts/images/check_model_server_health.py \
             --docker-user="${DOCKER_REPOSITORY_FOR_RUN}" \
-            --tag=${{ needs.prepare-release.outputs.image_tag }}
+            --tag=${{ needs.prepare-release.outputs.image_tag }} \
+            "${only_args[@]}"
 
       - name: Free disk space after build
         if: always()

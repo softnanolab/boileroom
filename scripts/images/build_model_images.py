@@ -29,6 +29,7 @@ from boileroom.images.metadata import (  # noqa: E402
     normalize_cuda_version,
     normalize_requested_tag,
     published_image_references,
+    resolve_model_image_specs,
     split_platforms,
 )
 from scripts.cli_utils import CONTEXT_SETTINGS, all_cuda_option, cuda_version_option, none_if_empty  # noqa: E402
@@ -64,6 +65,7 @@ class BuildOptions:
     force_rebuild: bool
     max_workers: int
     local_base: bool
+    only: tuple[str, ...] = ()
 
 
 class Colors:
@@ -443,6 +445,7 @@ def run_build(options: BuildOptions) -> None:
         tag = resolve_publish_tag(options.tag)
         docker_repository = normalize_docker_repository(options.docker_user)
         cuda_versions = compute_cuda_versions(options.cuda_versions, options.all_cuda)
+        selected_specs = resolve_model_image_specs(options.only)
         requested_platforms = split_platforms(options.platform)
         platform = ",".join(requested_platforms)
         output_flag = resolve_output_flag(options.push, options.load, platform)
@@ -475,7 +478,7 @@ def run_build(options: BuildOptions) -> None:
 
     log_info(Colors.wrap(f"Boileroom repo root: {REPO_ROOT}", Colors.magenta))
     log_info(f"Docker repository: {docker_repository}")
-    log_info(f"Model images: {', '.join(spec.image_name for spec in MODEL_IMAGE_SPECS)}")
+    log_info(f"Model images: {', '.join(spec.image_name for spec in selected_specs)}")
     log_info(f"CUDA versions: {', '.join(cuda_versions)}")
     log_info(f"Platforms: {platform}")
     if options.verbose:
@@ -526,7 +529,7 @@ def run_build(options: BuildOptions) -> None:
 
         published_references.append(base_reference)
 
-        for image_spec in MODEL_IMAGE_SPECS:
+        for image_spec in selected_specs:
             supported_cuda = get_supported_cuda(image_spec)
             if cuda_version not in supported_cuda:
                 log_warn(
@@ -660,6 +663,14 @@ def run_build(options: BuildOptions) -> None:
     is_flag=True,
     help="Ignore --skip-existing and rebuild even when matching tags already exist.",
 )
+@click.option(
+    "--only",
+    multiple=True,
+    help=(
+        "Build only the given model image(s), by family key (e.g. alphafold) or image name "
+        "(e.g. boileroom-alphafold2-multimer). Repeatable. Defaults to all model images."
+    ),
+)
 @click.option("--max-workers", type=int, default=1, help="Maximum concurrent model-image builds.")
 @click.option(
     "--local-base",
@@ -681,6 +692,7 @@ def cli(
     verbose: bool,
     skip_existing: bool,
     force_rebuild: bool,
+    only: tuple[str, ...],
     max_workers: int,
     local_base: bool,
 ) -> None:
@@ -701,6 +713,7 @@ def cli(
             force_rebuild=force_rebuild,
             max_workers=max_workers,
             local_base=local_base,
+            only=only,
         )
     )
 

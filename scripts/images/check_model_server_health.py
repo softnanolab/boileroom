@@ -23,6 +23,7 @@ from boileroom.images.metadata import (  # noqa: E402
     current_docker_platform,
     normalize_docker_repository,
     normalize_requested_tag,
+    resolve_model_image_specs,
 )
 from scripts.cli_utils import (  # noqa: E402
     CONTEXT_SETTINGS,
@@ -49,6 +50,7 @@ class HealthCheckOptions:
     pull: bool
     cleanup: bool
     timeout: float
+    only: tuple[str, ...] = ()
 
 
 def ensure_docker() -> None:
@@ -185,6 +187,7 @@ def run_server_health_checks(options: HealthCheckOptions) -> None:
         options.tag,
         cuda_versions,
         docker_repository=docker_repository,
+        image_specs=resolve_model_image_specs(options.only),
         platform=current_docker_platform(),
     )
     if not targets:
@@ -204,6 +207,11 @@ def run_server_health_checks(options: HealthCheckOptions) -> None:
 @pull_option
 @cleanup_option
 @click.option("--timeout", type=float, default=30.0, help="Seconds to wait for each container health check.")
+@click.option(
+    "--only",
+    multiple=True,
+    help="Check only the given model image(s), by family key or image name. Repeatable. Defaults to all.",
+)
 def cli(
     tag: str | None,
     docker_user: str,
@@ -212,6 +220,7 @@ def cli(
     pull: bool,
     cleanup: bool,
     timeout: float,
+    only: tuple[str, ...],
 ) -> None:
     """Run the server-health Click command."""
 
@@ -224,6 +233,7 @@ def cli(
             pull=pull,
             cleanup=cleanup,
             timeout=timeout,
+            only=only,
         )
     )
 
