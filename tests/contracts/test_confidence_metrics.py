@@ -8,6 +8,7 @@ from boileroom.base import PredictionMetadata
 from boileroom.models.boltz.types import Boltz2Output
 from boileroom.models.chai.types import Chai1Output
 from boileroom.models.esm.types import ESMFoldOutput
+from boileroom.models.esmfold2.types import ESMFold2Output
 
 
 def _metadata(model_name: str = "test", sequence_lengths: list[int] | None = None) -> PredictionMetadata:
@@ -60,6 +61,30 @@ def test_chai_confidence_metrics_are_per_sample_unit_scale_arrays() -> None:
     assert output.iptm[0].shape == (1,)
     np.testing.assert_allclose(output.ptm[0], np.array([0.6], dtype=np.float32))
     np.testing.assert_allclose(output.iptm[0], np.array([0.4], dtype=np.float32))
+
+
+def test_esmfold2_confidence_metrics_are_per_sample_unit_scale_arrays() -> None:
+    """ESMFold2 should normalize pLDDT and scalar pTM/iPTM outputs."""
+    output = ESMFold2Output(
+        metadata=_metadata("ESMFold2"),
+        atom_array=[object(), object()],
+        plddt=[np.array([10.0, 50.0], dtype=np.float32), np.array([0.25], dtype=np.float32)],
+        ptm=[0.7, None],
+        iptm=[np.asarray(0.6, dtype=np.float32), np.asarray(0.4, dtype=np.float32)],
+    )
+
+    assert output.plddt is not None
+    np.testing.assert_allclose(output.plddt[0], np.array([0.1, 0.5], dtype=np.float32))
+    np.testing.assert_allclose(output.plddt[1], np.array([0.25], dtype=np.float32))
+
+    assert output.ptm is not None and output.ptm[0] is not None
+    assert output.ptm[0].shape == (1,)
+    assert output.ptm[1] is None
+    np.testing.assert_allclose(output.ptm[0], np.array([0.7], dtype=np.float32))
+
+    assert output.iptm is not None and output.iptm[0] is not None and output.iptm[1] is not None
+    np.testing.assert_allclose(output.iptm[0], np.array([0.6], dtype=np.float32))
+    np.testing.assert_allclose(output.iptm[1], np.array([0.4], dtype=np.float32))
 
 
 def test_boltz_confidence_metrics_are_top_level_and_unit_scale() -> None:

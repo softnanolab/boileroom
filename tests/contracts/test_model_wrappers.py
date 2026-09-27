@@ -13,6 +13,8 @@ from boileroom.images.metadata import IMAGE_TAG_ENV, get_default_image_tag
 from boileroom.models.boltz.types import Boltz2Output
 from boileroom.models.chai.types import Chai1Output
 from boileroom.models.esm.types import ESM2Output, ESMFoldOutput
+from boileroom.models.esm3.types import ESM3Output, ESMCOutput
+from boileroom.models.esmfold2.types import ESMFold2Output
 from boileroom.models.registry import (
     ALPHAFOLD2_MULTIMER_SPEC,
     CHAI1_SPEC,
@@ -23,12 +25,17 @@ from boileroom.models.registry import (
     get_model_spec,
     resolve_object,
 )
+from boileroom.models.sae.types import SAEFeaturesOutput
 
 pytestmark = pytest.mark.contract
 
 SAMPLE_INPUTS: dict[str, Any] = {
     "esmfold": "MLKNVHVLVLGAGDVGSVVVRLLEK",
     "esm2": ["MALWMRLLPLLALLALWGPDPAAA"],
+    "esmc": ["ACD:EF"],
+    "esm3": ["ACD:EF"],
+    "sae": ["ACD:EF"],
+    "esmfold2": "MLKNVHVLVLGAGDVGSVVVRLLEK",
     "chai1": (
         "ICLQKTSNQILKPKLISYTLGQSGTCITDPLLAMDEGYFAYSHLERIGSCSRGVSKQRIIGVGEVLDRGDEVPSLFMTNVWTPPNPNTVYHCSAVYNNEFYYVLCAVSTVGD"
         "PILNSTYWSGSLMMTRLAVKPKSNGGGYNQHQLALRSIEKGRYDKVMPYGPSGIKQGDTLYFPAVGFLVRTEFKYNDSNCPITKCQYSKPENCRLSMGIRPNSHYILRSGLLKYN"
@@ -78,8 +85,43 @@ def _make_output(spec: ModelSpec) -> object:
             lm_logits=None,
         )
 
+    if spec.key == "esmc":
+        return ESMCOutput(
+            embeddings=np.zeros((1, 3, 8), dtype=np.float32),
+            metadata=_make_metadata(spec.public_name),
+            chain_index=np.zeros((1, 3), dtype=np.int64),
+            residue_index=np.arange(3, dtype=np.int64)[None, :],
+            hidden_states=None,
+            lm_logits=None,
+        )
+
+    if spec.key == "esm3":
+        return ESM3Output(
+            embeddings=np.zeros((1, 3, 8), dtype=np.float32),
+            metadata=_make_metadata(spec.public_name),
+            chain_index=np.zeros((1, 3), dtype=np.int64),
+            residue_index=np.arange(3, dtype=np.int64)[None, :],
+            hidden_states=None,
+            lm_logits=None,
+        )
+
+    if spec.key == "sae":
+        return SAEFeaturesOutput(
+            metadata=_make_metadata(spec.public_name),
+            pooled_features=np.zeros((1, 16), dtype=np.float32),
+            chain_index=np.zeros((1, 3), dtype=np.int64),
+            residue_index=np.arange(3, dtype=np.int64)[None, :],
+            layer=27,
+            num_features=16,
+            sae_model="test/sae",
+            features=None,
+        )
+
     if spec.key == "esmfold":
         return ESMFoldOutput(metadata=_make_metadata(spec.public_name), atom_array=[object()])
+
+    if spec.key == "esmfold2":
+        return ESMFold2Output(metadata=_make_metadata(spec.public_name), atom_array=[object()])
 
     if spec.key == "chai1":
         return Chai1Output(metadata=_make_metadata(spec.public_name), atom_array=[object()])

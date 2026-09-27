@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 
 from .linker import compute_position_ids, replace_glycine_linkers, store_multimer_properties
 from .parsing import ESMSequenceTokens, parse_esm2_sequences
+from .position_routing import esm_position_ids_context, install_esm_position_ids_routing
 from .types import ESM2Output, ESMFoldOutput, _normalize_esmfold_plddt
 
 logger = logging.getLogger(__name__)
@@ -98,6 +99,9 @@ def always_no_grad_forward(self, seq_feats, pair_feats, true_aa, residx, mask, n
 
 # Patch EsmFoldingTrunk to use always_no_grad_forward
 EsmFoldingTrunk.forward = always_no_grad_forward
+
+
+install_esm_position_ids_routing()
 
 
 class ESM2Core(EmbeddingAlgorithm):
@@ -234,7 +238,10 @@ class ESM2Core(EmbeddingAlgorithm):
         sequences : str | Sequence[str]
             A single protein sequence string or an iterable of sequence strings. Sequence strings may contain one-letter residues, inline ``<mask>`` tokens, and optional ``:`` chain separators for multimers.
         options : dict | None, optional
-            Per-call configuration that is merged with the core config; can control glycine_linker, position_ids_skip, `include_fields`, and other runtime options. Request `include_fields=["lm_logits"]` for full-vocabulary masked-language-model logits or `include_fields=["hidden_states", "lm_logits"]` / `["*"]` to return both optional outputs.
+            Per-call configuration that is merged with the core config; can control glycine_linker, position_ids_skip,
+            `include_fields`, and other runtime options. Request `include_fields=["lm_logits"]` for full-vocabulary
+            masked-language-model logits or `include_fields=["hidden_states", "lm_logits"]` / `["*"]` to return both
+            optional outputs.
 
         Returns
         -------
@@ -293,7 +300,11 @@ class ESM2Core(EmbeddingAlgorithm):
             tokenized = tokenized.to(self._device)
             tokenized["output_hidden_states"] = compute_hidden_states
 
-        with Timer("Model Inference") as inference_timer, torch.inference_mode():
+        with (
+            Timer("Model Inference") as inference_timer,
+            torch.inference_mode(),
+            esm_position_ids_context(tokenized.get("position_ids")),
+        ):
             if self._model_mode == "masked_lm":
                 masked_lm_model = cast(EsmForMaskedLM, self.model)
                 outputs = masked_lm_model.esm(**tokenized)
@@ -620,7 +631,8 @@ class ESMFoldCore(FoldingAlgorithm):
         sequences : str | Sequence[str]
             A single amino acid sequence or an iterable of sequences to predict.
         options : dict, optional
-            Per-call configuration merged with the instance's static config (for example, `include_fields` to select which output fields to return).
+            Per-call configuration merged with the instance's static config (for example, `include_fields` to select which output
+            fields to return).
 
         Returns
         -------

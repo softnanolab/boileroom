@@ -9,6 +9,7 @@ import pytest
 
 from boileroom.models.chai.types import Chai1Output
 from boileroom.models.esm.types import ESM2Output, ESMFoldOutput
+from boileroom.models.esmfold2.types import ESMFold2Output
 
 pytestmark = pytest.mark.contract
 
@@ -131,6 +132,37 @@ def test_esmfold_fold_uses_fresh_metadata(monkeypatch: pytest.MonkeyPatch) -> No
         return ESMFoldOutput(metadata=metadata)
 
     monkeypatch.setattr(core, "_convert_outputs", fake_convert_outputs)
+
+    out1 = core.fold("ACDE")
+    out2 = core.fold("ACDEFG")
+
+    assert out1.metadata is not out2.metadata
+    assert out1.metadata.sequence_lengths == [4]
+    assert out2.metadata.sequence_lengths == [6]
+
+
+def test_esmfold2_fold_uses_fresh_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each ESMFold2 fold call should return independent metadata."""
+    from boileroom.models.esmfold2.core import ESMFold2Core
+
+    core = ESMFold2Core(config={"device": "cpu"})
+    core.model = object()
+    core.input_builder = object()
+
+    def fake_fold_one(
+        prediction_input: object, config: dict, request_index: int
+    ) -> tuple[list[object], dict[str, float]]:
+        return [object()], {"preprocessing": 0.1, "inference": 0.2, "postprocessing": 0.3}
+
+    def fake_convert_results(
+        results: list[object],
+        metadata,
+        config: dict,
+    ) -> ESMFold2Output:
+        return ESMFold2Output(metadata=metadata, atom_array=[object()])
+
+    monkeypatch.setattr(core, "_fold_one", fake_fold_one)
+    monkeypatch.setattr(core, "_convert_results", fake_convert_results)
 
     out1 = core.fold("ACDE")
     out2 = core.fold("ACDEFG")

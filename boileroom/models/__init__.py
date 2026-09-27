@@ -9,6 +9,18 @@ def __getattr__(name: str):
         from .esm.esm2 import ESM2
 
         return ESM2
+    if name == "ESMC":
+        from .esm3.esmc import ESMC
+
+        return ESMC
+    if name == "ESM3":
+        from .esm3.esm3 import ESM3
+
+        return ESM3
+    if name == "ESMFold2":
+        from .esmfold2.esmfold2 import ESMFold2
+
+        return ESMFold2
     if name == "Chai1":
         from .chai.chai1 import Chai1
 
@@ -25,14 +37,22 @@ def __getattr__(name: str):
         from .alphafold.alphafold2_multimer import AlphaFold2Multimer
 
         return AlphaFold2Multimer
+    if name == "SAE":
+        from .sae.sae import SAE
+
+        return SAE
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 __all__ = [
     "ESMFold",
     "ESM2",
+    "ESMC",
+    "ESM3",
+    "ESMFold2",
     "Chai1",
     "Boltz2",
     "Protenix",
     "AlphaFold2Multimer",
+    "SAE",
 ]

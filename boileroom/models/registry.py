@@ -10,6 +10,7 @@ TaskMethod = Literal["fold", "embed"]
 TaskKind = Literal["structure", "embedding"]
 
 ESM_IMAGE_NAME = get_model_image_spec("esm").image_name
+ESMFOLD2_IMAGE_NAME = get_model_image_spec("esmfold2").image_name
 CHAI_IMAGE_NAME = get_model_image_spec("chai").image_name
 BOLTZ_IMAGE_NAME = get_model_image_spec("boltz").image_name
 PROTENIX_IMAGE_NAME = get_model_image_spec("protenix").image_name
@@ -121,6 +122,80 @@ ESM2_SPEC = ModelSpec(
     ),
 )
 
+ESMC_SPEC = ModelSpec(
+    key="esmc",
+    public_name="ESMC",
+    family="esm3",
+    wrapper_class_path="boileroom.models.esm3.esmc.ESMC",
+    modal_class_path="boileroom.models.esm3.esmc.ModalESMC",
+    apptainer_core_class_path="boileroom.models.esm3.core.ESMCCore",
+    apptainer_image_name=ESMFOLD2_IMAGE_NAME,
+    supported_backends=("modal", "apptainer"),
+    contract=ModelContract(
+        task_method="embed",
+        task_kind="embedding",
+        static_config_keys=frozenset({"device", "model_name"}),
+        minimal_output_fields=("metadata", "embeddings", "chain_index", "residue_index"),
+        optional_output_fields=("hidden_states", "lm_logits"),
+        supports_multimer=True,
+    ),
+)
+
+ESM3_SPEC = ModelSpec(
+    key="esm3",
+    public_name="ESM3",
+    family="esm3",
+    wrapper_class_path="boileroom.models.esm3.esm3.ESM3",
+    modal_class_path="boileroom.models.esm3.esm3.ModalESM3",
+    apptainer_core_class_path="boileroom.models.esm3.core.ESM3Core",
+    apptainer_image_name=ESMFOLD2_IMAGE_NAME,
+    supported_backends=("modal", "apptainer"),
+    contract=ModelContract(
+        task_method="embed",
+        task_kind="embedding",
+        static_config_keys=frozenset({"device", "model_name"}),
+        minimal_output_fields=("metadata", "embeddings", "chain_index", "residue_index"),
+        optional_output_fields=(
+            "lm_logits",
+            "sasa_logits",
+            "secondary_structure_logits",
+            "function_logits",
+            "residue_annotation_logits",
+        ),
+        supports_multimer=True,
+    ),
+)
+
+ESMFOLD2_SPEC = ModelSpec(
+    key="esmfold2",
+    public_name="ESMFold2",
+    family="esmfold2",
+    wrapper_class_path="boileroom.models.esmfold2.esmfold2.ESMFold2",
+    modal_class_path="boileroom.models.esmfold2.esmfold2.ModalESMFold2",
+    apptainer_core_class_path="boileroom.models.esmfold2.core.ESMFold2Core",
+    apptainer_image_name=ESMFOLD2_IMAGE_NAME,
+    supported_backends=("modal", "apptainer"),
+    contract=ModelContract(
+        task_method="fold",
+        task_kind="structure",
+        static_config_keys=frozenset({"device", "model_name", "cache_dir", "ccd_cache_dir", "dtype"}),
+        minimal_output_fields=("metadata", "atom_array"),
+        optional_output_fields=(
+            "plddt",
+            "ptm",
+            "iptm",
+            "pae",
+            "distogram",
+            "pair_chains_iptm",
+            "residue_index",
+            "entity_id",
+            "pdb",
+            "cif",
+        ),
+        supports_multimer=True,
+    ),
+)
+
 CHAI1_SPEC = ModelSpec(
     key="chai1",
     public_name="Chai1",
@@ -194,6 +269,42 @@ PROTENIX_SPEC = ModelSpec(
     ),
 )
 
+SAE_SPEC = ModelSpec(
+    key="sae",
+    public_name="SAE",
+    family="sae",
+    wrapper_class_path="boileroom.models.sae.sae.SAE",
+    modal_class_path="boileroom.models.sae.sae.ModalSAE",
+    apptainer_core_class_path="boileroom.models.sae.core.SAECore",
+    # Reuses the shared Biohub ESM runtime image (same as ESM-C / ESM3 / ESMFold2).
+    apptainer_image_name=ESMFOLD2_IMAGE_NAME,
+    supported_backends=("modal", "apptainer"),
+    contract=ModelContract(
+        task_method="embed",
+        task_kind="embedding",
+        static_config_keys=frozenset(
+            {
+                "device",
+                "feature_source",
+                "normalize_features",
+                "num_features",
+                "k",
+                "sae_layer",
+                "activation",
+                "esmc_model_name",
+                "sae_repo_id",
+                "forge_model",
+                "forge_sae_model",
+                "forge_url",
+                "forge_token",
+            }
+        ),
+        minimal_output_fields=("metadata", "pooled_features", "chain_index", "residue_index"),
+        optional_output_fields=("features",),
+        supports_multimer=True,
+    ),
+)
+
 ALPHAFOLD2_MULTIMER_SPEC = ModelSpec(
     key="alphafold2_multimer",
     public_name="AlphaFold2Multimer",
@@ -214,7 +325,18 @@ ALPHAFOLD2_MULTIMER_SPEC = ModelSpec(
     ),
 )
 
-MODEL_SPECS = (ESMFOLD_SPEC, ESM2_SPEC, CHAI1_SPEC, BOLTZ2_SPEC, PROTENIX_SPEC, ALPHAFOLD2_MULTIMER_SPEC)
+MODEL_SPECS = (
+    ESMFOLD_SPEC,
+    ESM2_SPEC,
+    ESMFOLD2_SPEC,
+    ESMC_SPEC,
+    ESM3_SPEC,
+    CHAI1_SPEC,
+    BOLTZ2_SPEC,
+    SAE_SPEC,
+    PROTENIX_SPEC,
+    ALPHAFOLD2_MULTIMER_SPEC,
+)
 MODEL_SPECS_BY_KEY = {spec.key: spec for spec in MODEL_SPECS}
 MODEL_SPECS_BY_PUBLIC_NAME = {spec.public_name: spec for spec in MODEL_SPECS}
 
@@ -234,10 +356,14 @@ __all__ = [
     "BOLTZ2_SPEC",
     "CHAI1_SPEC",
     "ESM2_SPEC",
+    "ESM3_SPEC",
+    "ESMC_SPEC",
+    "ESMFOLD2_SPEC",
     "ESMFOLD_SPEC",
     "MODEL_SPECS",
     "MODEL_SPECS_BY_KEY",
     "MODEL_SPECS_BY_PUBLIC_NAME",
+    "SAE_SPEC",
     "ModelContract",
     "ModelSpec",
     "PROTENIX_SPEC",

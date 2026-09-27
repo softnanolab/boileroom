@@ -1,5 +1,6 @@
 import numpy as np
 import pytest
+import torch
 
 from boileroom import ESM2
 
@@ -199,6 +200,36 @@ def test_esm2_embed_with_hidden_states_and_lm_logits(esm2_model_factory):
     assert result.lm_logits is not None
     assert result.lm_logits.shape == (1, len(sequence), 33)
     del model
+
+
+def test_esm2_position_id_skip_changes_embeddings(esm2_model_factory):
+    """Custom multimer position skips are wired into rotary embeddings by default."""
+    sequence = "AC:DEFG"
+    model = esm2_model_factory(model_name="esm2_t6_8M_UR50D", include_fields=["hidden_states"])
+
+    result_skip0 = model.embed([sequence], options={"position_ids_skip": 0})
+    result_skip1024 = model.embed([sequence], options={"position_ids_skip": 1024})
+
+    max_diff = np.max(np.abs(result_skip0.embeddings - result_skip1024.embeddings))
+    assert max_diff > 0.0
+    max_hidden_diff = np.max(np.abs(result_skip0.hidden_states - result_skip1024.hidden_states))
+    assert max_hidden_diff > 0.0
+
+
+def test_esm2_maybe_build_position_ids_rotary_cache_shape_mismatch_noop():
+    """Shape-mismatched position ids must skip custom RoPE cache generation."""
+    pytest.importorskip("transformers", reason="requires transformers")
+    from boileroom.models.esm import position_routing
+
+    class _DummyRotary:
+        inv_freq = torch.tensor([0.1, 0.2], dtype=torch.float32)
+
+    dummy = _DummyRotary()
+    k = torch.zeros(1, 2, 3, 4, dtype=torch.float32)
+    shape_mismatched_position_ids = torch.tensor([[0, 1, 0, 2]], dtype=torch.long)
+
+    cache = position_routing._maybe_build_position_ids_rotary_cache(dummy, k, shape_mismatched_position_ids)
+    assert cache is None
 
 
 def test_esm2_embed_with_all_optional_fields(esm2_model_factory):

@@ -40,7 +40,7 @@ For Modal integration tests, prefer grouped parallel execution:
 uv run pytest -v -n 4 --dist loadgroup -m integration
 ```
 
-The integration test modules are marked with model-family `xdist_group`s, so `--dist loadgroup` keeps Boltz, Chai, ESM2, and ESMFold on separate workers and separate Modal apps. To run the same integration tests in series, use:
+The integration test modules are marked with model-family `xdist_group`s, so `--dist loadgroup` keeps Boltz, Chai, ESM2, ESMFold2, and ESMFold on separate workers and separate Modal apps. To run the same integration tests in series, use:
 
 ```bash
 uv run pytest -v -m integration

@@ -15,6 +15,7 @@ Legend:
 | AlphaFold2-Multimer | 🍊 | 🍊 |
 | Boltz-2    | 🍊       | 🍊           |
 | Chai-1     | 🍊       | 🍊           |
+| ESMFold2   | 🍊       | 🍊           |
 | ESMFold    | ✅       | 🍊           |
 | Protenix   | 🍊       | 🍊           |
 
@@ -23,6 +24,8 @@ Legend:
 | Model      | 🟢 Modal | 🐧 Apptainer |
 |------------|:--------:|:------------:|
 | ESM-2      | ✅       | 🍊           |
+| ESM-C      | ✅       | 🍊           |
+| ESM3       | ✅       | 🍊           |
 
 ## Backend Descriptions
 

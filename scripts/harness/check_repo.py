@@ -87,6 +87,13 @@ def _required_files(contract: dict[str, Any]) -> list[str]:
     return [str(path) for path in raw_files]
 
 
+def _image_owner_files(contract: dict[str, Any]) -> list[str]:
+    """Return files required only for families that own a runtime image."""
+
+    raw_files = contract.get("model_family", {}).get("image_owner_files", [])
+    return [str(path) for path in raw_files]
+
+
 def _type_import_rules(contract: dict[str, Any]) -> tuple[set[str], set[str], set[str]]:
     """Return allowed and forbidden import rules for lightweight types modules."""
 
@@ -108,6 +115,8 @@ def check_required_family_files(repo_root: Path, contract: dict[str, Any], famil
 
     issues: list[CheckIssue] = []
     required_files = _required_files(contract)
+    image_owner_files = _image_owner_files(contract)
+    image_owner_keys = {spec.key for spec in MODEL_IMAGE_SPECS}
     for family in sorted(family_names):
         family_dir = repo_root / "boileroom/models" / family
         if not family_dir.exists():
@@ -121,7 +130,12 @@ def check_required_family_files(repo_root: Path, contract: dict[str, Any], famil
                 )
             )
             continue
-        for relative_path in required_files:
+        # Families that build their own image must also provide the image files;
+        # families sharing another family's image (e.g. esm3) are exempt.
+        expected_files = list(required_files)
+        if family in image_owner_keys:
+            expected_files += image_owner_files
+        for relative_path in expected_files:
             expected = family_dir / relative_path
             if not expected.exists():
                 issues.append(
@@ -346,9 +360,9 @@ def _class_exists_in_module(repo_root: Path, dotted_path: str, seen: set[str] | 
 
 
 def _image_specs_by_key(image_specs: Sequence[RuntimeImageSpec]) -> dict[str, RuntimeImageSpec]:
-    """Return image specs keyed by family key."""
+    """Return image specs keyed by every family key they serve (primary + shared)."""
 
-    return {spec.key: spec for spec in image_specs}
+    return {family_key: spec for spec in image_specs for family_key in spec.family_keys}
 
 
 def check_registry_image_consistency(

@@ -126,3 +126,77 @@ result.lm_logits.shape   # (1, 4, tokenizer.vocab_size)
 top_token_ids = result.lm_logits[0].argmax(axis=-1)
 top_tokens = [id_to_token[token_id] for token_id in top_token_ids]
 ```
+
+
+### ESM-C and ESM3
+- `ESMC` and `ESM3` are embedding-only in this release. Boileroom does not expose ESM3 generation or folding APIs yet.
+- Both wrappers use the MIT-licensed 2026 Chan Zuckerberg Biohub [`esm`](https://github.com/Biohub/esm) fork (the same package that backs ESMFold2) and support Modal and Apptainer through the shared `embed` contract. They run on the shared `esmfold2` Biohub runtime image rather than a separate one.
+- Supported ESM-C model names are `esmc_300m` and `esmc_600m` (weights `biohub/esmc-300m-2024-12` / `biohub/esmc-600m-2024-12`). The cheap/default config is `esmc_300m`.
+- Supported ESM3 model names are `esm3_sm_open_v1` plus aliases `esm3-open`, `esm3-sm-open-v1`, and `esm3-open-2024-03` (weights `biohub/esm3-sm-open-v1`).
+- All ESM-C and ESM3 weights are MIT-licensed via the Biohub Hugging Face repositories.
+- Outputs are residue-only arrays shaped `(batch, residues, features)`. BOS/EOS, chain-break, and other special-token rows are stripped. Batched outputs pad embeddings/logits with zeros and pad `chain_index` / `residue_index` with `-1`.
+- Colon-separated input such as `"ACD:EF"` means multiple chains. Boileroom maps `:` to the SDK chain-break syntax internally and returns `chain_index=[0,0,0,1,1]`, `residue_index=[0,1,2,0,1]` for the residues.
+- Set `MODEL_DIR` to control the model cache used by Modal/Apptainer runtimes.
+
+Example usage:
+```python
+from boileroom import ESMC, ESM3
+
+model = ESMC(config={"model_name": "esmc_300m"})
+result = model.embed("ACD:EF")
+result.embeddings.shape  # (1, 5, features)
+result.chain_index       # [[0, 0, 0, 1, 1]]
+result.residue_index     # [[0, 1, 2, 0, 1]]
+
+esm3 = ESM3(config={"model_name": "esm3_sm_open_v1"})
+esm3_result = esm3.embed(["ACD", "EF"])
+```
+
+Optional fields:
+- `include_fields=["lm_logits"]` requests residue-aligned sequence logits when the SDK returns them.
+- `include_fields=["hidden_states"]` is supported for ESM-C when provided by the SDK. ESM3 raises a clear `ValueError` for hidden-state requests.
+- **ESM3-only track logits** — ESM3 is an all-to-all masked model, so it can predict its other tracks from sequence alone (structure input is optional, not required). Each is a per-residue logits array; decode to an estimate downstream via the SDK's per-track tokenizer. Requesting any of these on ESM-C raises a clear `ValueError`. The structure/folding track is not exposed.
+    - `sasa_logits` — over the discretized SASA token vocabulary.
+    - `secondary_structure_logits` — over the SS8 vocabulary.
+    - `function_logits` — over the function-annotation vocabulary.
+    - `residue_annotation_logits` — multi-hot residue-annotation logits.
+- `include_fields=["*"]` means all supported optional fields for that model.
+
+### ESMFold2
+- ESMFold2 uses Biohub's ESMFold2 model family through the `esm` package and Biohub's Transformers fork, so it has its own runtime image instead of sharing the ESMFold/ESM-2 image.
+- String inputs follow the existing BoilerRoom convention: `model.fold("AAA:BBB")` predicts one multichain complex, while `model.fold(["AAA", "BBB"])` predicts a batch of independent proteins.
+- For all-atom complexes, pass lightweight input dataclasses from `boileroom.models.esmfold2.types` such as `ProteinInput`, `DNAInput`, `RNAInput`, `LigandInput`, and `StructurePredictionInput`.
+- For explicit in-memory MSAs, use the shared `boileroom.inputs.MSAInput` abstraction; ESMFold2 also re-exports it from `boileroom.models.esmfold2` for compatibility. File-backed MSA paths are reserved for adapters such as Boltz-2 and are not consumed by ESMFold2 yet.
+
+Example usage:
+```python
+from boileroom import ESMFold2
+from boileroom.inputs import MSAInput
+from boileroom.models.esmfold2.types import DNAInput, LigandInput, ProteinInput, StructurePredictionInput
+
+model = ESMFold2(
+    backend="modal",
+    device="L4",
+    config={"model_name": "biohub/ESMFold2-Fast"},
+)
+
+result = model.fold(
+    "MQIFVKTLTGKTITLEVEPSDTIENVKAKIQDKEGIPPDQQRLIFAGKQLEDGRTLSDYNIQKESTLHLVLRLRGG",
+    options={"include_fields": ["plddt", "ptm", "cif"], "num_sampling_steps": 50, "seed": 0},
+)
+
+result.atom_array[0]
+result.plddt[0]
+result.ptm[0]
+result.cif[0]
+
+complex_input = StructurePredictionInput(
+    sequences=[
+        ProteinInput(id="A", sequence="MIEIKDKQLTGLRFIDLFAGLGGFRLALESCGAECVYSNEWDKYAQEVYEMNFGEKPEG"),
+        ProteinInput(id="M", sequence="ACD", msa=MSAInput(sequences=["ACD", "ACE"])),
+        DNAInput(id="B", sequence="GATAGCGCTATC"),
+        LigandInput(id="L", ccd=["SAH"]),
+    ]
+)
+complex_result = model.fold(complex_input, options={"include_fields": ["cif", "iptm"]})
+```

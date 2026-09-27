@@ -406,6 +406,7 @@ def test_run_build_skips_model_specs_with_unsupported_platform(
         "boileroom-boltz",
         "boileroom-chai1",
         "boileroom-esm",
+        "boileroom-esmfold2",
     ]
     assert any("boileroom-alphafold2-multimer" in warning for warning in warnings)
     assert any("boileroom-protenix" in warning for warning in warnings)

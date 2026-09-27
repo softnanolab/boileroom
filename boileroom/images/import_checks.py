@@ -60,6 +60,10 @@ def requirement_line_to_package_name(line: str) -> str | None:
     stripped = line.strip()
     if not stripped or stripped.startswith("#") or stripped.startswith("-"):
         return None
+    if "#egg=" in stripped:
+        return stripped.rsplit("#egg=", 1)[1].split("&", 1)[0].strip()
+    if " @ " in stripped:
+        return stripped.split(" @ ", 1)[0].strip()
     return re.split(r"[>=<!=;\[]", stripped, maxsplit=1)[0].strip() or None
 
 
