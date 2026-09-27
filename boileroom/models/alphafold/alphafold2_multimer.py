@@ -37,6 +37,10 @@ class ModalAlphaFold2Multimer:
         self._core = AlphaFold2MultimerCore(json.loads(self.config.decode("utf-8")))
         self._core._initialize()
 
+    @modal.exit()
+    def _shutdown(self) -> None:
+        self._core.close()
+
     @modal.method()
     def fold(self, sequences: str | Sequence[str], options: dict | None = None) -> "AlphaFold2MultimerOutput":
         return self._core.fold(sequences, options=options)
@@ -55,6 +59,9 @@ class AlphaFold2Multimer(ModelWrapper):
     def fold(self, sequences: str | Sequence[str], options: dict | None = None) -> "AlphaFold2MultimerOutput":
         """Run AlphaFold2-Multimer for a single sequence entry.
 
+        Keep one instance open and call ``fold()`` for each job to reuse the
+        loaded runners and parameters. Model settings belong in ``config``;
+        seeds, MSA inputs and output selection can change in ``options``.
         Use ``:`` inside a sequence string to define multiple chains.
         """
         validated_sequences = [sequences] if isinstance(sequences, str) else list(sequences)

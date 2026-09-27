@@ -1,5 +1,7 @@
 """AlphaFold2-Multimer (ColabFold) integration tests against a real backend."""
 
+import time
+
 import numpy as np
 import pytest
 
@@ -22,7 +24,20 @@ def test_alphafold2_multimer_modal_fold_basic(backend_option: str, device_option
     options = {"include_fields": ["plddt", "ptm", "iptm", "pae", "cif", "ranking"]}
 
     with output_ctx(), AlphaFold2Multimer(backend=backend_option, device=device_option, config=config) as model:
+        started = time.monotonic()
         result = model.fold(sequence, options=options)
+        cold_seconds = time.monotonic() - started
+        started = time.monotonic()
+        warm = model.fold(sequence, options={**options, "random_seed": 1})
+        warm_seconds = time.monotonic() - started
+        monomer = model.fold(chain, options={**options, "random_seed": 2})
+        print(f"AlphaFold2-Multimer cold={cold_seconds:.2f}s warm={warm_seconds:.2f}s")
+
+    assert warm.ranking is not None and all("seed_001" in name for name in warm.ranking["order"])
+    assert monomer.ranking is not None and all("seed_002" in name for name in monomer.ranking["order"])
+    assert warm.pae is not None and warm.pae[0].shape == (2 * len(chain), 2 * len(chain))
+    assert monomer.pae is not None and monomer.pae[0].shape == (len(chain), len(chain))
+    assert np.isfinite(warm.pae[0]).all() and np.isfinite(monomer.pae[0]).all()
 
     expected_length = 2 * len(chain)
     assert result.metadata.sequence_lengths == [expected_length]

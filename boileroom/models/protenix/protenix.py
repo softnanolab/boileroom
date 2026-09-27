@@ -59,6 +59,8 @@ class Protenix(ModelWrapper):
     def fold(self, sequences: str | Sequence[str], options: dict | None = None) -> "ProtenixOutput":
         """Run Protenix for a single sequence entry.
 
+        Keep one instance open and call ``fold()`` for each job to reuse the
+        loaded model. The backend context owns the worker's lifetime.
         Use ``:`` inside a sequence string to define multiple chains.
         Pass ``options={"unpaired_msa": [target_a3m_text, None]}`` for an
         unpaired target alignment and a single-sequence binder. Results retain

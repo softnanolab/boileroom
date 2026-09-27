@@ -342,7 +342,18 @@ ALPHAFOLD2_MULTIMER_SPEC = ModelSpec(
     contract=ModelContract(
         task_method="fold",
         task_kind="structure",
-        static_config_keys=frozenset({"device", "colabfold_command", "data_dir"}),
+        static_config_keys=frozenset(
+            {
+                "device",
+                "colabfold_python",
+                "data_dir",
+                "model_type",
+                "num_models",
+                "num_recycle",
+                "use_templates",
+                "rank_by",
+            }
+        ),
         minimal_output_fields=("metadata", "atom_array"),
         optional_output_fields=("ranking", "plddt", "ptm", "iptm", "pae", "pdb", "cif"),
         supports_batch=False,

@@ -1,9 +1,9 @@
-"""Core AlphaFold2-Multimer implementation backed by ColabFold's ``colabfold_batch``.
+"""Core AlphaFold2-Multimer implementation backed by resident ColabFold runners.
 
 MSAs come from the public ColabFold MMseqs2 server (no local genetic databases),
 are content-addressed and cached across folds, and can also be supplied directly
-by the caller. The adapter shells out to ``colabfold_batch`` and maps its output
-tree onto :class:`AlphaFold2MultimerOutput`.
+by the caller. A persistent Python 3.10 worker owns ColabFold's loaded models;
+the core maps each request's output tree onto :class:`AlphaFold2MultimerOutput`.
 """
 
 from __future__ import annotations
@@ -26,7 +26,8 @@ from ...base import FoldingAlgorithm, PredictionMetadata
 from ...inputs import MSAInput
 from ...msa_cache import MSACache
 from ...utils import Timer, get_model_cache_dir
-from .._cli import command_env, include_field, run_command
+from .._runtime_utils import command_env, include_field
+from .._worker import ModelWorker
 from .types import AlphaFold2MultimerOutput
 
 logger = logging.getLogger(__name__)
@@ -37,7 +38,7 @@ class AlphaFold2MultimerCore(FoldingAlgorithm):
 
     DEFAULT_CONFIG: ClassVar[dict[str, Any]] = {
         "device": None,
-        "colabfold_command": "colabfold_batch",
+        "colabfold_python": "/opt/colabfold/bin/python",
         "data_dir": None,
         "model_type": "alphafold2_multimer_v3",
         "num_recycle": 3,
@@ -56,25 +57,55 @@ class AlphaFold2MultimerCore(FoldingAlgorithm):
         "include_fields": None,
         "timeout_seconds": None,
     }
-    STATIC_CONFIG_KEYS: ClassVar[frozenset[str]] = frozenset({"device", "colabfold_command", "data_dir"})
+    STATIC_CONFIG_KEYS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "device",
+            "colabfold_python",
+            "data_dir",
+            "model_type",
+            "num_models",
+            "num_recycle",
+            "use_templates",
+            "rank_by",
+        }
+    )
 
     def __init__(self, config: dict[str, Any] | None = None) -> None:
         """Create an AlphaFold2-Multimer (ColabFold) core instance."""
+        if config and "colabfold_command" in config:
+            raise ValueError("colabfold_command is no longer supported; ColabFold uses a resident Python runner")
         super().__init__(config or {})
+        self._worker: ModelWorker | None = None
         self._metadata_template = self._initialize_metadata(
             model_name="AlphaFold2-Multimer",
-            model_version="v3",
+            model_version=str(self.config["model_type"]).removeprefix("alphafold2_multimer_"),
         )
 
     def _initialize(self) -> None:
-        """Mark the CLI-backed core ready."""
+        """Load ColabFold's model runners into the persistent worker."""
         self._load()
 
     def _load(self) -> None:
-        """Validate static configuration and mark the core ready."""
-        if not str(self.config.get("colabfold_command", "")).strip():
-            raise ValueError("colabfold_command must not be empty")
+        """Validate configuration and load model parameters once per core."""
+        _validate_config(self.config)
+        if self._worker is None:
+            config = {**self.config, "data_dir": str(self._data_dir())}
+            self._worker = ModelWorker(
+                config,
+                _command_env(config),
+                runtime_path=Path(__file__).with_name("runtime.py"),
+                runtime_class="AlphaFold2MultimerRuntime",
+                label="AlphaFold2-Multimer",
+                python_executable=config["colabfold_python"],
+            )
+        self._worker.start()
         self.ready = True
+
+    def close(self) -> None:
+        """Release the loaded model and its isolated interpreter."""
+        if self._worker is not None:
+            self._worker.close()
+        self.ready = False
 
     def fold(self, sequences: str | Sequence[str], options: dict | None = None) -> AlphaFold2MultimerOutput:
         """Run AlphaFold2-Multimer for one sequence entry.
@@ -111,10 +142,24 @@ class AlphaFold2MultimerCore(FoldingAlgorithm):
                 input_path, msa_mode, cache_key = self._resolve_msa_input(
                     joined, chains, provided_msa, buffer_path, effective_config
                 )
-                command = self._build_command(input_path, output_dir, msa_mode, effective_config)
 
             with Timer("AlphaFold2-Multimer inference") as inference_timer:
-                self._run_command(command, effective_config)
+                if not self.ready:
+                    self._load()
+                assert self._worker is not None
+                # Only primitive inference settings cross the Python-version
+                # boundary; the MSAInput has already been materialized to disk.
+                worker_options = {
+                    "msa_mode": msa_mode or "mmseqs2_uniref_env",
+                    "pair_mode": effective_config["pair_mode"],
+                    "msa_server_url": effective_config["msa_server_url"],
+                    "random_seed": effective_config["random_seed"],
+                    "num_seeds": effective_config["num_seeds"],
+                    "use_amber": effective_config["use_amber"],
+                    "use_gpu_relax": effective_config["use_gpu_relax"],
+                    "timeout_seconds": effective_config["timeout_seconds"],
+                }
+                self._worker.predict(str(input_path), str(output_dir), worker_options)
 
             with Timer("AlphaFold2-Multimer postprocessing") as postprocess_timer:
                 if cache_key is not None:
@@ -196,7 +241,7 @@ class AlphaFold2MultimerCore(FoldingAlgorithm):
     def _msa_cache(self) -> MSACache:
         return MSACache(self._data_dir(), suffix=".a3m")
 
-    # -- Command construction -------------------------------------------------
+    # -- Input files and cache paths ------------------------------------------
 
     def _write_fasta(self, joined: str, buffer_path: Path) -> Path:
         """Write the query as a single ColabFold record (chains colon-joined)."""
@@ -209,45 +254,6 @@ class AlphaFold2MultimerCore(FoldingAlgorithm):
         if data_dir is not None:
             return Path(str(data_dir))
         return get_model_cache_dir("alphafold")
-
-    def _build_command(
-        self, input_path: Path, output_dir: Path, msa_mode: str | None, config: dict[str, Any]
-    ) -> list[str]:
-        command = [
-            str(config["colabfold_command"]),
-            str(input_path),
-            str(output_dir),
-            "--model-type",
-            str(config["model_type"]),
-            "--num-recycle",
-            str(int(config["num_recycle"])),
-            "--num-models",
-            str(int(config["num_models"])),
-            "--num-seeds",
-            str(int(config["num_seeds"])),
-            "--random-seed",
-            str(int(config["random_seed"])),
-            "--rank",
-            str(config["rank_by"]),
-            "--pair-mode",
-            str(config["pair_mode"]),
-            "--data",
-            str(self._data_dir(config)),
-            "--host-url",
-            str(config["msa_server_url"]),
-        ]
-        if msa_mode is not None:
-            command.extend(["--msa-mode", msa_mode])
-        if config["use_templates"]:
-            command.append("--templates")
-        if config["use_amber"]:
-            command.extend(["--amber", "--num-relax", str(int(config["num_models"]))])
-            if config["use_gpu_relax"]:
-                command.append("--use-gpu-relax")
-        return command
-
-    def _run_command(self, command: list[str], config: dict[str, Any]) -> None:
-        run_command(command, "AlphaFold2-Multimer", _command_env(config), config.get("timeout_seconds"))
 
     # -- Output collection ----------------------------------------------------
 
@@ -294,7 +300,7 @@ class AlphaFold2MultimerCore(FoldingAlgorithm):
             ptm_values.append(ptm)
             iptm_values.append(iptm)
             pae_values.append(_optional_array(scores, "pae"))
-            ranking_scores[_model_key(score_path)] = _rank_score(config["rank_by"], ptm, iptm)
+            ranking_scores[_model_key(score_path)] = _rank_score(config["rank_by"], ptm, iptm, plddt_values[-1])
 
         ranking = {
             config["rank_by"]: ranking_scores,
@@ -347,6 +353,17 @@ def _complex_a3m(rows: list[str], chains: list[str]) -> str:
 
 
 def _validate_config(config: dict[str, Any]) -> None:
+    if not str(config["colabfold_python"]).strip():
+        raise ValueError("colabfold_python must not be empty")
+    if config["model_type"] not in {"alphafold2_multimer_v1", "alphafold2_multimer_v2", "alphafold2_multimer_v3"}:
+        raise ValueError("model_type must be alphafold2_multimer_v1, v2 or v3")
+    if config["rank_by"] not in {"multimer", "plddt", "ptm", "iptm"}:
+        raise ValueError("rank_by must be multimer, plddt, ptm or iptm")
+    timeout = config["timeout_seconds"]
+    if timeout is not None and (
+        not isinstance(timeout, int | float) or isinstance(timeout, bool) or not 0 < timeout < float("inf")
+    ):
+        raise ValueError("timeout_seconds must be a positive finite number or None")
     for field in ("num_models", "num_seeds", "num_recycle"):
         value = config[field]
         if not isinstance(value, int) or isinstance(value, bool) or value < 1:
@@ -397,7 +414,9 @@ def _command_env(config: dict[str, Any]) -> dict[str, str]:
     return command_env(config, _JAX_MEMORY_ENV)
 
 
-def _rank_score(rank_by: str, ptm: np.ndarray | None, iptm: np.ndarray | None) -> float:
+def _rank_score(rank_by: str, ptm: np.ndarray | None, iptm: np.ndarray | None, plddt: np.ndarray | None) -> float:
+    if rank_by == "plddt" and plddt is not None:
+        return float(np.mean(plddt))
     p = float(ptm[0]) if ptm is not None else 0.0
     i = float(iptm[0]) if iptm is not None else 0.0
     if rank_by == "multimer" and iptm is not None:

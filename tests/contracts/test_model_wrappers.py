@@ -310,8 +310,8 @@ def test_chai1_contract_declares_single_input_only() -> None:
 
 
 @pytest.mark.parametrize("spec", [PROTENIX_SPEC, ALPHAFOLD2_MULTIMER_SPEC], ids=lambda spec: spec.public_name)
-def test_cli_folding_contracts_declare_single_input_multimer_support(spec: ModelSpec) -> None:
-    """CLI-backed folding wrappers should use one top-level sequence with ':' chain joining."""
+def test_resident_folding_contracts_declare_single_input_multimer_support(spec: ModelSpec) -> None:
+    """Resident folding wrappers should use one top-level sequence with ':' chain joining."""
     assert spec.contract.supports_batch is False
     assert spec.contract.supports_multimer is True
 
@@ -350,11 +350,11 @@ def test_chai1_wrapper_rejects_static_option_overrides(monkeypatch: pytest.Monke
 
 
 @pytest.mark.parametrize("spec", [PROTENIX_SPEC, ALPHAFOLD2_MULTIMER_SPEC], ids=lambda spec: spec.public_name)
-def test_cli_wrappers_reject_multiple_top_level_sequences(
+def test_resident_wrappers_reject_multiple_top_level_sequences(
     monkeypatch: pytest.MonkeyPatch,
     spec: ModelSpec,
 ) -> None:
-    """CLI-backed wrappers should fail early before dispatching unsupported batches."""
+    """Resident wrappers should fail early before dispatching unsupported batches."""
     records: dict[str, Any] = {}
     _install_fake_initializer(monkeypatch, records, _make_output(spec))
 
@@ -372,12 +372,12 @@ def test_cli_wrappers_reject_multiple_top_level_sequences(
     [(PROTENIX_SPEC, "model_name"), (ALPHAFOLD2_MULTIMER_SPEC, "data_dir")],
     ids=lambda item: item.public_name if isinstance(item, ModelSpec) else item,
 )
-def test_cli_wrappers_reject_static_option_overrides(
+def test_resident_wrappers_reject_static_option_overrides(
     monkeypatch: pytest.MonkeyPatch,
     spec: ModelSpec,
     static_key: str,
 ) -> None:
-    """CLI-backed wrappers should keep runtime-static paths fixed after construction."""
+    """Resident wrappers should keep runtime-static paths fixed after construction."""
     records: dict[str, Any] = {}
     _install_fake_initializer(monkeypatch, records, _make_output(spec))
 

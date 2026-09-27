@@ -31,11 +31,16 @@ In `0.3.1`, this replaces ESMFold's old padded pLDDT batch array and moves Boltz
 `fold()` call accepts one sequence entry; use `:` to join multiple protein chains. On Modal it defaults to an
 `A100-40GB` GPU.
 
+Keep one model context open for all of your jobs. The first Modal call starts the GPU worker and loads
+the checkpoint; subsequent calls reuse that worker's runner. The Apptainer service loads it at startup.
+No separate job-submission API is needed: use the usual `fold()` method for each new input.
+
 Example usage:
 ```python
 from boileroom import Protenix
 
-model = Protenix(
+query = "MLKNVHVLVLGAGDVGSVVVRLLEK:MLKNVHVLVLGAGDVGSVVVRLLEK"
+with Protenix(
     backend="modal",
     config={
         "model_name": "protenix-v2",
@@ -44,13 +49,17 @@ model = Protenix(
         "cycle": 10,
         "step": 200,
     },
-)
+) as model:
+    # Supply a different query for each job, or repeat one with another seed.
+    results = [
+        model.fold(
+            query,
+            options={"seeds": str(seed), "include_fields": ["ptm", "iptm", "pae", "token_chain_ids", "cif"]},
+        )
+        for seed in (101, 102, 103)
+    ]
 
-result = model.fold(
-    "MLKNVHVLVLGAGDVGSVVVRLLEK:MLKNVHVLVLGAGDVGSVVVRLLEK",
-    options={"include_fields": ["ptm", "iptm", "pae", "token_chain_ids", "cif"]},
-)
-
+result = results[0]
 result.atom_array
 result.iptm             # shape-(1,) arrays, one per ranked sample
 result.pae              # (tokens, tokens) PAE matrix per sample
@@ -81,7 +90,8 @@ Protenix keeps its runner in a persistent worker, retaining a hard `timeout_seco
 The prerelease CLI setting `protenix_command` has been removed. `model_name`, `device`, `msa_server_url`, `use_template`, `trimul_kernel`, `triatt_kernel`, `enable_cache`, `enable_fusion`, and `enable_tf32` are now initialization-only settings. Create a new instance to change them.
 
 ### AlphaFold2-Multimer
-`AlphaFold2Multimer` drives ColabFold's `colabfold_batch` with `--model-type alphafold2_multimer_v3`. MSAs are
+`AlphaFold2Multimer` keeps ColabFold's Python model runners and parameters resident, using `alphafold2_multimer_v3`
+by default. Repeated `fold()` calls reuse the same runners and JAX compilation cache. MSAs are
 fetched from the public ColabFold MMseqs2 server (`https://api.colabfold.com`), so **no local genetic databases
 (the ~2.6 TB AlphaFold data tree) are required**. AlphaFold model parameters are cached under `data_dir`
 (default `${MODEL_DIR}/alphafold`); ColabFold downloads them there on first use. The wrapper accepts one
@@ -89,7 +99,7 @@ top-level sequence entry and uses `:` to split chains. On Modal it defaults to a
 
 ColabFold runs in its own Python 3.10 environment inside the image, pinned to a fixed commit, because it needs
 Python < 3.12 and `pandas<2`. By default ColabFold turns on CUDA unified memory (`TF_FORCE_UNIFIED_MEMORY=1`,
-memory fraction 4.0). This stalls parameter loading on Modal, so Boileroom runs `colabfold_batch` with
+memory fraction 4.0). This stalls parameter loading on Modal, so Boileroom runs its resident worker with
 `TF_FORCE_UNIFIED_MEMORY=0` and `XLA_PYTHON_CLIENT_MEM_FRACTION=0.9`. Values set in the caller's environment still
 take precedence.
 
@@ -97,20 +107,24 @@ Example usage:
 ```python
 from boileroom import AlphaFold2Multimer
 
-model = AlphaFold2Multimer(
+query = "MLKNVHVLVLGAGDVGSVVVRLLEK:MLKNVHVLVLGAGDVGSVVVRLLEK"
+with AlphaFold2Multimer(
     backend="modal",
     config={
         "num_models": 5,
         "num_recycle": 3,
         "use_amber": False,
     },
-)
+) as model:
+    results = [
+        model.fold(
+            query,
+            options={"random_seed": seed, "include_fields": ["ranking", "plddt", "iptm", "pae", "cif"]},
+        )
+        for seed in (0, 1, 2)
+    ]
 
-result = model.fold(
-    "MLKNVHVLVLGAGDVGSVVVRLLEK:MLKNVHVLVLGAGDVGSVVVRLLEK",
-    options={"include_fields": ["ranking", "plddt", "iptm", "pae", "cif"]},
-)
-
+result = results[0]
 result.atom_array
 result.ranking
 result.plddt
@@ -131,6 +145,22 @@ Other config keys: `num_models` (1–5, default 5), `num_recycle` (default 3), `
 `msa_mode`, `pair_mode` (default `unpaired_paired`), `rank_by` (default `multimer`), and `timeout_seconds` (no
 limit by default). Outputs are `ranking`, `plddt` (unit scale), `ptm`, `iptm`, `pae`, and `pdb`/`cif`, listed in
 ColabFold rank order.
+
+The prerelease `colabfold_command` setting has been removed. `colabfold_python` selects the isolated interpreter
+(default `/opt/colabfold/bin/python`). It, `device`, `data_dir`, `model_type`, `num_models`, `num_recycle`,
+`use_templates` and `rank_by` are initialization-only settings because they determine the loaded runners.
+The supported model families are `alphafold2_multimer_v1`, `v2` and `v3`. Seeds, MSA inputs, server options,
+relaxation and output selection remain per-call options. A new sequence length or MSA shape may trigger JAX
+compilation, but it does not reload model parameters.
+
+Both adapters serialize requests inside each worker and keep request files separate. Closing the model
+context releases its backend; a timeout or inference error discards the affected worker, and the next call
+loads a fresh one. On Modal, reuse lasts for the lifetime of a warm GPU container: idle scale-down (currently
+10 minutes), platform restarts or additional containers from autoscaling require another initial load.
+
+This follows the upstream separation between [Protenix runner construction and inference](https://github.com/bytedance/Protenix/blob/main/runner/batch_inference.py)
+and [ColabFold model loading](https://github.com/sokrypton/ColabFold/blob/efbf31c37cedb38cd09c69c1b991910a9866480e/colabfold/alphafold/models.py)
+with [prediction on existing runners](https://github.com/sokrypton/ColabFold/blob/efbf31c37cedb38cd09c69c1b991910a9866480e/colabfold/batch.py).
 
 ### ESM-2
 - A fresh `ESM2` instance starts on the backbone-only fast path and automatically switches to an internal masked-LM variant when `include_fields` requests `lm_logits` or `["*"]`; after that first upgrade, the instance keeps the MLM-capable model resident for later calls.

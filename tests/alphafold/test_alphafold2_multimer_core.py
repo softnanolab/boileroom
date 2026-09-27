@@ -8,7 +8,7 @@ import pytest
 
 from boileroom.base import PredictionMetadata
 from boileroom.inputs import MSAInput
-from boileroom.models._cli import command_env
+from boileroom.models._runtime_utils import command_env
 from boileroom.msa_cache import MSACache
 
 
@@ -49,35 +49,18 @@ def test_write_fasta_joins_chains_into_single_record(tmp_path: Path, core_class)
     assert fasta_path.read_text(encoding="utf-8").splitlines() == [">query", "AAAA:CCCC"]
 
 
-def test_build_command_maps_config_to_colabfold_flags(tmp_path: Path, core_class) -> None:
-    """The core should drive `colabfold_batch` with the configured options."""
-    core = core_class({"colabfold_command": "/bin/colabfold_batch", "data_dir": "/data/af2"})
-
-    command = core._build_command(
-        tmp_path / "target.fasta",
-        tmp_path / "out",
-        "mmseqs2_uniref_env",
-        {**core.config, "use_templates": True, "use_amber": True, "use_gpu_relax": True},
-    )
-
-    assert command[0] == "/bin/colabfold_batch"
-    assert command[command.index("--model-type") + 1] == "alphafold2_multimer_v3"
-    assert command[command.index("--msa-mode") + 1] == "mmseqs2_uniref_env"
-    assert command[command.index("--pair-mode") + 1] == "unpaired_paired"
-    assert command[command.index("--data") + 1] == "/data/af2"
-    assert command[command.index("--host-url") + 1] == "https://api.colabfold.com"
-    assert "--templates" in command
-    assert "--amber" in command
-    assert "--use-gpu-relax" in command
+def test_obsolete_cli_override_is_rejected(core_class) -> None:
+    """Do not silently ignore an old setting that could bypass model residency."""
+    with pytest.raises(ValueError, match="no longer supported"):
+        core_class({"colabfold_command": "/bin/colabfold_batch"})
 
 
-def test_build_command_omits_msa_mode_for_a3m_input(tmp_path: Path, core_class) -> None:
-    """When an a3m is supplied, the MSA mode flag is omitted so ColabFold reads it."""
-    core = core_class({"data_dir": "/data/af2"})
-
-    command = core._build_command(tmp_path / "provided.a3m", tmp_path / "out", None, core.config)
-
-    assert "--msa-mode" not in command
+def test_plddt_ranking_uses_mean_residue_confidence(tmp_path, core_class) -> None:
+    """The advertised ranking metric must not silently contain pTM instead."""
+    _write_colabfold_job(tmp_path)
+    core = core_class({"rank_by": "plddt", "include_fields": ["ranking"]})
+    output = core._collect_outputs(tmp_path, PredictionMetadata("AlphaFold2-Multimer", "test", [8]), core.config)
+    assert list(output.ranking["plddt"].values()) == [85.0]
 
 
 def test_resolve_msa_input_uses_server_and_returns_cache_key(tmp_path: Path, core_class) -> None:

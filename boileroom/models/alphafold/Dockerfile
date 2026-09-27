@@ -14,10 +14,10 @@ ARG UV_CACHE_ID=boileroom-uv
 # ColabFold only supports Python < 3.12 and pins pandas < 2.0, which has no
 # cp312 wheel; it therefore cannot be installed into the boileroom (Python 3.12)
 # system interpreter. It is instead installed into an isolated Python 3.10
-# environment and only the ``colabfold_batch`` CLI is exposed on PATH. The
-# boileroom core shells out to that CLI and never imports ColabFold, so the two
-# interpreters stay independent. MSAs and AlphaFold parameters are fetched at
-# runtime (via the ColabFold MMseqs2 server and ``--data`` cache), so the image
+# environment. The core runs a persistent worker with that interpreter and
+# never imports ColabFold into Python 3.12. The worker retains model parameters
+# and JAX compilations across fold requests. MSAs and AlphaFold parameters are
+# fetched at runtime (via the ColabFold server and the data cache), so the image
 # only needs ``git`` for the source install.
 RUN apt-get update --quiet \
     && apt-get install --no-install-recommends --yes --quiet git \

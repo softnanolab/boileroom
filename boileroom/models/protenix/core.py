@@ -17,10 +17,10 @@ from biotite.structure.io.pdbx import CIFFile, get_structure
 
 from ...base import FoldingAlgorithm, PredictionMetadata
 from ...utils import Timer, get_model_cache_dir
-from .._cli import command_env, include_field
+from .._runtime_utils import command_env, include_field
+from .._worker import ModelWorker
 from .outputs import read_json, read_token_confidence, sample_identity
 from .types import ProtenixOutput
-from .worker import ProtenixWorker
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +70,7 @@ class ProtenixCore(FoldingAlgorithm):
         if config and "protenix_command" in config:
             raise ValueError("protenix_command is no longer supported; Protenix uses its Python runner")
         super().__init__(config or {})
-        self._worker: ProtenixWorker | None = None
+        self._worker: ModelWorker | None = None
         self._metadata_template = self._initialize_metadata(
             model_name="Protenix",
             model_version=str(self.config["model_name"]),
@@ -84,7 +84,13 @@ class ProtenixCore(FoldingAlgorithm):
         """Validate configuration and load model weights once per core."""
         _validate_config(self.config)
         if self._worker is None:
-            self._worker = ProtenixWorker(self.config, _command_env(self.config))
+            self._worker = ModelWorker(
+                self.config,
+                _command_env(self.config),
+                runtime_path=Path(__file__).with_name("runtime.py"),
+                runtime_class="ProtenixRuntime",
+                label="Protenix",
+            )
         self._worker.start()
         self.ready = True
 

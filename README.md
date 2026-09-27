@@ -67,7 +67,7 @@ per-residue arrays on `[0, 1]`, and scalar scores such as `ptm` and `iptm` are r
 In `0.3.1`, this replaces ESMFold's old padded pLDDT batch array and moves Boltz `ptm`/`iptm` from nested
 `confidence` dictionaries to top-level fields.
 
-Protenix and AlphaFold2-Multimer are CLI-backed complex predictors that fetch MSAs from the ColabFold MMseqs2 server by default. Neither needs local genetic databases. See [docs/models.md](docs/models.md) for configuration, MSA options and Modal GPU defaults.
+Protenix and AlphaFold2-Multimer keep their model runners loaded between `fold()` calls. Create one model instance and reuse it for successive jobs, just like the other wrappers. They fetch MSAs from the ColabFold MMseqs2 server by default; neither needs local genetic databases. See [docs/models.md](docs/models.md) for examples, configuration and Modal GPU defaults.
 
 ## Available Models
 
@@ -80,7 +80,7 @@ Protenix and AlphaFold2-Multimer are CLI-backed complex predictors that fetch MS
 | ESM3     | ✅      | MIT-licensed multimodal model, embedding-only in Boileroom | [Chan Zuckerberg Biohub](https://github.com/Biohub/esm) |
 | Chai-1    | ✅      | Protein design and structure prediction model | [Chai Discovery](https://github.com/chaidiscovery/chai-lab) |
 | Boltz-2   | ✅      | Diffusion-based protein structure prediction | [Boltz / MIT](https://github.com/jwohlwend/boltz) |
-| Protenix  | 🍊      | AlphaFold3-style biomolecular structure prediction (Protenix v2 CLI) | [ByteDance](https://github.com/bytedance/Protenix) |
+| Protenix  | 🍊      | AlphaFold3-style biomolecular structure prediction (Protenix v2) | [ByteDance](https://github.com/bytedance/Protenix) |
 | AlphaFold2-Multimer | 🍊 | Protein complex prediction via ColabFold (`alphafold2_multimer_v3`) | [Google DeepMind](https://github.com/google-deepmind/alphafold) / [ColabFold](https://github.com/sokrypton/ColabFold) |
 
 > **Licensing:** all bundled model weights are MIT-licensed except **Chai-1**, whose weights are released under the non-commercial Chai Discovery Community License. Review Chai Discovery's terms before using Chai-1 outside research.
