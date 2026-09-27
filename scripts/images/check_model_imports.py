@@ -170,6 +170,12 @@ def run_import_checks(options: ImportCheckOptions) -> None:
         platform=current_docker_platform(),
     )
     if not targets:
+        if options.only:
+            print(
+                f"No image targets for model(s) {', '.join(options.only)} on this platform/CUDA selection; "
+                "nothing to check."
+            )
+            return
         raise SystemExit("No image targets matched the requested CUDA selection.")
 
     for image_key, image_reference, _display_tag, requirements_path, core_path in targets:
