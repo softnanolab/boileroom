@@ -120,6 +120,8 @@ class ESMFold2Core(FoldingAlgorithm):
         import torch
         from esm.models.esmfold2 import ESMFold2InputBuilder, EsmFold2Model
 
+        from .loading import load_pretrained
+
         cache_dir = self._resolve_cache_dir("cache_dir", "esmfold2")
         ccd_cache_dir = self._resolve_cache_dir("ccd_cache_dir", "esmfold2")
 
@@ -133,7 +135,7 @@ class ESMFold2Core(FoldingAlgorithm):
             kwargs["dtype"] = getattr(torch, dtype) if isinstance(dtype, str) else dtype
 
         if self.model is None:
-            self.model = EsmFold2Model.from_pretrained(model_name, **kwargs)
+            self.model = load_pretrained(EsmFold2Model, model_name, **kwargs)
 
         self._device = self._resolve_device()
         self.model = self.model.to(self._device)

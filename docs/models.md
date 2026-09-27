@@ -96,6 +96,7 @@ Optional fields:
 ### ESMFold2
 - ESMFold2 uses Biohub's ESMFold2 model family through the `esm` package (`esm>=3.4.1`, torch 2.11, CUDA 12.6 only), so it has its own runtime image instead of sharing the ESMFold/ESM-2 image.
 - The default `biohub/ESMFold2` checkpoint is pinned to a Hugging Face revision (`revision=None` resolves to the pin). Pass `config={"revision": "<sha>"}` to load another snapshot; other `model_name` values load their latest snapshot unless `revision` is set.
+- Checkpoint tensors use buffered Safetensors reads (`pread`) to avoid memory-mapped loading stalls on mounted model volumes. ESM still performs its strict checkpoint-key validation.
 - The CCD dictionary always uses the canonical `biohub/ESMFold2` pin, including with alternate model checkpoints. It is cached under a revision-specific subdirectory of `ccd_cache_dir`; legacy unversioned `ccd.pkl` files are ignored.
 - String inputs follow the existing BoilerRoom convention: `model.fold("AAA:BBB")` predicts one multichain complex, while `model.fold(["AAA", "BBB"])` predicts a batch of independent proteins.
 - For all-atom complexes, pass lightweight input dataclasses from `boileroom.models.esmfold2.types` such as `ProteinInput`, `DNAInput`, `RNAInput`, `LigandInput`, and `StructurePredictionInput`.
