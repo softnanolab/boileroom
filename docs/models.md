@@ -27,45 +27,67 @@ In `0.3.1`, this replaces ESMFold's old padded pLDDT batch array and moves Boltz
 `confidence` dictionaries to top-level fields.
 
 ### Protenix
-`Protenix` wraps the official `protenix pred` CLI. A single `fold()` call accepts one sequence entry; use `:` to
-join multiple protein chains.
+`Protenix` wraps the official `protenix pred` CLI (`protenix==2.0.0`, default checkpoint `protenix-v2`). A single
+`fold()` call accepts one sequence entry; use `:` to join multiple protein chains. On Modal it defaults to an
+`A100-40GB` GPU.
 
 Example usage:
 ```python
 from boileroom import Protenix
 
 model = Protenix(
-    backend="apptainer",
-    device="cuda:0",
+    backend="modal",
     config={
-        "model_name": "protenix_base_default_v1.0.0",
+        "model_name": "protenix-v2",
         "use_msa": True,
-        "use_template": False,
         "sample": 1,
+        "cycle": 10,
         "step": 200,
     },
 )
 
 result = model.fold(
     "MLKNVHVLVLGAGDVGSVVVRLLEK:MLKNVHVLVLGAGDVGSVVVRLLEK",
-    options={"include_fields": ["confidence", "cif"]},
+    options={"include_fields": ["ptm", "iptm", "pae", "token_chain_ids", "cif"]},
 )
 
 result.atom_array
-result.confidence
-result.cif
+result.iptm             # shape-(1,) arrays, one per ranked sample
+result.pae              # (tokens, tokens) PAE matrix per sample
+result.token_chain_ids  # per-token chain labels for interface scoring (e.g. ipSAE)
 ```
 
-Set `use_msa=False` for single-sequence inference. Template and RNA-MSA searches require the external tools and
-databases expected by Protenix; the runtime image installs `hmmer` and `kalign`, but database paths still need to
-be available inside the container when those features are enabled.
+Outputs are collected from every seed/sample directory in rank order. Besides `ptm`/`iptm`/`plddt`, Protenix
+exposes the raw `confidence` summary, `pae`, `token_chain_ids`/`token_res_ids`, `atom_plddt`, `seeds`,
+`sample_ranks`, and `pdb`/`cif`.
+
+MSA handling:
+- **Server (default):** `use_msa=True` sends the search to the ColabFold MMseqs2 server at `msa_server_url`
+  (default `https://api.colabfold.com`, the same as AlphaFold2-Multimer and Boltz). Protenix's own default
+  server can queue jobs for a long time, so Boileroom points the CLI at the configured server via
+  `MMSEQS_SERVICE_HOST_URL`.
+- **Provided MSA:** pass `config={"unpaired_msa": [a3m_chain_a, None, ...]}` with one A3M string (or `None` for
+  query-only) per chain; no server call is made.
+- **Single sequence:** set `use_msa=False`.
+
+Sampling is controlled by `seeds` (comma-separated), `sample` (diffusion samples per seed, default 5), `cycle`
+(recycles, default 10) and `step` (diffusion steps, default 200). Lower values trade accuracy for speed. Template
+and RNA-MSA searches require the external tools and databases expected by Protenix. The runtime image installs
+`hmmer` and `kalign`, but database paths still need to be available inside the container when those features are
+enabled.
 
 ### AlphaFold2-Multimer
 `AlphaFold2Multimer` drives ColabFold's `colabfold_batch` with `--model-type alphafold2_multimer_v3`. MSAs are
 fetched from the public ColabFold MMseqs2 server (`https://api.colabfold.com`), so **no local genetic databases
 (the ~2.6 TB AlphaFold data tree) are required**. AlphaFold model parameters are cached under `data_dir`
 (default `${MODEL_DIR}/alphafold`); ColabFold downloads them there on first use. The wrapper accepts one
-top-level sequence entry and uses `:` to split chains.
+top-level sequence entry and uses `:` to split chains. On Modal it defaults to an `A100-80GB` GPU.
+
+ColabFold runs in its own Python 3.10 environment inside the image, pinned to a fixed commit, because it needs
+Python < 3.12 and `pandas<2`. By default ColabFold turns on CUDA unified memory (`TF_FORCE_UNIFIED_MEMORY=1`,
+memory fraction 4.0). This stalls parameter loading on Modal, so Boileroom runs `colabfold_batch` with
+`TF_FORCE_UNIFIED_MEMORY=0` and `XLA_PYTHON_CLIENT_MEM_FRACTION=0.9`. Values set in the caller's environment still
+take precedence.
 
 Example usage:
 ```python
@@ -100,6 +122,11 @@ MSA handling mirrors the other adapters:
 
 Set `use_templates=True` to enable ColabFold templates and `use_amber=True` (optionally `use_gpu_relax=True`) for
 Amber relaxation of the ranked predictions.
+
+Other config keys: `num_models` (1–5, default 5), `num_recycle` (default 3), `num_seeds`, `random_seed`,
+`msa_mode`, `pair_mode` (default `unpaired_paired`), `rank_by` (default `multimer`), and `timeout_seconds` (no
+limit by default). Outputs are `ranking`, `plddt` (unit scale), `ptm`, `iptm`, `pae`, and `pdb`/`cif`, listed in
+ColabFold rank order.
 
 ### ESM-2
 - A fresh `ESM2` instance starts on the backbone-only fast path and automatically switches to an internal masked-LM variant when `include_fields` requests `lm_logits` or `["*"]`; after that first upgrade, the instance keeps the MLM-capable model resident for later calls.

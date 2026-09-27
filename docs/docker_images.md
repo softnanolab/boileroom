@@ -90,6 +90,12 @@ uv run python scripts/images/check_model_server_health.py --cuda-version=12.6 --
 
 The build helper also supports `--skip-existing` and `--force-rebuild` for registry-aware rebuilds.
 
+To build or check a subset of images, pass `--only <model>` (repeatable) to `build_model_images.py`, `check_model_imports.py`, and `check_model_server_health.py`. Selectors are model family keys such as `alphafold`, `protenix`, or `boltz`. The shared base image is always built, because every model image starts from it. If `--only` matches nothing on the requested platform (for example `--only alphafold --platform=linux/arm64`), the checks exit cleanly without doing anything:
+
+```bash
+uv run python scripts/images/build_model_images.py --cuda-version=12.6 --tag=sha-$(git rev-parse --short HEAD) --push --only alphafold
+```
+
 ### 🔖 Tag policy
 - Docker Hub is kept clean for users. The long-lived public tags are stable version tags such as `0.3.0`, alpha prerelease tags such as `0.3.1-alpha.1`, and the corresponding CUDA-qualified tags such as `cuda12.6-0.3.0` and `cuda11.8-0.3.0`.
 - Short-lived validation tags such as `sha-<shortsha>` are fine when you need to test a branch through Docker Hub or Modal before promoting a version tag.
@@ -169,7 +175,7 @@ This publishes:
 ### 📦 CI publishing (production)
 GitHub Actions at `.github/workflows/build-docker-images.yml` now drives the image publishing pipeline:
 - Triggers automatically on pushes to `main`, on published GitHub releases, and can also be run manually via **Run workflow** from `main`.
-- Manual runs can also be dispatched from a non-`main` branch with `promote` left disabled. That validation-only path builds and pushes temporary `sha-<commit>` validation images, runs the local AMD64 and ARM64 smoke checks, and skips public version-tag publishing.
+- Manual runs can also be dispatched from a non-`main` branch with `promote` left disabled. That validation-only path builds and pushes temporary `sha-<commit>` validation images, runs the local AMD64 and ARM64 smoke checks, and skips public version-tag publishing. The `models` dispatch input (space-separated family keys, e.g. `alphafold protenix`) limits a validation-only run to those images; promoted runs ignore it and always build everything.
 - Pushes to `main` build and validate an automatically derived alpha prerelease tag from `scripts/ci/derive_version.py`, such as `0.3.1-alpha.1`. Full GitHub releases build and validate the stable release tag.
 - Builds each CUDA line in its own job, with model images parallelized behind the matching locally available base image by `--local-base` and `--max-workers`.
 - Verifies canonical CUDA-qualified tags from the same runner-local images after each CUDA build. The default-CUDA alias is checked locally in the `12.6` job.
