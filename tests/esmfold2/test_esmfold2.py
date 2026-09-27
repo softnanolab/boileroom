@@ -357,3 +357,35 @@ def test_esmfold2_ccd_download_failure_is_not_treated_as_cache_hit(monkeypatch, 
     monkeypatch.setitem(sys.modules, "huggingface_hub", SimpleNamespace(hf_hub_download=download))
     with pytest.raises(OSError, match="download failed"):
         _core_cls()._ensure_ccd_cache(tmp_path)
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_esmfold2_buffered_loading_preserves_validation_and_restores_loader(monkeypatch, fail) -> None:
+    """Only the I/O backend changes; arguments and upstream errors survive."""
+    from unittest.mock import Mock
+
+    from boileroom.models.esmfold2.loading import load_pretrained
+
+    original = Mock()
+    reader = Mock(return_value={"tensor": "weights"})
+    hub = SimpleNamespace(load_file=original)
+    monkeypatch.setitem(sys.modules, "esm", SimpleNamespace())
+    monkeypatch.setitem(sys.modules, "esm.models", SimpleNamespace(hub=hub))
+    monkeypatch.setitem(sys.modules, "safetensors.torch", SimpleNamespace(load_file=reader))
+
+    def from_pretrained(name, **kwargs):
+        assert name == "biohub/ESMFold2"
+        assert kwargs == {"revision": "fixed-sha", "cache_dir": "/cache"}
+        assert hub.load_file("shard.safetensors") == {"tensor": "weights"}
+        if fail:
+            raise RuntimeError("unexpected checkpoint key")
+        return "loaded model"
+
+    model = SimpleNamespace(from_pretrained=from_pretrained)
+    if fail:
+        with pytest.raises(RuntimeError, match="unexpected checkpoint key"):
+            load_pretrained(model, "biohub/ESMFold2", revision="fixed-sha", cache_dir="/cache")
+    else:
+        assert load_pretrained(model, "biohub/ESMFold2", revision="fixed-sha", cache_dir="/cache") == "loaded model"
+    reader.assert_called_once_with("shard.safetensors", backend="pread")
+    assert hub.load_file is original
