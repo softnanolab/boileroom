@@ -1,5 +1,11 @@
-# boileroom runtime postprocessing dependencies (Python 3.12 system interpreter).
+# boileroom runtime dependencies (Python 3.12 system interpreter).
 # ColabFold and its scientific stack are installed separately into an isolated
 # Python 3.10 environment by the Dockerfile; see that file for details.
+#
+# HTTP microservice stack used by the shared image-backed server.
+fastapi
+pydantic
+uvicorn
+# Output postprocessing.
 biotite>=1.0.1
 numpy>=2.2.2
