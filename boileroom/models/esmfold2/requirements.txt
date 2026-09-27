@@ -4,3 +4,6 @@ esm==3.4.1.post1
 fastapi==0.136.3
 uvicorn==0.48.0
 pydantic==2.13.4
+
+# Buffered checkpoint reads on mounted model volumes require the pread backend.
+safetensors>=0.8.0,<0.9
