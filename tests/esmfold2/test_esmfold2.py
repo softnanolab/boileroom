@@ -2,6 +2,7 @@
 
 import sys
 from contextlib import nullcontext
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -315,17 +316,17 @@ def test_esmfold2_rejects_empty_chain() -> None:
         core._coerce_requests("A::B")
 
 
-def test_esmfold2_ccd_cache_ignores_legacy_file_and_reuses_pinned_snapshot(monkeypatch, tmp_path) -> None:
+def test_esmfold2_ccd_cache_ignores_legacy_file_and_reuses_pinned_snapshot(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     """An old unpinned CCD must never satisfy a new revision-pinned load."""
-    from pathlib import Path
-
     from boileroom.models.esmfold2.core import ESMFOLD2_HF_REPO, ESMFOLD2_HF_REVISION
 
     legacy = tmp_path / "ccd.pkl"
     legacy.write_text("legacy snapshot")
     calls = []
 
-    def download(**kwargs):
+    def download(**kwargs: str) -> None:
         calls.append(kwargs)
         directory = Path(kwargs["local_dir"])
         directory.mkdir(parents=True)
@@ -347,11 +348,13 @@ def test_esmfold2_ccd_cache_ignores_legacy_file_and_reuses_pinned_snapshot(monke
     ]
 
 
-def test_esmfold2_ccd_download_failure_is_not_treated_as_cache_hit(monkeypatch, tmp_path) -> None:
+def test_esmfold2_ccd_download_failure_is_not_treated_as_cache_hit(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     """A failed pinned download must surface even when a legacy file exists."""
     (tmp_path / "ccd.pkl").write_text("legacy snapshot")
 
-    def download(**kwargs):
+    def download(**kwargs: str) -> None:
         raise OSError("download failed")
 
     monkeypatch.setitem(sys.modules, "huggingface_hub", SimpleNamespace(hf_hub_download=download))
@@ -360,7 +363,9 @@ def test_esmfold2_ccd_download_failure_is_not_treated_as_cache_hit(monkeypatch, 
 
 
 @pytest.mark.parametrize("fail", [False, True])
-def test_esmfold2_buffered_loading_preserves_validation_and_restores_loader(monkeypatch, fail) -> None:
+def test_esmfold2_buffered_loading_preserves_validation_and_restores_loader(
+    monkeypatch: pytest.MonkeyPatch, fail: bool
+) -> None:
     """Only the I/O backend changes; arguments and upstream errors survive."""
     from unittest.mock import Mock
 
@@ -373,7 +378,7 @@ def test_esmfold2_buffered_loading_preserves_validation_and_restores_loader(monk
     monkeypatch.setitem(sys.modules, "esm.models", SimpleNamespace(hub=hub))
     monkeypatch.setitem(sys.modules, "safetensors.torch", SimpleNamespace(load_file=reader))
 
-    def from_pretrained(name, **kwargs):
+    def from_pretrained(name: str, **kwargs: str) -> str:
         assert name == "biohub/ESMFold2"
         assert kwargs == {"revision": "fixed-sha", "cache_dir": "/cache"}
         assert hub.load_file("shard.safetensors") == {"tensor": "weights"}
