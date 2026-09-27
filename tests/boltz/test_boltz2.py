@@ -12,6 +12,7 @@ from biotite.structure.io.pdbx import CIFFile, get_structure
 from boileroom import Boltz2
 from boileroom.constants import restype_3to1
 from boileroom.models.boltz.types import Boltz2Output
+from boileroom.msa_cache import MSACache
 
 pytestmark = [pytest.mark.integration, pytest.mark.slow, pytest.mark.gpu, pytest.mark.xdist_group("boltz2")]
 
@@ -249,10 +250,10 @@ def test_boltz2_msa_cache_per_chain_multimer_reuse(test_sequences: dict[str, str
         core = Boltz2Core(config={"device": "cpu", "cache_dir": str(cache_dir)})
         core._initialize()
 
-        # Compute hashes using the core's method
-        hash_aaaa = core._get_sequence_hash(sequence_aaaa)
-        hash_bbbb = core._get_sequence_hash(sequence_bbbb)
-        hash_cccc = core._get_sequence_hash(sequence_cccc)
+        # Compute hashes using the shared cache's key function
+        hash_aaaa = MSACache.hash_key(sequence_aaaa)
+        hash_bbbb = MSACache.hash_key(sequence_bbbb)
+        hash_cccc = MSACache.hash_key(sequence_cccc)
 
         msa_cache_dir = cache_dir / "msa_cache"
         index_path = msa_cache_dir / "msa_index.json"
@@ -368,7 +369,7 @@ def test_boltz2_msa_cache_integration(test_sequences: dict[str, str]):
         core = Boltz2Core(config={"device": "cpu", "cache_dir": str(cache_dir)})
         core._initialize()
 
-        seq_hash = core._get_sequence_hash(sequence)
+        seq_hash = MSACache.hash_key(sequence)
         msa_cache_dir = cache_dir / "msa_cache"
         index_path = msa_cache_dir / "msa_index.json"
 
