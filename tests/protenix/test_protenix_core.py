@@ -152,6 +152,16 @@ def test_protenix_command_env_preserves_backend_device_by_default(monkeypatch, c
     assert _command_env({**core_class().config, "device": "cpu"})["CUDA_VISIBLE_DEVICES"] == ""
 
 
+def test_protenix_command_env_routes_msa_search_to_configured_server(monkeypatch, core_class) -> None:
+    """The Protenix MSA client must use the configured ColabFold-compatible server, not its own default."""
+    from boileroom.models.protenix.core import _command_env
+
+    monkeypatch.setenv("MMSEQS_SERVICE_HOST_URL", "https://stale.example")
+    assert _command_env(core_class().config)["MMSEQS_SERVICE_HOST_URL"] == "https://api.colabfold.com"
+    custom = {**core_class().config, "msa_server_url": "https://msa.example"}
+    assert _command_env(custom)["MMSEQS_SERVICE_HOST_URL"] == "https://msa.example"
+
+
 def test_target_only_msa_suppresses_binder_search(tmp_path, core_class) -> None:
     """Target alignment is transported as text, binder gets a query-only alignment."""
     target = ">query\nAAAA\n>homolog\nAAcAA\n"

@@ -37,6 +37,7 @@ class ProtenixCore(FoldingAlgorithm):
         "sample": 5,
         "dtype": "bf16",
         "use_msa": True,
+        "msa_server_url": "https://api.colabfold.com",
         "use_template": False,
         "use_default_params": False,
         "trimul_kernel": "cuequivariance",
@@ -253,7 +254,11 @@ class ProtenixCore(FoldingAlgorithm):
 
 
 def _command_env(config: dict[str, Any]) -> dict[str, str]:
-    return command_env(config, {"PROTENIX_ROOT_DIR": str(get_model_cache_dir("protenix"))})
+    env = command_env(config, {"PROTENIX_ROOT_DIR": str(get_model_cache_dir("protenix"))})
+    # Protenix's MSA client speaks the ColabFold MMseqs2 API but defaults to its own
+    # server, which can queue jobs for a long time; use the configured server instead.
+    env["MMSEQS_SERVICE_HOST_URL"] = str(config["msa_server_url"])
+    return env
 
 
 def _parse_seeds(value: str) -> list[int]:
