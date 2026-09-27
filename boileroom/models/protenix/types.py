@@ -19,6 +19,12 @@ class ProtenixOutput(StructurePrediction):
     plddt: list[np.ndarray | None] | None = None
     ptm: list[np.ndarray | None] | None = None
     iptm: list[np.ndarray | None] | None = None
+    pae: list[np.ndarray] | None = None
+    token_chain_ids: list[np.ndarray] | None = None
+    token_res_ids: list[np.ndarray] | None = None
+    atom_plddt: list[np.ndarray] | None = None
+    seeds: list[int] | None = None
+    sample_ranks: list[int] | None = None
     pdb: list[str] | None = None
     cif: list[str] | None = None
 

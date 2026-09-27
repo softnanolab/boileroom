@@ -56,6 +56,10 @@ class Protenix(ModelWrapper):
         """Run Protenix for a single sequence entry.
 
         Use ``:`` inside a sequence string to define multiple chains.
+        Pass ``options={"unpaired_msa": [target_a3m_text, None]}`` for an
+        unpaired target alignment and a single-sequence binder. Results retain
+        numeric seeds and within-seed confidence ranks. Request ``pae``,
+        ``token_chain_ids`` and ``token_res_ids`` to compute interface scores.
         """
         validated_sequences = [sequences] if isinstance(sequences, str) else list(sequences)
         if len(validated_sequences) != 1:

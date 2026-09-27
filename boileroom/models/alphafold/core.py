@@ -7,7 +7,6 @@ import json
 import logging
 import os
 import pickle
-import subprocess
 from collections.abc import Sequence
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -21,6 +20,7 @@ from biotite.structure.io.pdbx import get_structure as get_cif_structure
 
 from ...base import FoldingAlgorithm, PredictionMetadata
 from ...utils import MODAL_MODEL_DIR, Timer
+from .._cli import bool_arg, command_env, include_field, run_command
 from .types import AlphaFold2MultimerOutput
 
 logger = logging.getLogger(__name__)
@@ -143,9 +143,9 @@ class AlphaFold2MultimerCore(FoldingAlgorithm):
             "--model_preset=multimer",
             f"--num_multimer_predictions_per_model={int(config['num_multimer_predictions_per_model'])}",
             f"--models_to_relax={config['models_to_relax']}",
-            f"--use_gpu_relax={_bool_arg(config['use_gpu_relax'])}",
-            f"--use_precomputed_msas={_bool_arg(config['use_precomputed_msas'])}",
-            f"--benchmark={_bool_arg(config['benchmark'])}",
+            f"--use_gpu_relax={bool_arg(config['use_gpu_relax'])}",
+            f"--use_precomputed_msas={bool_arg(config['use_precomputed_msas'])}",
+            f"--benchmark={bool_arg(config['benchmark'])}",
             "--logtostderr",
         ]
         for flag_name, path in database_paths.items():
@@ -165,17 +165,7 @@ class AlphaFold2MultimerCore(FoldingAlgorithm):
         return command
 
     def _run_command(self, command: list[str], config: dict[str, Any]) -> None:
-        result = subprocess.run(
-            command,
-            check=False,
-            capture_output=True,
-            text=True,
-            env=_command_env(config),
-            timeout=config.get("timeout_seconds"),
-        )
-        if result.returncode != 0:
-            tail = "\n".join((result.stdout + "\n" + result.stderr).splitlines()[-80:])
-            raise RuntimeError(f"AlphaFold2-Multimer command failed with exit code {result.returncode}:\n{tail}")
+        run_command(command, "AlphaFold2-Multimer", _command_env(config), config.get("timeout_seconds"))
 
     def _collect_outputs(
         self,
@@ -197,8 +187,8 @@ class AlphaFold2MultimerCore(FoldingAlgorithm):
 
         include_fields = config.get("include_fields")
         atom_arrays = []
-        pdb_strings: list[str] | None = [] if _include_field(include_fields, "pdb") else None
-        cif_strings: list[str] | None = [] if _include_field(include_fields, "cif") else None
+        pdb_strings: list[str] | None = [] if include_field(include_fields, "pdb") else None
+        cif_strings: list[str] | None = [] if include_field(include_fields, "cif") else None
         plddt_values: list[np.ndarray | None] = []
         ptm_values: list[np.ndarray | None] = []
         iptm_values: list[np.ndarray | None] = []
@@ -246,28 +236,8 @@ class AlphaFold2MultimerCore(FoldingAlgorithm):
         return cast(AlphaFold2MultimerOutput, self._filter_include_fields(output, include_fields))
 
 
-def _bool_arg(value: Any) -> str:
-    return "true" if bool(value) else "false"
-
-
-def _extract_device_number(device: str) -> str | None:
-    if device.startswith("cuda:"):
-        return device.split(":", 1)[1]
-    return None
-
-
 def _command_env(config: dict[str, Any]) -> dict[str, str]:
-    env = os.environ.copy()
-    device = config.get("device")
-    if device is None:
-        return env
-    device_name = str(device)
-    device_number = _extract_device_number(device_name)
-    if device_number is not None:
-        env["CUDA_VISIBLE_DEVICES"] = device_number
-    elif device_name == "cpu":
-        env["CUDA_VISIBLE_DEVICES"] = ""
-    return env
+    return command_env(config)
 
 
 def _resolve_multimer_database_paths(data_dir: Path, config: dict[str, Any]) -> dict[str, Path | str]:
@@ -319,7 +289,3 @@ def _optional_scalar(result: dict[str, Any], key: str) -> np.ndarray | None:
     if key not in result or result[key] is None:
         return None
     return np.asarray(result[key], dtype=np.float32).reshape(1)
-
-
-def _include_field(include_fields: list[str] | None, field: str) -> bool:
-    return include_fields is not None and ("*" in include_fields or field in include_fields)

@@ -5,17 +5,20 @@ from __future__ import annotations
 import dataclasses
 import json
 import logging
-import os
-import subprocess
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
+from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, ClassVar, cast
 
+from biotite.sequence.io.fasta import FastaFile
+from biotite.structure.io.pdb import PDBFile
 from biotite.structure.io.pdbx import CIFFile, get_structure
 
 from ...base import FoldingAlgorithm, PredictionMetadata
-from ...utils import Timer
+from ...utils import Timer, get_model_cache_dir
+from .._cli import bool_arg, command_env, include_field, run_command
+from .outputs import read_json, read_token_confidence, sample_identity
 from .types import ProtenixOutput
 
 logger = logging.getLogger(__name__)
@@ -27,7 +30,7 @@ class ProtenixCore(FoldingAlgorithm):
     DEFAULT_CONFIG: ClassVar[dict[str, Any]] = {
         "device": None,
         "protenix_command": "protenix",
-        "model_name": "protenix_base_default_v1.0.0",
+        "model_name": "protenix-v2",
         "seeds": "101",
         "cycle": 10,
         "step": 200,
@@ -43,8 +46,9 @@ class ProtenixCore(FoldingAlgorithm):
         "enable_tf32": True,
         "use_seeds_in_json": False,
         "use_tfg_guidance": False,
+        "unpaired_msa": None,
         "include_fields": None,
-        "timeout_seconds": None,
+        "timeout_seconds": 3500,
     }
     STATIC_CONFIG_KEYS: ClassVar[frozenset[str]] = frozenset({"device", "protenix_command"})
 
@@ -72,6 +76,7 @@ class ProtenixCore(FoldingAlgorithm):
         Use ``:`` inside a sequence string to define multiple protein chains.
         """
         effective_config = self._merge_options(options)
+        _validate_config(effective_config)
         validated_sequences = self._validate_sequences(sequences)
         if len(validated_sequences) != 1:
             raise ValueError(
@@ -87,7 +92,9 @@ class ProtenixCore(FoldingAlgorithm):
         with TemporaryDirectory() as buffer_dir:
             buffer_path = Path(buffer_dir)
             with Timer("Protenix preprocessing") as preprocess_timer:
-                input_json = self._write_input_json(validated_sequences[0], buffer_path)
+                input_json = self._write_input_json(
+                    validated_sequences[0], buffer_path, effective_config.get("unpaired_msa")
+                )
                 output_dir = buffer_path / "outputs"
                 output_dir.mkdir(parents=True, exist_ok=True)
                 command = self._build_command(input_json, output_dir, effective_config)
@@ -103,10 +110,14 @@ class ProtenixCore(FoldingAlgorithm):
         output.metadata.postprocessing_time = postprocess_timer.duration
         return output
 
-    def _write_input_json(self, sequence_entry: str, buffer_path: Path) -> Path:
-        chains = [part.strip() for part in sequence_entry.split(":") if part.strip()]
-        if not chains:
-            raise ValueError("Protenix input must contain at least one chain")
+    def _write_input_json(
+        self, sequence_entry: str, buffer_path: Path, unpaired_msa: list[str | None] | None = None
+    ) -> Path:
+        chains = sequence_entry.split(":")
+        if not chains or any(not part for part in chains) or len(chains) > 26:
+            raise ValueError("Protenix input requires 1 to 26 nonempty protein chains")
+        if unpaired_msa is not None and len(unpaired_msa) != len(chains):
+            raise ValueError("unpaired_msa must have one A3M string or None per chain")
 
         sequence_records = []
         for index, sequence in enumerate(chains):
@@ -120,6 +131,14 @@ class ProtenixCore(FoldingAlgorithm):
                     }
                 }
             )
+            if unpaired_msa is not None:
+                # A query-only file for None suppresses upstream's automatic search
+                # for the binder while allowing an unpaired target alignment.
+                msa_text = unpaired_msa[index] or f">query\n{sequence}\n"
+                _validate_msa(msa_text, sequence)
+                msa_path = buffer_path / f"chain_{index}.a3m"
+                msa_path.write_text(msa_text, encoding="utf-8")
+                sequence_records[-1]["proteinChain"]["unpairedMsaPath"] = str(msa_path)
 
         payload = [{"name": "boileroom_target", "sequences": sequence_records, "covalent_bonds": []}]
         input_json = buffer_path / "input.json"
@@ -147,21 +166,23 @@ class ProtenixCore(FoldingAlgorithm):
             "--dtype",
             str(config["dtype"]),
             "--use_msa",
-            _bool_arg(config["use_msa"]),
+            bool_arg(config["use_msa"]),
             "--use_template",
-            _bool_arg(config["use_template"]),
+            bool_arg(config["use_template"]),
             "--use_default_params",
-            _bool_arg(config["use_default_params"]),
+            bool_arg(config["use_default_params"]),
             "--trimul_kernel",
             str(config["trimul_kernel"]),
             "--triatt_kernel",
             str(config["triatt_kernel"]),
             "--enable_cache",
-            _bool_arg(config["enable_cache"]),
+            bool_arg(config["enable_cache"]),
             "--enable_fusion",
-            _bool_arg(config["enable_fusion"]),
+            bool_arg(config["enable_fusion"]),
             "--enable_tf32",
-            _bool_arg(config["enable_tf32"]),
+            bool_arg(config["enable_tf32"]),
+            "--need_atom_confidence",
+            "true",
         ]
         if config.get("use_seeds_in_json"):
             command.extend(["--use_seeds_in_json", "true"])
@@ -170,17 +191,7 @@ class ProtenixCore(FoldingAlgorithm):
         return command
 
     def _run_command(self, command: list[str], config: dict[str, Any]) -> None:
-        result = subprocess.run(
-            command,
-            check=False,
-            capture_output=True,
-            text=True,
-            env=_command_env(config),
-            timeout=config.get("timeout_seconds"),
-        )
-        if result.returncode != 0:
-            tail = "\n".join((result.stdout + "\n" + result.stderr).splitlines()[-80:])
-            raise RuntimeError(f"Protenix command failed with exit code {result.returncode}:\n{tail}")
+        run_command(command, "Protenix", _command_env(config), config.get("timeout_seconds"))
 
     def _collect_outputs(
         self,
@@ -188,89 +199,86 @@ class ProtenixCore(FoldingAlgorithm):
         metadata: PredictionMetadata,
         config: dict[str, Any],
     ) -> ProtenixOutput:
-        prediction_dirs = _find_prediction_dirs(output_dir)
-        cif_paths = sorted(_sample_cif_paths(prediction_dirs), key=_sample_sort_key)
+        cif_paths = sorted(output_dir.glob("**/predictions/*_sample_*.cif"), key=sample_identity)
         if not cif_paths:
             raise RuntimeError(f"Protenix produced no sample CIF files under {output_dir}")
 
         include_fields = config.get("include_fields")
         atom_arrays = []
-        cif_strings: list[str] | None = [] if _include_field(include_fields, "cif") else None
+        cif_strings: list[str] | None = [] if include_field(include_fields, "cif") else None
+        identities = [sample_identity(path) for path in cif_paths]
+        expected = {(seed, rank) for seed in _parse_seeds(config["seeds"]) for rank in range(config["sample"])}
+        if len(set(identities)) != len(identities) or set(identities) != expected:
+            raise RuntimeError(
+                f"Protenix returned incomplete or duplicate samples: expected {sorted(expected)}, got {identities}"
+            )
         confidence: list[dict[str, Any] | None] = []
+        token_confidence: dict[str, list[Any]] = {
+            field: [] for field in ("pae", "token_chain_ids", "token_res_ids", "plddt", "atom_plddt")
+        }
+        pdb_strings: list[str] | None = [] if include_field(include_fields, "pdb") else None
         for cif_path in cif_paths:
             cif_file = CIFFile.read(str(cif_path))
-            atom_arrays.append(get_structure(cif_file, model=1))
+            atoms = get_structure(cif_file, model=1, use_author_fields=False)
+            atom_arrays.append(atoms)
             if cif_strings is not None:
                 cif_strings.append(cif_path.read_text(encoding="utf-8"))
 
-            confidence_path = _confidence_path_for_cif(cif_path)
-            item = json.loads(confidence_path.read_text(encoding="utf-8")) if confidence_path.exists() else None
-            confidence.append(item)
+            prefix, rank = cif_path.stem.rsplit("_sample_", 1)
+            confidence.append(read_json(cif_path.with_name(f"{prefix}_summary_confidence_sample_{rank}.json")))
+            full = read_json(cif_path.with_name(f"{prefix}_full_data_sample_{rank}.json"))
+            for field, value in read_token_confidence(full, atoms).items():
+                token_confidence[field].append(value)
+            if pdb_strings is not None:
+                pdb_file = PDBFile()
+                pdb_file.set_structure(atoms)
+                buffer = StringIO()
+                pdb_file.write(buffer)
+                pdb_strings.append(buffer.getvalue())
 
         output = ProtenixOutput(
             metadata=metadata,
             atom_array=atom_arrays,
-            confidence=confidence if any(item is not None for item in confidence) else None,
+            confidence=confidence,
             cif=cif_strings,
+            pdb=pdb_strings,
+            seeds=[seed for seed, _ in identities],
+            sample_ranks=[rank for _, rank in identities],
+            **token_confidence,
         )
-        return cast(ProtenixOutput, self._filter_include_fields(output, include_fields))
-
-
-def _bool_arg(value: Any) -> str:
-    return "true" if bool(value) else "false"
-
-
-def _extract_device_number(device: str) -> str | None:
-    if device.startswith("cuda:"):
-        return device.split(":", 1)[1]
-    return None
+        filtered = cast(ProtenixOutput, self._filter_include_fields(output, include_fields))
+        filtered.seeds = output.seeds
+        filtered.sample_ranks = output.sample_ranks
+        return filtered
 
 
 def _command_env(config: dict[str, Any]) -> dict[str, str]:
-    env = os.environ.copy()
-    device = config.get("device")
-    if device is None:
-        return env
-    device_name = str(device)
-    device_number = _extract_device_number(device_name)
-    if device_number is not None:
-        env["CUDA_VISIBLE_DEVICES"] = device_number
-    elif device_name == "cpu":
-        env["CUDA_VISIBLE_DEVICES"] = ""
-    return env
+    return command_env(config, {"PROTENIX_ROOT_DIR": str(get_model_cache_dir("protenix"))})
 
 
-def _find_prediction_dirs(output_dir: Path) -> list[Path]:
-    prediction_dirs = sorted(path for path in output_dir.glob("**/predictions") if path.is_dir())
-    if not prediction_dirs:
-        raise RuntimeError(f"Could not find Protenix predictions directory under {output_dir}")
-    return prediction_dirs
+def _parse_seeds(value: str) -> list[int]:
+    seeds = [int(part.strip()) for part in value.split(",")]
+    if not seeds or len(set(seeds)) != len(seeds) or any(seed < 0 for seed in seeds):
+        raise ValueError("seeds must be comma-separated unique nonnegative integers")
+    return seeds
 
 
-def _sample_cif_paths(prediction_dirs: Iterable[Path]) -> Iterable[Path]:
-    for prediction_dir in prediction_dirs:
-        yield from prediction_dir.glob("*_sample_*.cif")
+def _validate_config(config: dict[str, Any]) -> None:
+    _parse_seeds(config["seeds"])
+    for field in ("sample", "cycle", "step"):
+        if not isinstance(config[field], int) or isinstance(config[field], bool) or config[field] < 1:
+            raise ValueError(f"{field} must be a positive integer")
+    if config["use_seeds_in_json"] or config["use_default_params"]:
+        raise ValueError("Explicit seeds and sampling settings require use_seeds_in_json/use_default_params=False")
 
 
-def _sample_sort_key(path: Path) -> tuple[str, int]:
-    return (str(path.parent), _rank_from_sample_path(path))
-
-
-def _rank_from_sample_path(path: Path) -> int:
-    stem = path.stem
-    marker = "_sample_"
-    if marker not in stem:
-        return 0
-    try:
-        return int(stem.rsplit(marker, 1)[1])
-    except ValueError:
-        return 0
-
-
-def _confidence_path_for_cif(cif_path: Path) -> Path:
-    sample_name, rank = cif_path.stem.rsplit("_sample_", 1)
-    return cif_path.with_name(f"{sample_name}_summary_confidence_sample_{rank}.json")
-
-
-def _include_field(include_fields: list[str] | None, field: str) -> bool:
-    return include_fields is not None and ("*" in include_fields or field in include_fields)
+def _validate_msa(text: str, sequence: str) -> None:
+    if not isinstance(text, str) or not text.lstrip().startswith(">"):
+        raise ValueError("unpaired_msa entries must be A3M text or None")
+    rows = list(FastaFile.read(StringIO(text)).values())
+    if not rows or rows[0] != sequence:
+        raise ValueError("The first A3M row must match its input protein chain")
+    for row in rows:
+        aligned = "".join(char for char in row if not char.islower() and char != ".")
+        if len(aligned) != len(sequence):
+            raise ValueError("Every A3M row must have the input chain's aligned length")
