@@ -272,15 +272,15 @@ def test_esmfold2_forwards_msa_sampling_options(monkeypatch: pytest.MonkeyPatch)
             **core.config,
             "msa_max_depth": None,
             "msa_column_mask_rate": 0.0,
-            "lm_dropout": 0.0,
         },
         request_index=0,
     )
 
     assert captured["msa_max_depth"] is None
-    assert captured["msa_subsample_at_inference"] is False
     assert captured["msa_column_mask_rate"] == 0.0
-    assert captured["lm_dropout"] == 0.0
+    # esm>=3.4.1 removed these forward() kwargs and raises TypeError on unknown ones.
+    for removed in ("early_exit", "lm_dropout", "msa_subsample_at_inference"):
+        assert removed not in captured
 
 
 def test_esmfold2_apptainer_wrapper_encodes_rich_inputs(monkeypatch: pytest.MonkeyPatch) -> None:

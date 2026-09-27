@@ -53,12 +53,20 @@ class _FoldRequest:
     sequence_length: int
 
 
+# Biohub re-bundled biohub/ESMFold2 in place on 2026-09-14, so unpinned loads silently
+# changed checkpoint layout under existing images. Pin the default model's snapshot.
+ESMFOLD2_HF_REPO = "biohub/ESMFold2"
+ESMFOLD2_HF_REVISION = "69869f737beffec5294845ede23db5fc0b4f509e"
+
+
 class ESMFold2Core(FoldingAlgorithm):
     """Biohub ESMFold2 all-atom structure prediction model."""
 
     DEFAULT_CONFIG: ClassVar[dict[str, Any]] = {
         "device": "cuda:0",
-        "model_name": "biohub/ESMFold2",
+        "model_name": ESMFOLD2_HF_REPO,
+        # None pins biohub/ESMFold2 to ESMFOLD2_HF_REVISION; other checkpoints load their latest snapshot.
+        "revision": None,
         "cache_dir": None,
         "ccd_cache_dir": None,
         "dtype": None,
@@ -69,16 +77,14 @@ class ESMFold2Core(FoldingAlgorithm):
         "noise_scale": None,
         "step_scale": None,
         "max_inference_sigma": None,
-        "early_exit": False,
         "lm_mask_pct": None,
-        "lm_dropout": 0.3,
         "msa_max_depth": 1024,
         "msa_column_mask_rate": 0.1,
         "complex_id": "pred",
         "include_fields": None,
     }
     STATIC_CONFIG_KEYS: ClassVar[frozenset[str]] = frozenset(
-        {"device", "model_name", "cache_dir", "ccd_cache_dir", "dtype"}
+        {"device", "model_name", "revision", "cache_dir", "ccd_cache_dir", "dtype"}
     )
 
     def __init__(self, config: dict | None = None) -> None:
@@ -111,18 +117,23 @@ class ESMFold2Core(FoldingAlgorithm):
 
     def _load(self) -> None:
         """Load Biohub ESMFold2 from Hugging Face and prepare the input builder."""
-        from esm.models.esmfold2 import ESMFold2InputBuilder
-        from transformers.models.esmfold2.modeling_esmfold2 import ESMFold2Model
+        import torch
+        from esm.models.esmfold2 import ESMFold2InputBuilder, EsmFold2Model
 
         cache_dir = self._resolve_cache_dir("cache_dir", "esmfold2")
         ccd_cache_dir = self._resolve_cache_dir("ccd_cache_dir", "esmfold2")
 
-        kwargs: dict[str, Any] = {"cache_dir": str(cache_dir)}
-        if self.config.get("dtype") is not None:
-            kwargs["dtype"] = self.config["dtype"]
+        model_name = str(self.config["model_name"])
+        revision = self.config.get("revision")
+        if revision is None and model_name == ESMFOLD2_HF_REPO:
+            revision = ESMFOLD2_HF_REVISION
+        kwargs: dict[str, Any] = {"cache_dir": str(cache_dir), "revision": revision}
+        dtype = self.config.get("dtype")
+        if dtype is not None:
+            kwargs["dtype"] = getattr(torch, dtype) if isinstance(dtype, str) else dtype
 
         if self.model is None:
-            self.model = ESMFold2Model.from_pretrained(str(self.config["model_name"]), **kwargs)
+            self.model = EsmFold2Model.from_pretrained(model_name, **kwargs)
 
         self._device = self._resolve_device()
         self.model = self.model.to(self._device)
@@ -140,7 +151,12 @@ class ESMFold2Core(FoldingAlgorithm):
 
         from huggingface_hub import hf_hub_download
 
-        hf_hub_download(repo_id="biohub/ESMFold2", filename="ccd.pkl", local_dir=str(ccd_cache_dir))
+        hf_hub_download(
+            repo_id=ESMFOLD2_HF_REPO,
+            filename="ccd.pkl",
+            revision=ESMFOLD2_HF_REVISION,
+            local_dir=str(ccd_cache_dir),
+        )
 
     def fold(self, sequences: ESMFold2FoldInput, options: dict | None = None) -> ESMFold2Output:
         """Predict one or more structures with ESMFold2."""
@@ -204,11 +220,8 @@ class ESMFold2Core(FoldingAlgorithm):
                 num_loops=int(config["num_loops"]),
                 num_sampling_steps=int(config["num_sampling_steps"]),
                 num_diffusion_samples=num_diffusion_samples,
-                early_exit=bool(config["early_exit"]),
-                lm_dropout=config.get("lm_dropout"),
                 msa_max_depth=config.get("msa_max_depth"),
                 msa_column_mask_rate=float(config.get("msa_column_mask_rate", 0.1)),
-                msa_subsample_at_inference=config.get("msa_max_depth") is not None,
                 **sampler_kwargs,
             )
 
@@ -246,7 +259,6 @@ class ESMFold2Core(FoldingAlgorithm):
             "step_scale",
             "max_inference_sigma",
             "lm_mask_pct",
-            "lm_dropout",
             "msa_column_mask_rate",
         ):
             value = config.get(key)
