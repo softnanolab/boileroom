@@ -138,16 +138,17 @@ class ESMFold2Core(FoldingAlgorithm):
         self._device = self._resolve_device()
         self.model = self.model.to(self._device)
         self.model.eval()
-        self._ensure_ccd_cache(ccd_cache_dir)
+        ccd_cache_dir = self._ensure_ccd_cache(ccd_cache_dir)
         self.input_builder = ESMFold2InputBuilder(ccd_cache=ccd_cache_dir)
         self.ready = True
 
     @staticmethod
-    def _ensure_ccd_cache(ccd_cache_dir: Path) -> None:
-        """Download the CCD pickle to the direct path expected by Biohub ESMFold2."""
+    def _ensure_ccd_cache(ccd_cache_dir: Path) -> Path:
+        """Return the pinned CCD directory, ignoring legacy unversioned caches."""
+        ccd_cache_dir = ccd_cache_dir / ESMFOLD2_HF_REVISION
         ccd_path = ccd_cache_dir / "ccd.pkl"
-        if ccd_path.exists():
-            return
+        if ccd_path.is_file():
+            return ccd_cache_dir
 
         from huggingface_hub import hf_hub_download
 
@@ -157,6 +158,7 @@ class ESMFold2Core(FoldingAlgorithm):
             revision=ESMFOLD2_HF_REVISION,
             local_dir=str(ccd_cache_dir),
         )
+        return ccd_cache_dir
 
     def fold(self, sequences: ESMFold2FoldInput, options: dict | None = None) -> ESMFold2Output:
         """Predict one or more structures with ESMFold2."""

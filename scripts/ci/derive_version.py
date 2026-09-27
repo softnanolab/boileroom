@@ -111,7 +111,7 @@ def main_prerelease_number(head_ref: str = "HEAD", base_version: str | None = No
     """
     base_ref = prerelease_base_ref(head_ref, base_version)
     image_ref = run_git(
-        ["log", "--first-parent", "-1", "--format=%H", head_ref, "--", ".", ":(top,exclude)README.md", ":(top,exclude)docs/**"]
+        ["log", "--first-parent", "-1", "--format=%H", head_ref, "--", ":(top)", ":(top,exclude)README.md", ":(top,exclude)docs/**"]
     )
     if not image_ref:
         raise ValueError(f"No image-changing commit found at {head_ref!r}.")

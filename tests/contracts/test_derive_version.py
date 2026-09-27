@@ -1,6 +1,7 @@
 """Contract tests for CI/CD version derivation."""
 
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -150,8 +151,13 @@ def test_write_github_output_propagates_write_errors(monkeypatch, tmp_path) -> N
         derive_version.write_github_output(output_path, "0.3.2")
 
 
+GitRunner = Callable[..., str]
+CommitWriter = Callable[[str, str], str]
+GitRepo = tuple[GitRunner, CommitWriter]
+
+
 @pytest.fixture
-def version_repo(tmp_path, monkeypatch):
+def git_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> GitRepo:
     """Use real Git history so merges and path filtering exercise Git semantics."""
     monkeypatch.chdir(tmp_path)
 
@@ -172,12 +178,39 @@ def version_repo(tmp_path, monkeypatch):
         git("commit", "-m", path)
         return git("rev-parse", "HEAD")
 
-    commit("runtime.py", "baseline")
-    git("tag", "v0.3.0")
     return git, commit
 
 
-def test_docs_commits_reuse_published_tag_without_renumbering(version_repo) -> None:
+@pytest.fixture
+def version_repo(git_repo: GitRepo) -> GitRepo:
+    """Real Git history with a runtime baseline tagged as the ``v0.3.0`` release."""
+    git, commit = git_repo
+    commit("runtime.py", "baseline")
+    git("tag", "v0.3.0")
+    return git_repo
+
+
+def test_docs_only_history_has_no_image_changing_commit(git_repo: GitRepo) -> None:
+    """A history that never touched the image tree has no tag to derive."""
+    _, commit = git_repo
+    commit("README.md", "readme")
+    commit("docs/guide.md", "docs")
+    with pytest.raises(ValueError, match="No image-changing commit found"):
+        derive_version.main_version(base_version="0.3.1")
+
+
+def test_version_is_derived_from_repo_root_in_subdirectory(
+    version_repo: GitRepo, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Running from a subdirectory still sees image-changing commits elsewhere."""
+    _, commit = version_repo
+    commit("docs/guide.md", "docs")
+    commit("runtime.py", "build")
+    monkeypatch.chdir(tmp_path / "docs")
+    assert derive_version.main_version(base_version="0.3.1") == "0.3.1-alpha.2"
+
+
+def test_docs_commits_reuse_published_tag_without_renumbering(version_repo: GitRepo) -> None:
     """Docs reuse a built tag; later runtime commits retain all intervening counts."""
     _, commit = version_repo
     commit("runtime.py", "first build")
@@ -190,7 +223,7 @@ def test_docs_commits_reuse_published_tag_without_renumbering(version_repo) -> N
 
 
 @pytest.mark.parametrize("path", ["docs/guide.md", "runtime.py"])
-def test_merged_docs_and_runtime_changes_follow_first_parent(version_repo, path) -> None:
+def test_merged_docs_and_runtime_changes_follow_first_parent(version_repo: GitRepo, path: str) -> None:
     """A merged docs branch reuses its parent tag; a runtime merge gets a new tag."""
     git, commit = version_repo
     commit("runtime.py", "first build")
@@ -202,7 +235,7 @@ def test_merged_docs_and_runtime_changes_follow_first_parent(version_repo, path)
     assert derive_version.main_version(base_version="0.3.1") == f"0.3.1-alpha.{expected}"
 
 
-def test_doc_deletions_reuse_tag_but_renames_outside_docs_build(version_repo) -> None:
+def test_doc_deletions_reuse_tag_but_renames_outside_docs_build(version_repo: GitRepo) -> None:
     """Deleted documentation is ignored; moving it into the runtime tree is not."""
     git, commit = version_repo
     commit("docs/guide.md", "docs")
