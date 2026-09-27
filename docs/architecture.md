@@ -2,7 +2,7 @@
 
 The high-level API (`ESMFold`, `ESM2`, `ESMC`, `ESM3`, `ESMFold2`, `Chai1`, `Boltz2`, `Protenix`, and `AlphaFold2Multimer`) is a thin wrapper around two building blocks:
 
-- **Core algorithms** (`ESMFoldCore`, `ESM2Core`, `ESMCCore`, `ESM3Core`, and so on) encapsulate all model-specific logic. `ProtenixCore` retains the upstream Python runner in a persistent worker so weights stay loaded across requests and timed-out work can be terminated. `AlphaFold2MultimerCore` writes inputs to a scratch directory, runs ColabFold `colabfold_batch` through `boileroom/models/_cli.py`, and parses the outputs. They know nothing about Modal, which keeps the code portable.
+- **Core algorithms** (`ESMFoldCore`, `ESM2Core`, `ESMCCore`, `ESM3Core`, and so on) encapsulate all model-specific logic. `ProtenixCore` retains the upstream Python runner in a persistent worker so weights stay loaded across requests and timed-out work can be terminated. `AlphaFold2MultimerCore` writes inputs to a scratch directory, runs resident ColabFold runners through `ModelWorker` and `AlphaFold2MultimerRuntime` in an isolated Python 3.10 worker, and parses the outputs. They know nothing about Modal, which keeps the code portable.
 - **Modal integration** registers each model entrypoint on its own `modal.App` (for example `boileroom-esmfold` and `boileroom-boltz2`) managed by `ModalAppManager`. `ModalBackend` acquires/releases the app attached to the selected Modal class and instantiates that class only once, so test processes can run model-specific apps without registering unrelated GPU functions.
 
 When you construct `ESMFold(backend="modal", device="T4", config={...})`:
