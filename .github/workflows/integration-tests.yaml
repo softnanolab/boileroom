@@ -71,9 +71,8 @@ jobs:
               --head-ref "$WORKFLOW_RUN_HEAD_SHA" \
               --github-output "$GITHUB_OUTPUT"
           else
-            git fetch origin main --tags
             uv run --no-project --with click python scripts/ci/derive_version.py \
-              --head-ref origin/main \
+              --head-ref HEAD \
               --github-output "$GITHUB_OUTPUT"
           fi
 

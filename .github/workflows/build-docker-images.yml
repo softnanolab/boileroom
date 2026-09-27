@@ -5,6 +5,7 @@ on:
     branches:
       - main
     paths-ignore:
+      # Keep in sync with main_prerelease_number in scripts/ci/derive_version.py.
       - README.md
       - docs/**
   release:

@@ -1,5 +1,6 @@
 """Contract tests for CI/CD version derivation."""
 
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,8 @@ def test_main_version_uses_commit_count_after_baseline(monkeypatch) -> None:
     def fake_run_git(args: list[str]) -> str:
         if args == ["tag", "--merged", "HEAD", "--list"]:
             return ""
+        if args[0] == "log":
+            return "HEAD"
         assert args == ["rev-list", "--count", f"{derive_version.MAIN_VERSION_BASE_SHA}..HEAD"]
         return "7"
 
@@ -30,6 +33,8 @@ def test_main_version_counts_from_latest_stable_release_tag(monkeypatch) -> None
     def fake_run_git(args: list[str]) -> str:
         if args == ["tag", "--merged", "HEAD", "--list"]:
             return "\n".join(["v0.2.2", "v0.3.0", "0.3.1", "notes"])
+        if args[0] == "log":
+            return "HEAD"
         assert args == ["rev-list", "--count", "v0.3.0..HEAD"]
         return "2"
 
@@ -143,3 +148,77 @@ def test_write_github_output_propagates_write_errors(monkeypatch, tmp_path) -> N
 
     with pytest.raises(PermissionError, match="blocked"):
         derive_version.write_github_output(output_path, "0.3.2")
+
+
+@pytest.fixture
+def version_repo(tmp_path, monkeypatch):
+    """Use real Git history so merges and path filtering exercise Git semantics."""
+    monkeypatch.chdir(tmp_path)
+
+    def git(*args: str) -> str:
+        return subprocess.run(["git", *args], check=True, capture_output=True, text=True).stdout.strip()
+
+    git("init")
+    git("symbolic-ref", "HEAD", "refs/heads/main")
+    git("config", "user.email", "test@example.com")
+    git("config", "user.name", "Test")
+    git("config", "commit.gpgsign", "false")
+
+    def commit(path: str, text: str) -> str:
+        file = tmp_path / path
+        file.parent.mkdir(parents=True, exist_ok=True)
+        file.write_text(text)
+        git("add", ".")
+        git("commit", "-m", path)
+        return git("rev-parse", "HEAD")
+
+    commit("runtime.py", "baseline")
+    git("tag", "v0.3.0")
+    return git, commit
+
+
+def test_docs_commits_reuse_published_tag_without_renumbering(version_repo) -> None:
+    """Docs reuse a built tag; later runtime commits retain all intervening counts."""
+    _, commit = version_repo
+    commit("runtime.py", "first build")
+    assert derive_version.main_version(base_version="0.3.1") == "0.3.1-alpha.1"
+    commit("README.md", "docs")
+    commit("docs/nested/guide.md", "more docs")
+    assert derive_version.main_version(base_version="0.3.1") == "0.3.1-alpha.1"
+    commit("runtime.py", "second build")
+    assert derive_version.main_version(base_version="0.3.1") == "0.3.1-alpha.4"
+
+
+@pytest.mark.parametrize("path", ["docs/guide.md", "runtime.py"])
+def test_merged_docs_and_runtime_changes_follow_first_parent(version_repo, path) -> None:
+    """A merged docs branch reuses its parent tag; a runtime merge gets a new tag."""
+    git, commit = version_repo
+    commit("runtime.py", "first build")
+    git("checkout", "-b", "feature")
+    commit(path, "branch change")
+    git("checkout", "main")
+    git("merge", "--no-ff", "feature", "-m", "merge feature")
+    expected = 1 if path.startswith("docs/") else 3
+    assert derive_version.main_version(base_version="0.3.1") == f"0.3.1-alpha.{expected}"
+
+
+def test_doc_deletions_reuse_tag_but_renames_outside_docs_build(version_repo) -> None:
+    """Deleted documentation is ignored; moving it into the runtime tree is not."""
+    git, commit = version_repo
+    commit("docs/guide.md", "docs")
+    commit("runtime.py", "first build")
+    git("rm", "docs/guide.md")
+    git("commit", "-m", "delete docs")
+    assert derive_version.main_version(base_version="0.3.1") == "0.3.1-alpha.2"
+    commit("README.md", "readme")
+    git("mv", "README.md", "runtime-notes.md")
+    git("commit", "-m", "move outside docs")
+    assert derive_version.main_version(base_version="0.3.1") == "0.3.1-alpha.5"
+
+
+def test_image_version_paths_match_publish_workflow() -> None:
+    """Changes to the workflow exclusions must update the version resolver too."""
+    import yaml
+
+    workflow = yaml.safe_load((derive_version.REPO_ROOT / ".github/workflows/build-docker-images.yml").read_text())
+    assert workflow[True]["push"]["paths-ignore"] == ["README.md", "docs/**"]

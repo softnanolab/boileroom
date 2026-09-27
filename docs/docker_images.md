@@ -175,6 +175,7 @@ GitHub Actions at `.github/workflows/build-docker-images.yml` now drives the ima
 - Builds the ARM64 base once per run and shares it as a short-lived artifact across isolated ARM64 model jobs.
 - Runs the ARM64 smoke build and checks in the same publishing workflow on `main`; the standalone ARM64 workflow is reserved for pull requests and manual runs.
 - The alpha suffix counts commits since the latest reachable stable release tag, for example `0.3.1-alpha.1`, `0.3.1-alpha.2`, and so on. Before the first stable release tag, the count falls back to the configured CI baseline.
+- README- and docs-only commits reuse the alpha tag of the latest image-changing commit on the first-parent history, matching the publishing workflow's path filter. Scheduled tests resolve that tag from their checked-out commit. The next image build still counts intervening documentation commits, preserving existing tag numbering.
 - Each successful run publishes canonical CUDA-qualified tags and the unqualified version alias for the default `12.6` line.
 - The official release path currently publishes `linux/amd64` only. If you want to experiment with additional architectures, pass an explicit multi-platform `--platform` value and validate it separately before treating it as supported.
 - Future merges inherit dependency cache layers through BuildKit registry caches, keeping CI times reasonable even on fresh GitHub-hosted runners.
