@@ -324,6 +324,7 @@ jobs:
         run: docker builder prune --all --force
 
   build-arm64-base:
+    if: ${{ fromJSON(needs.prepare-release.outputs.arm64_model_matrix).include[0] != null }}
     needs: prepare-release
     name: Build Base (linux/arm64, CUDA ${{ needs.prepare-release.outputs.default_cuda_version }})
     runs-on: ubuntu-24.04-arm
@@ -387,6 +388,7 @@ jobs:
           overwrite: true
 
   build-arm64-models:
+    if: ${{ fromJSON(needs.prepare-release.outputs.arm64_model_matrix).include[0] != null }}
     needs: [prepare-release, build-arm64-base]
     name: Build Model (${{ matrix.model }}, linux/arm64, CUDA ${{ matrix.cuda_version }})
     runs-on: ubuntu-24.04-arm
