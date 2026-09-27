@@ -68,14 +68,24 @@ def run_command(command: list[str], label: str, env: dict[str, str], timeout: fl
     timeout : float | None
         Seconds before the command is killed; ``None`` disables the timeout.
     """
-    result = subprocess.run(
-        command,
-        check=False,
-        capture_output=True,
-        text=True,
-        env=env,
-        timeout=timeout,
-    )
+    try:
+        result = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        tail = _log_tail(exc.stdout, exc.stderr)
+        raise RuntimeError(f"{label} command timed out after {timeout} seconds:\n{tail}") from exc
     if result.returncode != 0:
-        tail = "\n".join((result.stdout + "\n" + result.stderr).splitlines()[-80:])
+        tail = _log_tail(result.stdout, result.stderr)
         raise RuntimeError(f"{label} command failed with exit code {result.returncode}:\n{tail}")
+
+
+def _log_tail(stdout: str | bytes | None, stderr: str | bytes | None, lines: int = 80) -> str:
+    """Return the last ``lines`` lines of combined output (``TimeoutExpired`` may carry bytes)."""
+    parts = [part.decode(errors="replace") if isinstance(part, bytes) else part for part in (stdout, stderr) if part]
+    return "\n".join("\n".join(parts).splitlines()[-lines:])

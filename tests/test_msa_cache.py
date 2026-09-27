@@ -94,3 +94,26 @@ def test_corrupt_index_is_backed_up_and_reset(tmp_path: Path):
     # A read through the public API recovers gracefully.
     assert cache.get("whatever") is None
     assert cache.index_path.with_suffix(".json.bak").exists()
+
+
+def test_failed_copy_leaves_no_partial_cache_file(tmp_path: Path, monkeypatch):
+    import shutil
+
+    cache = MSACache(tmp_path, suffix=".a3m")
+    key = MSACache.hash_key("ACDE")
+    src = _write(tmp_path / "src.a3m", ">q\nACDE\n")
+
+    def failing_copy(source, dest, *args, **kwargs):
+        Path(dest).write_text(">q\nAC", encoding="utf-8")
+        raise OSError("disk full")
+
+    monkeypatch.setattr(shutil, "copy2", failing_copy)
+    cache.put(key, src)  # put logs and swallows cache write failures
+    monkeypatch.undo()
+
+    dest = cache.cache_dir / key[:2] / key[2:4] / f"{key}.a3m"
+    assert not dest.exists()
+    assert not list(dest.parent.glob(f".{dest.name}.*"))
+    cache.put(key, src)
+    hit = cache.get(key)
+    assert hit is not None and hit.read_text(encoding="utf-8") == ">q\nACDE\n"

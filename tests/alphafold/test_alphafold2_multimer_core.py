@@ -144,10 +144,43 @@ def test_materialize_msa_strips_insertions(tmp_path: Path, core_class) -> None:
     """`remove_insertions` drops lowercase/dot alignment columns."""
     src = tmp_path / "ins.a3m"
     src.write_text(">query\nAADE\n>hit\nAAdeDE\n", encoding="utf-8")
-    text = core_class()._materialize_msa(MSAInput(path=str(src), remove_insertions=True))
+    text = core_class()._materialize_msa(MSAInput(path=str(src), remove_insertions=True), ["AADE"])
 
     assert "de" not in text
     assert ">hit\nAADE" in text
+
+
+def test_materialize_msa_accepts_colabfold_complex_header(tmp_path: Path, core_class) -> None:
+    """ColabFold complex a3m files start with a ``#lengths\tcardinalities`` header."""
+    src = tmp_path / "complex.a3m"
+    src.write_text("#4,4\t1,1\n>101\t102\nAAAACCCC\n>hit\nAAaAACCCC\n", encoding="utf-8")
+    text = core_class()._materialize_msa(MSAInput(path=str(src), remove_insertions=True), ["AAAA", "CCCC"])
+
+    assert text.startswith("#4,4\t1,1\n")
+    assert ">hit\nAAAACCCC" in text
+
+
+def test_materialize_msa_serializes_multichain_rows_with_complex_header(core_class) -> None:
+    """``:``-joined rows become ColabFold complex a3m over the unique chains."""
+    msa = MSAInput(sequences=["AAAA:AAAA:CCC", "AAAG:AAAG:CCD"])
+    text = core_class()._materialize_msa(msa, ["AAAA", "AAAA", "CCC"])
+
+    assert text == "#4,3\t2,1\n>101\t102\nAAAACCC\n>seq_0\nAAAACCC\n>seq_1\nAAAGCCD\n"
+
+
+def test_materialize_msa_rejects_rows_with_wrong_chain_count(core_class) -> None:
+    """Multichain MSA rows must carry one ``:`` segment per chain."""
+    with pytest.raises(ValueError, match="expected one per chain"):
+        core_class()._materialize_msa(MSAInput(sequences=["AAAACCCC"]), ["AAAA", "CCCC"])
+
+
+@pytest.mark.parametrize("entry", ["AAAA::CCCC", "AAAA:", ":AAAA"])
+def test_split_chains_rejects_empty_segments(entry: str) -> None:
+    """Stray ``:`` separators fail instead of silently changing the stoichiometry."""
+    from boileroom.models.alphafold.core import _split_chains
+
+    with pytest.raises(ValueError, match="empty chains"):
+        _split_chains(entry)
 
 
 def test_collect_outputs_maps_scores_and_structure(tmp_path: Path, core_class) -> None:

@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import shutil
+import tempfile
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -151,7 +152,15 @@ class MSACache:
                 logger.debug(f"MSA already cached for key {key}")
                 return
             safe_mkdir(dest.parent, parents=True)
-            shutil.copy2(source_path, dest)
+            # Stage the copy next to the destination and rename it into place, so a failed
+            # copy never leaves a partial file that later puts would treat as cached.
+            with tempfile.NamedTemporaryFile(dir=dest.parent, prefix=f".{dest.name}.", delete=False) as handle:
+                staged = Path(handle.name)
+            try:
+                shutil.copy2(source_path, staged)
+                os.replace(staged, dest)
+            finally:
+                staged.unlink(missing_ok=True)
             file_size = dest.stat().st_size
             with self.locked_index() as index:
                 now = datetime.now(UTC).isoformat()

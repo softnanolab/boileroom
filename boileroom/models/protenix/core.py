@@ -262,9 +262,15 @@ def _command_env(config: dict[str, Any]) -> dict[str, str]:
 
 
 def _parse_seeds(value: str) -> list[int]:
-    seeds = [int(part.strip()) for part in value.split(",")]
+    error = "seeds must be comma-separated unique nonnegative integers"
+    if not isinstance(value, str):
+        raise ValueError(error)
+    try:
+        seeds = [int(part.strip()) for part in value.split(",")]
+    except ValueError as exc:
+        raise ValueError(error) from exc
     if not seeds or len(set(seeds)) != len(seeds) or any(seed < 0 for seed in seeds):
-        raise ValueError("seeds must be comma-separated unique nonnegative integers")
+        raise ValueError(error)
     return seeds
 
 

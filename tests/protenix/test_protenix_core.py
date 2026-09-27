@@ -201,3 +201,12 @@ def test_missing_pae_fails_closed(sample_outputs, core_class) -> None:
         core._collect_outputs(
             sample_outputs, PredictionMetadata("Protenix", "test", [4]), {**core.config, "seeds": "2,10", "sample": 1}
         )
+
+
+@pytest.mark.parametrize("seeds", ["1,a", "", "1,1", "-1", 7])
+def test_parse_seeds_rejects_malformed_values(seeds) -> None:
+    """Malformed seed lists fail with the documented validation message."""
+    from boileroom.models.protenix.core import _parse_seeds
+
+    with pytest.raises(ValueError, match="comma-separated unique nonnegative integers"):
+        _parse_seeds(seeds)

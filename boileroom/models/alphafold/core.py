@@ -144,7 +144,7 @@ class AlphaFold2MultimerCore(FoldingAlgorithm):
         will be queried and the resulting alignment should be cached.
         """
         if provided_msa is not None:
-            a3m_text = self._materialize_msa(provided_msa)
+            a3m_text = self._materialize_msa(provided_msa, chains)
             a3m_path = buffer_path / "provided.a3m"
             a3m_path.write_text(a3m_text, encoding="utf-8")
             return a3m_path, None, None
@@ -162,15 +162,22 @@ class AlphaFold2MultimerCore(FoldingAlgorithm):
 
         return self._write_fasta(joined, buffer_path), str(config["msa_mode"]), cache_key
 
-    def _materialize_msa(self, msa: MSAInput) -> str:
-        """Render a provided MSA into a3m text, honoring ``remove_insertions``."""
+    def _materialize_msa(self, msa: MSAInput, chains: list[str]) -> str:
+        """Render a provided MSA into ColabFold a3m text, honoring ``remove_insertions``.
+
+        File-backed MSAs are passed through and may be plain a3m or ColabFold's complex
+        a3m (first line ``#<lengths>\t<cardinalities>``). Sequence lists for a complex
+        are ``:``-joined rows, one segment per chain, and get the complex header.
+        """
         if msa.path is not None:
             text = Path(msa.path).read_text(encoding="utf-8")
+        elif len(chains) > 1:
+            text = _complex_a3m(msa.sequences or [], chains)
         else:
             rows = msa.sequences or []
             text = "\n".join(f">seq_{index}\n{row}" for index, row in enumerate(rows)) + "\n"
-        if not text.lstrip().startswith(">"):
-            raise ValueError("Provided MSA must be in a3m/FASTA format (first line starts with '>')")
+        if not text.lstrip().startswith((">", "#")):
+            raise ValueError("Provided MSA must be in a3m/FASTA format (first line starts with '>' or a '#' header)")
         if msa.remove_insertions:
             text = _strip_insertions(text)
         return text
@@ -309,10 +316,34 @@ class AlphaFold2MultimerCore(FoldingAlgorithm):
 
 
 def _split_chains(sequence_entry: str) -> list[str]:
-    chains = [part.strip() for part in sequence_entry.split(":") if part.strip()]
-    if not chains:
+    chains = [part.strip() for part in sequence_entry.split(":")]
+    if not any(chains):
         raise ValueError("AlphaFold2-Multimer input must contain at least one chain")
+    if not all(chains):
+        raise ValueError("AlphaFold2-Multimer input must not contain empty chains (check for stray ':')")
     return chains
+
+
+def _complex_a3m(rows: list[str], chains: list[str]) -> str:
+    """Serialize ``:``-joined complex MSA rows into ColabFold's complex a3m format.
+
+    ColabFold expects a ``#<lengths>\t<cardinalities>`` header over the unique chains,
+    followed by the concatenated unique query and then one concatenated row per hit.
+    Each hit contributes the segment of the first copy of every unique chain.
+    """
+    unique = list(dict.fromkeys(chains))
+    first_index = [chains.index(chain) for chain in unique]
+    header = f"#{','.join(str(len(c)) for c in unique)}\t{','.join(str(chains.count(c)) for c in unique)}"
+    labels = "\t".join(str(101 + index) for index in range(len(unique)))
+    lines = [header, f">{labels}", "".join(unique)]
+    for index, row in enumerate(rows):
+        segments = row.split(":")
+        if len(segments) != len(chains):
+            raise ValueError(
+                f"MSA row {index} has {len(segments)} ':'-separated segments; expected one per chain ({len(chains)})"
+            )
+        lines.extend([f">seq_{index}", "".join(segments[i] for i in first_index)])
+    return "\n".join(lines) + "\n"
 
 
 def _validate_config(config: dict[str, Any]) -> None:
@@ -327,7 +358,7 @@ def _validate_config(config: dict[str, Any]) -> None:
 def _strip_insertions(a3m_text: str) -> str:
     lines = []
     for line in a3m_text.splitlines():
-        if line.startswith(">") or not line:
+        if line.startswith((">", "#")) or not line:
             lines.append(line)
         else:
             lines.append("".join(char for char in line if not char.islower() and char != "."))

@@ -47,7 +47,7 @@ env:
   SHOULD_PROMOTE: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'release' && github.event.release.prerelease == false) || inputs.promote }}
   # Optional model filter for validation-only dispatch runs. Ignored when promoting
   # so that published tags always cover the full model set.
-  MODELS_FOR_RUN: ${{ (github.event.inputs.promote == 'true') && '' || github.event.inputs.models || '' }}
+  MODELS_FOR_RUN: ${{ github.event.inputs.promote != 'true' && github.event.inputs.models || '' }}
 
 jobs:
   prepare-release:
