@@ -169,7 +169,7 @@ This publishes:
 GitHub Actions at `.github/workflows/build-docker-images.yml` now drives the image publishing pipeline:
 - Triggers automatically on non-documentation pushes to `main`, on published GitHub releases, and can also be run manually via **Run workflow** from `main`.
 - Manual runs can also be dispatched from a non-`main` branch with `promote` left disabled. That validation-only path builds and pushes temporary `sha-<commit>` validation images, runs the AMD64 and ARM64 smoke checks, and skips public version-tag publishing.
-- Pushes to `main` build and validate an automatically derived alpha prerelease tag from `scripts/ci/derive_version.py`, such as `0.4.2-alpha.1`. Full GitHub releases build and validate the stable release tag.
+- Pushes to `main` build and validate an automatically derived alpha prerelease tag from `scripts/ci/derive_version.py`, such as `0.4.3-alpha.1`. Full GitHub releases build and validate the stable release tag.
 - Publishes one AMD64 base image per CUDA line, then builds every supported model/CUDA pair in a separate matrix job with `--max-workers=1`.
 - Prunes BuildKit state before verification and pulls only the selected model image. The default-CUDA alias is checked in that model's `12.6` job.
 - Builds the ARM64 base once per run and shares it as a short-lived artifact across isolated ARM64 model jobs.

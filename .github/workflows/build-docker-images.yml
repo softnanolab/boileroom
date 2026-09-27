@@ -120,9 +120,11 @@ jobs:
 
       - name: Determine image tag
         id: image_tag
+        env:
+          DERIVED_DOCKER_TAG: ${{ steps.version.outputs.docker_tag }}
         run: |
           if [ "$SHOULD_PROMOTE" = "true" ]; then
-            echo "value=${{ steps.version.outputs.docker_tag }}" >> "$GITHUB_OUTPUT"
+            echo "value=${DERIVED_DOCKER_TAG}" >> "$GITHUB_OUTPUT"
           else
             echo "value=sha-${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
           fi
