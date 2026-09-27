@@ -26,6 +26,7 @@ from boileroom.images.metadata import (
     published_tags,
     render_modal_runtime_env,
     resolve_registry_tag,
+    select_model_image_specs,
     split_platforms,
 )
 
@@ -60,7 +61,7 @@ def test_model_specs_report_supported_cuda_from_config() -> None:
     assert get_supported_cuda(get_model_image_spec("boltz")) == ("12.6",)
     assert get_supported_cuda(get_model_image_spec("chai")) == ("11.8", "12.6")
     assert get_supported_cuda(get_model_image_spec("esm")) == ("11.8", "12.6")
-    assert get_supported_cuda(get_model_image_spec("esmfold2")) == ("11.8", "12.6")
+    assert get_supported_cuda(get_model_image_spec("esmfold2")) == ("12.6",)
     assert get_supported_cuda(get_model_image_spec("protenix")) == ("12.6",)
 
 
@@ -268,3 +269,16 @@ def test_iter_image_targets_filters_by_platform() -> None:
     image_keys = [image_key for image_key, *_ in targets]
 
     assert image_keys == ["boltz", "chai", "esm", "esmfold2"]
+
+
+def test_select_model_image_specs_preserves_order_and_deduplicates_shared_aliases() -> None:
+    """Per-model CI selectors should resolve aliases without duplicate builds."""
+    specs = select_model_image_specs(["esmfold2", "esm3", "chai"])
+
+    assert [spec.key for spec in specs] == ["esmfold2", "chai"]
+
+
+def test_select_model_image_specs_rejects_unknown_identifier() -> None:
+    """Unknown selectors should fail loudly for direct callers."""
+    with pytest.raises(KeyError):
+        select_model_image_specs(["not-a-model"])

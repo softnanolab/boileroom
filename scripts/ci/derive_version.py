@@ -103,9 +103,19 @@ def prerelease_base_ref(head_ref: str = "HEAD", base_version: str | None = None)
 
 
 def main_prerelease_number(head_ref: str = "HEAD", base_version: str | None = None) -> int:
-    """Return the alpha prerelease number for ``head_ref``."""
+    """Return the alpha number at the latest image-changing first-parent commit.
+
+    Match the publishing workflow's path exclusions. Keep the original commit
+    count at that commit so existing tags are never renumbered; documentation
+    commits between builds still contribute to the next build's alpha number.
+    """
     base_ref = prerelease_base_ref(head_ref, base_version)
-    commit_count = int(run_git(["rev-list", "--count", f"{base_ref}..{head_ref}"]))
+    image_ref = run_git(
+        ["log", "--first-parent", "-1", "--format=%H", head_ref, "--", ".", ":(top,exclude)README.md", ":(top,exclude)docs/**"]
+    )
+    if not image_ref:
+        raise ValueError(f"No image-changing commit found at {head_ref!r}.")
+    commit_count = int(run_git(["rev-list", "--count", f"{base_ref}..{image_ref}"]))
     return max(1, commit_count)
 
 

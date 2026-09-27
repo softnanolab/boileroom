@@ -20,16 +20,18 @@ from boileroom.images.import_checks import (  # noqa: E402
 )
 from boileroom.images.metadata import (  # noqa: E402
     DEFAULT_DOCKER_REPOSITORY,
-    current_docker_platform,
+    MODEL_IMAGE_SELECTOR_KEYS,
     normalize_docker_repository,
     normalize_requested_tag,
-    resolve_model_image_specs,
+    select_model_image_specs,
+    current_docker_platform,
 )
 from scripts.cli_utils import (  # noqa: E402
     CONTEXT_SETTINGS,
     all_cuda_option,
     cleanup_option,
     cuda_version_option,
+    model_option,
     none_if_empty,
     pull_option,
     tag_option,
@@ -46,7 +48,7 @@ class ImportCheckOptions:
     all_cuda: bool
     pull: bool
     cleanup: bool
-    only: tuple[str, ...] = ()
+    model_keys: list[str] | None = None
 
 
 def ensure_docker() -> None:
@@ -76,15 +78,14 @@ def _remove_image(image_reference: str) -> None:
         print(f"WARNING: failed to remove image {image_reference}: {err}", file=sys.stderr)
 
 
-def check_image(
+def _check_image(
     image_key: str,
     image_reference: str,
     requirements_path: Path,
     core_path: Path,
     pull: bool,
-    cleanup: bool = False,
 ) -> None:
-    """Run the import smoke test for one image."""
+    """Run the import smoke test body for one image."""
     print(f"Checking imports for {image_key} ({image_reference})")
 
     if pull:
@@ -152,8 +153,22 @@ for dep in deps:
         check=True,
     )
 
-    if cleanup:
-        _remove_image(image_reference)
+
+
+def check_image(
+    image_key: str,
+    image_reference: str,
+    requirements_path: Path,
+    core_path: Path,
+    pull: bool,
+    cleanup: bool = False,
+) -> None:
+    """Run one import smoke test and honor cleanup on every exit path."""
+    try:
+        _check_image(image_key, image_reference, requirements_path, core_path, pull)
+    finally:
+        if cleanup:
+            _remove_image(image_reference)
 
 
 def run_import_checks(options: ImportCheckOptions) -> None:
@@ -166,13 +181,13 @@ def run_import_checks(options: ImportCheckOptions) -> None:
         options.tag,
         cuda_versions,
         docker_repository=docker_repository,
-        image_specs=resolve_model_image_specs(options.only),
+        image_specs=select_model_image_specs(options.model_keys),
         platform=current_docker_platform(),
     )
     if not targets:
-        if options.only:
+        if options.model_keys:
             print(
-                f"No image targets for model(s) {', '.join(options.only)} on this platform/CUDA selection; "
+                f"No image targets for model(s) {', '.join(options.model_keys)} on this platform/CUDA selection; "
                 "nothing to check."
             )
             return
@@ -189,21 +204,17 @@ def run_import_checks(options: ImportCheckOptions) -> None:
 @click.option("--docker-user", default=DEFAULT_DOCKER_REPOSITORY, help="Docker Hub user or namespace to check.")
 @cuda_version_option("CUDA version to validate canonically (repeatable).")
 @all_cuda_option("Validate all supported CUDA variants canonically.")
+@model_option(MODEL_IMAGE_SELECTOR_KEYS, "Validate only this model image (repeatable).")
 @pull_option
 @cleanup_option
-@click.option(
-    "--only",
-    multiple=True,
-    help="Check only the given model image(s), by family key or image name. Repeatable. Defaults to all.",
-)
 def cli(
     tag: str | None,
     docker_user: str,
     cuda_versions: tuple[str, ...],
     all_cuda: bool,
+    model_keys: tuple[str, ...],
     pull: bool,
     cleanup: bool,
-    only: tuple[str, ...],
 ) -> None:
     """Run the image import-check Click command."""
 
@@ -215,7 +226,7 @@ def cli(
             all_cuda=all_cuda,
             pull=pull,
             cleanup=cleanup,
-            only=only,
+            model_keys=none_if_empty(model_keys),
         )
     )
 

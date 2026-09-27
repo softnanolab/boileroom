@@ -121,6 +121,7 @@ MODEL_IMAGE_SPECS: Final[tuple[RuntimeImageSpec, ...]] = (
 
 MODEL_IMAGE_SPECS_BY_KEY: Final = {family_key: spec for spec in MODEL_IMAGE_SPECS for family_key in spec.family_keys}
 MODEL_IMAGE_SPECS_BY_NAME: Final = {spec.image_name: spec for spec in MODEL_IMAGE_SPECS}
+MODEL_IMAGE_SELECTOR_KEYS: Final = tuple(family_key for spec in MODEL_IMAGE_SPECS for family_key in spec.family_keys)
 
 
 def get_repo_root() -> Path:
@@ -305,41 +306,20 @@ def get_model_image_spec(identifier: str) -> RuntimeImageSpec:
     raise KeyError(f"Unknown image spec: {identifier}")
 
 
-def resolve_model_image_specs(only: Sequence[str]) -> tuple[RuntimeImageSpec, ...]:
-    """Resolve a selection of model image specs by family key or image name.
-
-    Parameters
-    ----------
-    only : Sequence[str]
-        Model family keys (e.g. ``alphafold``) or image names (e.g.
-        ``boileroom-alphafold2-multimer``). An empty selection returns every
-        model image spec.
-
-    Returns
-    -------
-    tuple[RuntimeImageSpec, ...]
-        The selected specs in canonical order, de-duplicated by image name.
-
-    Raises
-    ------
-    ValueError
-        If any identifier does not match a known model image.
-    """
-    if not only:
+def select_model_image_specs(identifiers: Sequence[str] | None) -> tuple[RuntimeImageSpec, ...]:
+    """Return the requested model image specs in stable, de-duplicated order."""
+    if not identifiers:
         return MODEL_IMAGE_SPECS
 
-    selected: dict[str, RuntimeImageSpec] = {}
-    unknown: list[str] = []
-    for identifier in only:
-        spec = MODEL_IMAGE_SPECS_BY_KEY.get(identifier) or MODEL_IMAGE_SPECS_BY_NAME.get(identifier)
-        if spec is None:
-            unknown.append(identifier)
-        else:
-            selected[spec.image_name] = spec
-    if unknown:
-        known = ", ".join(sorted({spec.key for spec in MODEL_IMAGE_SPECS}))
-        raise ValueError(f"Unknown model selection(s): {', '.join(unknown)}. Known models: {known}.")
-    return tuple(spec for spec in MODEL_IMAGE_SPECS if spec.image_name in selected)
+    selected: list[RuntimeImageSpec] = []
+    seen_image_names: set[str] = set()
+    for identifier in identifiers:
+        spec = get_model_image_spec(identifier)
+        if spec.image_name in seen_image_names:
+            continue
+        selected.append(spec)
+        seen_image_names.add(spec.image_name)
+    return tuple(selected)
 
 
 @cache

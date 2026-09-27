@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+import pytest
 from click.testing import CliRunner
 from pytest import MonkeyPatch
 
@@ -84,6 +85,56 @@ def test_derive_version_cli_passes_path_options(monkeypatch: MonkeyPatch, tmp_pa
     assert isinstance(captured[0].base_pyproject, Path)
     assert isinstance(captured[0].write_pyproject, Path)
     assert isinstance(captured[0].github_output, Path)
+
+
+def test_image_check_clis_forward_model_selection(monkeypatch: MonkeyPatch) -> None:
+    """Per-model matrix jobs should select exactly one smoke-check target."""
+    import_options: list[check_model_imports.ImportCheckOptions] = []
+    health_options: list[check_model_server_health.HealthCheckOptions] = []
+    monkeypatch.setattr(check_model_imports, "run_import_checks", import_options.append)
+    monkeypatch.setattr(check_model_server_health, "run_server_health_checks", health_options.append)
+
+    import_result = CliRunner().invoke(check_model_imports.cli, ["--model=esm3", "--pull"])
+    health_result = CliRunner().invoke(check_model_server_health.cli, ["--model=chai", "--cleanup"])
+
+    assert import_result.exit_code == 0, import_result.output
+    assert health_result.exit_code == 0, health_result.output
+    assert import_options[0].model_keys == ["esm3"]
+    assert import_options[0].pull is True
+    assert health_options[0].model_keys == ["chai"]
+    assert health_options[0].cleanup is True
+
+
+def test_image_import_cleanup_runs_after_check_failure(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
+    """Import smoke cleanup should run even when the check body fails."""
+    removed: list[str] = []
+
+    def fail_check(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("failed")
+
+    monkeypatch.setattr(check_model_imports, "_remove_image", removed.append)
+    monkeypatch.setattr(check_model_imports, "_check_image", fail_check)
+
+    with pytest.raises(RuntimeError, match="failed"):
+        check_model_imports.check_image("esm", "example/esm:test", tmp_path, tmp_path, False, cleanup=True)
+
+    assert removed == ["example/esm:test"]
+
+
+def test_server_health_cleanup_runs_after_check_failure(monkeypatch: MonkeyPatch) -> None:
+    """Server smoke cleanup should run even when the check body fails."""
+    removed: list[str] = []
+
+    def fail_check(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("failed")
+
+    monkeypatch.setattr(check_model_server_health, "_remove_image", removed.append)
+    monkeypatch.setattr(check_model_server_health, "_check_server_health", fail_check)
+
+    with pytest.raises(RuntimeError, match="failed"):
+        check_model_server_health.check_server_health("esm", "example/esm:test", False, 1.0, cleanup=True)
+
+    assert removed == ["example/esm:test"]
 
 
 def test_promote_cli_validates_cuda_selection_before_buildx(monkeypatch: MonkeyPatch) -> None:
