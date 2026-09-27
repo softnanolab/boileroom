@@ -53,7 +53,9 @@ def test_get_evicts_entry_when_file_missing(tmp_path: Path):
     cache.put(key, _write(tmp_path / "src.a3m", ">q\nACDE\n"))
 
     # Delete the backing file but leave the index entry behind.
-    cache.get(key).unlink()
+    cached = cache.get(key)
+    assert cached is not None
+    cached.unlink()
     assert cache.get(key) is None
     index = json.loads((cache.cache_dir / "msa_index.json").read_text())
     assert key not in index
@@ -64,7 +66,9 @@ def test_put_is_idempotent_and_does_not_overwrite(tmp_path: Path):
     key = MSACache.hash_key("ACDE")
     cache.put(key, _write(tmp_path / "first.a3m", "FIRST"))
     cache.put(key, _write(tmp_path / "second.a3m", "SECOND"))
-    assert cache.get(key).read_text(encoding="utf-8") == "FIRST"
+    cached = cache.get(key)
+    assert cached is not None
+    assert cached.read_text(encoding="utf-8") == "FIRST"
 
 
 def test_missing_source_is_ignored(tmp_path: Path):

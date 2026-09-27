@@ -2,7 +2,7 @@
 
 ### What exists today
 - **base**: `boileroom/images/Dockerfile` → Python 3.12 slim base with shared OS build/runtime tools. Tag: `docker.io/jakublala/boileroom-base`.
-- **alphafold**: `boileroom/models/alphafold/Dockerfile` → installs the official AlphaFold runner, HMMER, HH-suite, Kalign, and exposes `/app/run_alphafold.sh`. Tag: `docker.io/jakublala/boileroom-alphafold2-multimer`. Platform: `linux/amd64`.
+- **alphafold**: `boileroom/models/alphafold/Dockerfile` → installs ColabFold (`colabfold_batch`) plus `jax[cuda12]`; MSAs come from the ColabFold MMseqs2 server, so no local genetic databases, HMMER, HH-suite, or Kalign are installed. Tag: `docker.io/jakublala/boileroom-alphafold2-multimer`. Platform: `linux/amd64`.
 - **boltz**: `boileroom/models/boltz/Dockerfile` → installs Boltz runtime dependencies from `requirements.txt`. Tag: `docker.io/jakublala/boileroom-boltz`.
 - **chai1**: `boileroom/models/chai/Dockerfile` → installs Chai runtime dependencies from `requirements.txt`, sets HF env vars. Tag: `docker.io/jakublala/boileroom-chai1`.
 - **esm**: `boileroom/models/esm/Dockerfile` → installs ESM runtime dependencies from `requirements.txt` shared by esm2/esmfold. Tag: `docker.io/jakublala/boileroom-esm`.

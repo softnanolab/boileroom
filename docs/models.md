@@ -61,27 +61,28 @@ databases expected by Protenix; the runtime image installs `hmmer` and `kalign`,
 be available inside the container when those features are enabled.
 
 ### AlphaFold2-Multimer
-`AlphaFold2Multimer` wraps the official DeepMind AlphaFold runner with `--model_preset=multimer`. It requires the
-AlphaFold databases and model parameters in `data_dir`; by default this is `${MODEL_DIR}/alphafold` inside the
-runtime. The wrapper accepts one top-level sequence entry and uses `:` to split chains into a multi-record FASTA.
+`AlphaFold2Multimer` drives ColabFold's `colabfold_batch` with `--model-type alphafold2_multimer_v3`. MSAs are
+fetched from the public ColabFold MMseqs2 server (`https://api.colabfold.com`), so **no local genetic databases
+(the ~2.6 TB AlphaFold data tree) are required**. AlphaFold model parameters are cached under `data_dir`
+(default `${MODEL_DIR}/alphafold`); ColabFold downloads them there on first use. The wrapper accepts one
+top-level sequence entry and uses `:` to split chains.
 
 Example usage:
 ```python
 from boileroom import AlphaFold2Multimer
 
 model = AlphaFold2Multimer(
-    backend="apptainer",
-    device="cuda:0",
+    backend="modal",
     config={
-        "max_template_date": "2022-01-01",
-        "db_preset": "full_dbs",
-        "models_to_relax": "none",
+        "num_models": 5,
+        "num_recycle": 3,
+        "use_amber": False,
     },
 )
 
 result = model.fold(
     "MLKNVHVLVLGAGDVGSVVVRLLEK:MLKNVHVLVLGAGDVGSVVVRLLEK",
-    options={"include_fields": ["ranking", "plddt", "iptm", "pdb"]},
+    options={"include_fields": ["ranking", "plddt", "iptm", "pae", "cif"]},
 )
 
 result.atom_array
@@ -90,10 +91,15 @@ result.plddt
 result.iptm
 ```
 
-AlphaFold2-Multimer does not download the genetic databases automatically. Use `data_dir` for a bind-mounted
-database tree containing the official AlphaFold data layout, including UniProt and PDB seqres for multimer runs.
-With Apptainer, the default `data_dir` is `${MODEL_DIR}/alphafold` inside the container, so place the databases
-under `$MODEL_DIR/alphafold` on the host or pass another container-visible path.
+MSA handling mirrors the other adapters:
+- **Server (default):** alignments come from the ColabFold MMseqs2 server and are cached, content-addressed, under
+  `${data_dir}/msa_cache` so repeat folds of the same complex skip the server.
+- **Provided MSA:** pass `options={"msa": MSAInput(path="complex.a3m")}` (or `MSAInput(sequences=[...])`) to supply a
+  ColabFold-compatible complex a3m directly; the server is not queried.
+- **Single sequence:** set `config={"use_msa_server": False}` to run without an alignment.
+
+Set `use_templates=True` to enable ColabFold templates and `use_amber=True` (optionally `use_gpu_relax=True`) for
+Amber relaxation of the ranked predictions.
 
 ### ESM-2
 - A fresh `ESM2` instance starts on the backbone-only fast path and automatically switches to an internal masked-LM variant when `include_fields` requests `lm_logits` or `["*"]`; after that first upgrade, the instance keeps the MLM-capable model resident for later calls.

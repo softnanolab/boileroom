@@ -73,13 +73,15 @@ def test_model_specs_report_supported_platforms_from_config() -> None:
     assert get_supported_platforms(get_model_image_spec("protenix")) == ("linux/amd64",)
 
 
-def test_alphafold_biopython_pin_supports_python312_image_builds() -> None:
-    """AlphaFold image requirements should avoid Biopython releases broken on Python 3.12."""
+def test_alphafold_image_uses_colabfold_runtime() -> None:
+    """The AlphaFold2-Multimer image should install ColabFold and drive its CLI."""
     requirements = (REPO_ROOT / "boileroom" / "models" / "alphafold" / "requirements.txt").read_text(encoding="utf-8")
-    pin = next(line for line in requirements.splitlines() if line.startswith("biopython=="))
-    major, minor, *_ = (int(part) for part in pin.split("==", 1)[1].split("."))
 
-    assert (major, minor) >= (1, 83)
+    assert "colabfold" in requirements
+    # ColabFold uses the MMseqs2 server, so no local genetic-database tooling.
+    dockerfile = (REPO_ROOT / "boileroom" / "models" / "alphafold" / "Dockerfile").read_text(encoding="utf-8")
+    assert "hmmer" not in dockerfile
+    assert "hhsuite" not in dockerfile
 
 
 def test_protenix_image_uses_non_jit_layernorm_by_default() -> None:

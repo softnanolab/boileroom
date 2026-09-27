@@ -1,18 +1,10 @@
--f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
-absl-py==1.0.0
-biopython==1.83
+# AlphaFold2-Multimer runtime via ColabFold.
+#
+# MSAs are fetched from the public ColabFold MMseqs2 server, so no local
+# genetic databases (hmmer/hhsuite/kalign) are required. ColabFold ships the
+# `colabfold_batch` CLI that this adapter drives, and downloads AlphaFold
+# parameters into its --data directory on first use.
+colabfold[alphafold-minus-jax] @ git+https://github.com/sokrypton/ColabFold@v1.5.5
+jax[cuda12]==0.4.35
 biotite>=1.0.1
-dm-haiku==0.0.12
-docker==5.0.0
-fastapi
-jax==0.4.26
-jaxlib==0.4.26+cuda12.cudnn89
-matplotlib==3.8.0
-ml-collections==0.1.0
 numpy==1.26.4
-openmm[cuda12]==8.2.0
-pdbfixer==1.12.0
-pydantic
-setuptools<72.0.0
-tensorflow-cpu==2.16.1
-uvicorn

@@ -56,15 +56,22 @@ def package_name_to_import_name(package_name: str) -> str | None:
 
 
 def requirement_line_to_package_name(line: str) -> str | None:
-    """Return the package name from one requirements.txt line, or None for pip options."""
+    """Return the package name from one requirements.txt line, or None for pip options.
+
+    Extras such as ``colabfold[alphafold-minus-jax]`` are stripped so the bare
+    distribution name is returned.
+    """
     stripped = line.strip()
     if not stripped or stripped.startswith("#") or stripped.startswith("-"):
         return None
     if "#egg=" in stripped:
-        return stripped.rsplit("#egg=", 1)[1].split("&", 1)[0].strip()
-    if " @ " in stripped:
-        return stripped.split(" @ ", 1)[0].strip()
-    return re.split(r"[>=<!=;\[]", stripped, maxsplit=1)[0].strip() or None
+        name = stripped.rsplit("#egg=", 1)[1].split("&", 1)[0].strip()
+    elif " @ " in stripped:
+        name = stripped.split(" @ ", 1)[0].strip()
+    else:
+        name = re.split(r"[>=<!=;\[]", stripped, maxsplit=1)[0].strip()
+    name = name.split("[", 1)[0].strip()
+    return name or None
 
 
 def requirement_import_names(requirements_path: Path) -> list[str]:
