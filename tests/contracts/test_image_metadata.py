@@ -75,11 +75,14 @@ def test_model_specs_report_supported_platforms_from_config() -> None:
 
 def test_alphafold_image_uses_colabfold_runtime() -> None:
     """The AlphaFold2-Multimer image should install ColabFold and drive its CLI."""
-    requirements = (REPO_ROOT / "boileroom" / "models" / "alphafold" / "requirements.txt").read_text(encoding="utf-8")
-
-    assert "colabfold" in requirements
-    # ColabFold uses the MMseqs2 server, so no local genetic-database tooling.
+    # ColabFold cannot be installed into the Python 3.12 system interpreter, so it
+    # lives in an isolated environment set up by the Dockerfile rather than in
+    # requirements.txt (see that file for the rationale).
     dockerfile = (REPO_ROOT / "boileroom" / "models" / "alphafold" / "Dockerfile").read_text(encoding="utf-8")
+
+    assert "colabfold" in dockerfile
+    assert "colabfold_batch" in dockerfile
+    # ColabFold uses the MMseqs2 server, so no local genetic-database tooling.
     assert "hmmer" not in dockerfile
     assert "hhsuite" not in dockerfile
 

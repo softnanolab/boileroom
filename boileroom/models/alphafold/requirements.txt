@@ -1,10 +1,5 @@
-# AlphaFold2-Multimer runtime via ColabFold.
-#
-# MSAs are fetched from the public ColabFold MMseqs2 server, so no local
-# genetic databases (hmmer/hhsuite/kalign) are required. ColabFold ships the
-# `colabfold_batch` CLI that this adapter drives, and downloads AlphaFold
-# parameters into its --data directory on first use.
-colabfold[alphafold-minus-jax] @ git+https://github.com/sokrypton/ColabFold@v1.5.5
-jax[cuda12]==0.4.35
+# boileroom runtime postprocessing dependencies (Python 3.12 system interpreter).
+# ColabFold and its scientific stack are installed separately into an isolated
+# Python 3.10 environment by the Dockerfile; see that file for details.
 biotite>=1.0.1
-numpy==1.26.4
+numpy>=2.2.2
