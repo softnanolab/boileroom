@@ -198,16 +198,26 @@ def test_run_build_validates_cuda_selection_before_docker(
     assert "Specify at least one --cuda-version or use --all-cuda." in capsys.readouterr().err
 
 
-def test_run_build_rejects_unsupported_explicit_model_cuda_before_docker(
-    monkeypatch: MonkeyPatch, capsys: CaptureFixture[str]
+@pytest.mark.parametrize(
+    "model_key,cuda_version,platform",
+    [
+        ("boltz", "11.8", "linux/amd64"),
+        ("alphafold", "12.6", "linux/arm64"),
+        ("protenix", "12.6", "linux/arm64"),
+        ("alphafold", "12.6", "linux/amd64,linux/arm64"),
+        ("protenix", "12.6", "linux/amd64,linux/arm64"),
+    ],
+)
+def test_run_build_rejects_unsupported_explicit_selection_before_docker(
+    monkeypatch: MonkeyPatch, capsys: CaptureFixture[str], model_key: str, cuda_version: str, platform: str
 ) -> None:
     """Explicit matrix selections should fail instead of reporting an empty successful build."""
     options = build_model_images.BuildOptions(
         tag="sha-test",
         docker_user="docker.io/jakublala",
-        cuda_versions=["11.8"],
+        cuda_versions=[cuda_version],
         all_cuda=False,
-        platform="linux/amd64",
+        platform=platform,
         push=False,
         load=False,
         no_cache=False,
@@ -216,7 +226,7 @@ def test_run_build_rejects_unsupported_explicit_model_cuda_before_docker(
         force_rebuild=False,
         max_workers=1,
         local_base=False,
-        model_keys=["boltz"],
+        model_keys=[model_key],
     )
     docker_checked = False
 
@@ -231,7 +241,7 @@ def test_run_build_rejects_unsupported_explicit_model_cuda_before_docker(
 
     assert exc_info.value.code == 1
     assert docker_checked is False
-    assert "do not support the selected CUDA versions: boltz" in capsys.readouterr().err
+    assert f"do not support the selected CUDA versions or platforms: {model_key}" in capsys.readouterr().err
 
 
 def test_build_base_verbose_echoes_plain_progress(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
@@ -506,14 +516,26 @@ def test_base_only_build_skips_model_tasks(monkeypatch: MonkeyPatch, tmp_path: P
     assert built_models == []
 
 
-def test_model_selection_builds_only_requested_image(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "model_key,platform",
+    [
+        ("esm", "linux/amd64"),
+        ("esm", "linux/arm64"),
+        ("esm", "linux/amd64,linux/arm64"),
+        ("alphafold", "linux/amd64"),
+        ("protenix", "linux/amd64"),
+    ],
+)
+def test_model_selection_builds_only_requested_image(
+    monkeypatch: MonkeyPatch, tmp_path: Path, model_key: str, platform: str
+) -> None:
     """A per-model matrix job should enqueue only its selected image."""
     options = build_model_images.BuildOptions(
         tag="sha-test",
         docker_user="docker.io/jakublala",
         cuda_versions=[DEFAULT_CUDA_VERSION],
         all_cuda=False,
-        platform="linux/amd64",
+        platform=platform,
         push=True,
         load=False,
         no_cache=False,
@@ -522,7 +544,7 @@ def test_model_selection_builds_only_requested_image(monkeypatch: MonkeyPatch, t
         force_rebuild=False,
         max_workers=1,
         local_base=False,
-        model_keys=["esm"],
+        model_keys=[model_key],
         base_mode=build_model_images.BaseMode.EXISTING,
     )
     built_models: list[str] = []
@@ -544,7 +566,7 @@ def test_model_selection_builds_only_requested_image(monkeypatch: MonkeyPatch, t
 
     build_model_images.run_build(options)
 
-    assert built_models == ["esm"]
+    assert built_models == [model_key]
 
 
 def test_local_base_push_builds_locally_then_pushes(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:

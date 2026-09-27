@@ -470,11 +470,15 @@ def run_build(options: BuildOptions) -> None:
         unsupported_selections = [
             spec.key
             for spec in model_specs
-            if options.model_keys and not set(cuda_versions).intersection(get_supported_cuda(spec))
+            if options.model_keys
+            and (
+                not set(cuda_versions).intersection(get_supported_cuda(spec))
+                or not set(requested_platforms).issubset(get_supported_platforms(spec))
+            )
         ]
         if unsupported_selections:
             raise ValueError(
-                "Requested model image(s) do not support the selected CUDA versions: "
+                "Requested model image(s) do not support the selected CUDA versions or platforms: "
                 + ", ".join(unsupported_selections)
             )
         output_flag = resolve_output_flag(options.push, options.load, options.platform)
