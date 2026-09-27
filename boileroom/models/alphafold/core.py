@@ -228,7 +228,9 @@ class AlphaFold2MultimerCore(FoldingAlgorithm):
         return text
 
     def _cache_key(self, joined: str, config: dict[str, Any]) -> str:
-        signature = f"{joined}|{config['msa_mode']}|{config['pair_mode']}|{config['model_type']}"
+        signature = json.dumps(
+            [joined, config["msa_server_url"], config["msa_mode"], config["pair_mode"], config["model_type"]]
+        )
         return MSACache.hash_key(signature)
 
     def _cache_generated_msa(self, output_dir: Path, cache_key: str, config: dict[str, Any]) -> None:

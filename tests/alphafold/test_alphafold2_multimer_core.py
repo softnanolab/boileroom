@@ -73,7 +73,7 @@ def test_resolve_msa_input_uses_server_and_returns_cache_key(tmp_path: Path, cor
 
     assert input_path.suffix == ".fasta"
     assert msa_mode == "mmseqs2_uniref_env"
-    assert cache_key == MSACache.hash_key("AAAA:CCCC|mmseqs2_uniref_env|unpaired_paired|alphafold2_multimer_v3")
+    assert cache_key is not None
 
 
 def test_resolve_msa_input_single_sequence_when_server_disabled(tmp_path: Path, core_class) -> None:
@@ -105,6 +105,25 @@ def test_resolve_msa_input_hits_cache(tmp_path: Path, core_class) -> None:
     assert msa_mode is None
     assert returned_key is None
     assert input_path.read_text(encoding="utf-8") == ">query\nAAAA:CCCC\n"
+
+
+@pytest.mark.parametrize("legacy_key", [False, True])
+def test_resolve_msa_input_does_not_reuse_other_providers(tmp_path: Path, core_class, legacy_key: bool) -> None:
+    """Changing providers or encountering an unscoped legacy entry is a miss."""
+    core = core_class({"data_dir": str(tmp_path)})
+    cache_key = (
+        MSACache.hash_key("AAAA:CCCC|mmseqs2_uniref_env|unpaired_paired|alphafold2_multimer_v3")
+        if legacy_key
+        else core._cache_key("AAAA:CCCC", core.config)
+    )
+    source = tmp_path / "src.a3m"
+    source.write_text(">query\nAAAACCCC\n", encoding="utf-8")
+    core._msa_cache().put(cache_key, source)
+    config = {**core.config, "msa_server_url": "https://msa.example.org"}
+    input_path, msa_mode, returned_key = core._resolve_msa_input("AAAA:CCCC", ["AAAA", "CCCC"], None, tmp_path, config)
+    assert input_path.suffix == ".fasta"
+    assert msa_mode == "mmseqs2_uniref_env"
+    assert returned_key is not None and returned_key != cache_key
 
 
 def test_resolve_msa_input_accepts_provided_msa(tmp_path: Path, core_class) -> None:

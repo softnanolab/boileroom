@@ -133,7 +133,9 @@ result.iptm
 
 MSA handling mirrors the other adapters:
 - **Server (default):** alignments come from the ColabFold MMseqs2 server and are cached, content-addressed, under
-  `${data_dir}/msa_cache` so repeat folds of the same complex skip the server.
+  `${data_dir}/msa_cache` so repeat folds of the same complex and MSA settings skip the server.
+  Cache identity includes `msa_server_url`; switching providers fetches a fresh alignment. Older entries
+  without a provider in their key are ignored.
 - **Provided MSA:** pass `options={"msa": MSAInput(path="complex.a3m")}` (or `MSAInput(sequences=[...])`) to supply a
   ColabFold-compatible complex a3m directly; the server is not queried.
 - **Single sequence:** set `config={"use_msa_server": False}` to run without an alignment.
