@@ -45,6 +45,7 @@ def test_runtime_reuses_weights_and_resets_request_state(monkeypatch, tmp_path) 
     runtime.predict("first.json", "first", {**config, "seeds": "2,10", "cycle": 4, "sample": 2, "step": 50})
     runtime.predict("second.json", "second", config)
     batch.get_default_runner.assert_called_once()
+    assert all(call.kwargs["msa_server_mode"] == "colabfold" for call in batch.preprocess_input.call_args_list)
     first, second = calls
     assert first[0] == second[0]
     assert first[1].seeds == [2, 10] and second[1].seeds == [101]

@@ -52,7 +52,11 @@ class ProtenixRuntime:
         configs.use_msa = config["use_msa"]
         configs.dump_dir = output_dir
         configs.input_json_path = preprocess_input(
-            input_json, out_dir=output_dir, use_msa=config["use_msa"], use_template=config["use_template"]
+            input_json,
+            out_dir=output_dir,
+            use_msa=config["use_msa"],
+            use_template=config["use_template"],
+            msa_server_mode="colabfold",
         )
         self.runner.configs = configs
         # Protenix also caches the cycle count directly on the model.
