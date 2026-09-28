@@ -2,9 +2,11 @@
 
 ### What exists today
 - **base**: `boileroom/images/Dockerfile` → Python 3.12 slim base with shared OS build/runtime tools. Tag: `docker.io/jakublala/boileroom-base`.
+- **alphafold**: `boileroom/models/alphafold/Dockerfile` → installs ColabFold (`colabfold_batch`) plus `jax[cuda12]`; MSAs come from the ColabFold MMseqs2 server, so no local genetic databases, HMMER, HH-suite, or Kalign are installed. Tag: `docker.io/jakublala/boileroom-alphafold2-multimer`. Platform: `linux/amd64`.
 - **boltz**: `boileroom/models/boltz/Dockerfile` → installs Boltz runtime dependencies from `requirements.txt`. Tag: `docker.io/jakublala/boileroom-boltz`.
 - **chai1**: `boileroom/models/chai/Dockerfile` → installs Chai runtime dependencies from `requirements.txt`, sets HF env vars. Tag: `docker.io/jakublala/boileroom-chai1`.
 - **esm**: `boileroom/models/esm/Dockerfile` → installs ESM runtime dependencies from `requirements.txt` shared by esm2/esmfold. Tag: `docker.io/jakublala/boileroom-esm`.
+- **protenix**: `boileroom/models/protenix/Dockerfile` → installs Protenix plus HMMER/Kalign CLI dependencies. Tag: `docker.io/jakublala/boileroom-protenix`. Platform: `linux/amd64`.
 - **esmfold2**: `boileroom/models/esmfold2/Dockerfile` → installs the MIT-licensed 2026 Chan Zuckerberg Biohub `esm` package (`esm==3.4.1.post1`, torch 2.11, CUDA 12.6 only) from `requirements.txt`. Tag: `docker.io/jakublala/boileroom-esmfold2`. **Shared by ESMFold2, ESM-C, and ESM3** — all three use the same Biohub `esm` package, so ESM-C/ESM3 run on this image instead of a separate one.
 
 Dockerfiles are the canonical image definition for all runtimes. Docker/Apptainer images are built from these Dockerfiles, and Modal pulls the corresponding published model image from Docker Hub instead of maintaining a separate handwritten dependency stack. CUDA variants select the PyTorch wheel index; the runtime images rely on PyTorch/NVIDIA wheels for user-space CUDA libraries and on Docker/Apptainer GPU integration for host driver libraries.
@@ -77,6 +79,8 @@ The `.github/workflows/arm64-image-smoke.yml` workflow runs on pull requests to 
 
 The workflow does not install the full project dependency set on the host runner. Host-side image scripts run with `uv run --no-project --with pyyaml`, while heavy model dependencies such as PyTorch and SciPy are validated inside the Docker images themselves.
 
+Image configs can restrict supported platforms. AlphaFold2-Multimer and Protenix currently advertise `linux/amd64` only, so ARM64 smoke builds and checks skip those images while still validating the ARM64-compatible model images.
+
 On `main`, ARM64 image smoke is folded into the Docker publishing workflow instead of running as a second separate workflow. That keeps the branch smoke path fast and local while making release promotion wait for the same ARM64 smoke coverage.
 
 To reproduce the same path locally on an ARM64 machine, run:
@@ -88,6 +92,12 @@ uv run python scripts/images/check_model_server_health.py --cuda-version=12.6 --
 ```
 
 The build helper also supports `--skip-existing` and `--force-rebuild` for registry-aware rebuilds.
+
+To build or check a subset of images, pass `--only <model>` (repeatable) to `build_model_images.py`, `check_model_imports.py`, and `check_model_server_health.py`. Selectors are model family keys such as `alphafold`, `protenix`, or `boltz`. The shared base image is always built, because every model image starts from it. If `--only` matches nothing on the requested platform (for example `--only alphafold --platform=linux/arm64`), the checks exit cleanly without doing anything:
+
+```bash
+uv run python scripts/images/build_model_images.py --cuda-version=12.6 --tag=sha-$(git rev-parse --short HEAD) --push --only alphafold
+```
 
 ### 🔖 Tag policy
 - Docker Hub is kept clean for users. The long-lived public tags are stable version tags such as `0.3.0`, alpha prerelease tags such as `0.3.1-alpha.1`, and the corresponding CUDA-qualified tags such as `cuda12.6-0.3.0` and `cuda11.8-0.3.0`.
@@ -168,7 +178,7 @@ This publishes:
 ### 📦 CI publishing (production)
 GitHub Actions at `.github/workflows/build-docker-images.yml` now drives the image publishing pipeline:
 - Triggers automatically on non-documentation pushes to `main`, on published GitHub releases, and can also be run manually via **Run workflow** from `main`.
-- Manual runs can also be dispatched from a non-`main` branch with `promote` left disabled. That validation-only path builds and pushes temporary `sha-<commit>` validation images, runs the AMD64 and ARM64 smoke checks, and skips public version-tag publishing.
+- Manual runs can also be dispatched from a non-`main` branch with `promote` left disabled. That validation-only path builds and pushes temporary `sha-<commit>` validation images, runs the AMD64 and ARM64 smoke checks, and skips public version-tag publishing. The `models` dispatch input (space-separated family keys, e.g. `alphafold protenix`) limits a validation-only run to those images; promoted runs always build everything.
 - Pushes to `main` build and validate an automatically derived alpha prerelease tag from `scripts/ci/derive_version.py`, such as `0.4.3-alpha.1`. Full GitHub releases build and validate the stable release tag.
 - Publishes one AMD64 base image per CUDA line, then builds every supported model/CUDA pair in a separate matrix job with `--max-workers=1`.
 - Prunes BuildKit state before verification and pulls only the selected model image. The default-CUDA alias is checked in that model's `12.6` job.

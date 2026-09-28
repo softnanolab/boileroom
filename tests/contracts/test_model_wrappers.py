@@ -1,5 +1,7 @@
 """Fast contract tests for public model wrappers."""
 
+import subprocess
+import sys
 from typing import Any
 
 import numpy as np
@@ -13,7 +15,16 @@ from boileroom.models.chai.types import Chai1Output
 from boileroom.models.esm.types import ESM2Output, ESMFoldOutput
 from boileroom.models.esm3.types import ESM3Output, ESMCOutput
 from boileroom.models.esmfold2.types import ESMFold2Output
-from boileroom.models.registry import CHAI1_SPEC, ESM2_SPEC, MODEL_SPECS, ModelSpec, get_model_spec, resolve_object
+from boileroom.models.registry import (
+    ALPHAFOLD2_MULTIMER_SPEC,
+    CHAI1_SPEC,
+    ESM2_SPEC,
+    MODEL_SPECS,
+    PROTENIX_SPEC,
+    ModelSpec,
+    get_model_spec,
+    resolve_object,
+)
 from boileroom.models.sae.types import SAEFeaturesOutput
 
 pytestmark = pytest.mark.contract
@@ -32,8 +43,31 @@ SAMPLE_INPUTS: dict[str, Any] = {
         "NPVFTVFKDNEILYRAQLASEDTNAQKTITNCFLLKNKIWCISLVEIYDTGDNVIRPKLFAVKIPEQCTH"
     ),
     "boltz2": "MLKNVHVLVLGAGDVGSVVVRLLEK",
+    "protenix": "MLKNVHVLVLGAGDVGSVVVRLLEK",
+    "alphafold2_multimer": "MLKNVHVLVLGAGDVGSVVVRLLEK:MLKNVHVLVLGAGDVGSVVVRLLEK",
 }
 EXPECTED_MODAL_APP_NAMES = {spec.key: f"boileroom-{spec.key}" for spec in MODEL_SPECS}
+
+
+def test_base_import_does_not_require_torch() -> None:
+    """Runtime images without torch should still import wrapper base classes."""
+    code = """
+import builtins
+
+real_import = builtins.__import__
+
+def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
+    if name == "torch":
+        raise ModuleNotFoundError("No module named 'torch'")
+    return real_import(name, globals, locals, fromlist, level)
+
+builtins.__import__ = guarded_import
+import boileroom.base
+print("ok")
+"""
+    result = subprocess.run([sys.executable, "-c", code], check=True, capture_output=True, text=True)
+
+    assert result.stdout.strip() == "ok"
 
 
 def _make_metadata(model_name: str) -> PredictionMetadata:
@@ -94,6 +128,16 @@ def _make_output(spec: ModelSpec) -> object:
 
     if spec.key == "boltz2":
         return Boltz2Output(metadata=_make_metadata(spec.public_name), atom_array=[object()])
+
+    if spec.key == "protenix":
+        from boileroom.models.protenix.types import ProtenixOutput
+
+        return ProtenixOutput(metadata=_make_metadata(spec.public_name), atom_array=[object()])
+
+    if spec.key == "alphafold2_multimer":
+        from boileroom.models.alphafold.types import AlphaFold2MultimerOutput
+
+        return AlphaFold2MultimerOutput(metadata=_make_metadata(spec.public_name), atom_array=[object()])
 
     raise KeyError(f"Unsupported contract spec: {spec.key}")
 
@@ -265,6 +309,13 @@ def test_chai1_contract_declares_single_input_only() -> None:
     assert CHAI1_SPEC.contract.supports_batch is False
 
 
+@pytest.mark.parametrize("spec", [PROTENIX_SPEC, ALPHAFOLD2_MULTIMER_SPEC], ids=lambda spec: spec.public_name)
+def test_resident_folding_contracts_declare_single_input_multimer_support(spec: ModelSpec) -> None:
+    """Resident folding wrappers should use one top-level sequence with ':' chain joining."""
+    assert spec.contract.supports_batch is False
+    assert spec.contract.supports_multimer is True
+
+
 def test_esm2_contract_declares_lm_logits_optional_field() -> None:
     """ESM2 should advertise lm_logits as an optional output field."""
     assert ESM2_SPEC.contract.optional_output_fields == ("hidden_states", "lm_logits")
@@ -294,5 +345,46 @@ def test_chai1_wrapper_rejects_static_option_overrides(monkeypatch: pytest.Monke
 
     with pytest.raises(ValueError, match="device"):
         wrapper.fold("AAAA", options={"device": "cpu"})
+
+    assert "method" not in records
+
+
+@pytest.mark.parametrize("spec", [PROTENIX_SPEC, ALPHAFOLD2_MULTIMER_SPEC], ids=lambda spec: spec.public_name)
+def test_resident_wrappers_reject_multiple_top_level_sequences(
+    monkeypatch: pytest.MonkeyPatch,
+    spec: ModelSpec,
+) -> None:
+    """Resident wrappers should fail early before dispatching unsupported batches."""
+    records: dict[str, Any] = {}
+    _install_fake_initializer(monkeypatch, records, _make_output(spec))
+
+    wrapper_cls = resolve_object(spec.wrapper_class_path)
+    wrapper = wrapper_cls(backend="apptainer:dev")
+
+    with pytest.raises(ValueError, match="exactly one top-level sequence"):
+        wrapper.fold(["AAAA", "BBBB"])
+
+    assert "method" not in records
+
+
+@pytest.mark.parametrize(
+    ("spec", "static_key"),
+    [(PROTENIX_SPEC, "model_name"), (ALPHAFOLD2_MULTIMER_SPEC, "data_dir")],
+    ids=lambda item: item.public_name if isinstance(item, ModelSpec) else item,
+)
+def test_resident_wrappers_reject_static_option_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+    spec: ModelSpec,
+    static_key: str,
+) -> None:
+    """Resident wrappers should keep runtime-static paths fixed after construction."""
+    records: dict[str, Any] = {}
+    _install_fake_initializer(monkeypatch, records, _make_output(spec))
+
+    wrapper_cls = resolve_object(spec.wrapper_class_path)
+    wrapper = wrapper_cls(backend="apptainer:dev")
+
+    with pytest.raises(ValueError, match=static_key):
+        wrapper.fold(SAMPLE_INPUTS[spec.key], options={static_key: "override"})
 
     assert "method" not in records

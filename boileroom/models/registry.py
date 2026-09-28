@@ -13,6 +13,8 @@ ESM_IMAGE_NAME = get_model_image_spec("esm").image_name
 ESMFOLD2_IMAGE_NAME = get_model_image_spec("esmfold2").image_name
 CHAI_IMAGE_NAME = get_model_image_spec("chai").image_name
 BOLTZ_IMAGE_NAME = get_model_image_spec("boltz").image_name
+PROTENIX_IMAGE_NAME = get_model_image_spec("protenix").image_name
+ALPHAFOLD2_MULTIMER_IMAGE_NAME = get_model_image_spec("alphafold").image_name
 
 
 @dataclass(frozen=True)
@@ -247,6 +249,51 @@ BOLTZ2_SPEC = ModelSpec(
     ),
 )
 
+PROTENIX_SPEC = ModelSpec(
+    key="protenix",
+    public_name="Protenix",
+    family="protenix",
+    wrapper_class_path="boileroom.models.protenix.protenix.Protenix",
+    modal_class_path="boileroom.models.protenix.protenix.ModalProtenix",
+    apptainer_core_class_path="boileroom.models.protenix.core.ProtenixCore",
+    apptainer_image_name=PROTENIX_IMAGE_NAME,
+    supported_backends=("modal", "apptainer"),
+    contract=ModelContract(
+        task_method="fold",
+        task_kind="structure",
+        static_config_keys=frozenset(
+            {
+                "device",
+                "model_name",
+                "msa_server_url",
+                "use_template",
+                "trimul_kernel",
+                "triatt_kernel",
+                "enable_cache",
+                "enable_fusion",
+                "enable_tf32",
+            }
+        ),
+        minimal_output_fields=("metadata", "atom_array"),
+        optional_output_fields=(
+            "confidence",
+            "plddt",
+            "ptm",
+            "iptm",
+            "pae",
+            "token_chain_ids",
+            "token_res_ids",
+            "atom_plddt",
+            "seeds",
+            "sample_ranks",
+            "pdb",
+            "cif",
+        ),
+        supports_batch=False,
+        supports_multimer=True,
+    ),
+)
+
 SAE_SPEC = ModelSpec(
     key="sae",
     public_name="SAE",
@@ -283,7 +330,49 @@ SAE_SPEC = ModelSpec(
     ),
 )
 
-MODEL_SPECS = (ESMFOLD_SPEC, ESM2_SPEC, ESMFOLD2_SPEC, ESMC_SPEC, ESM3_SPEC, CHAI1_SPEC, BOLTZ2_SPEC, SAE_SPEC)
+ALPHAFOLD2_MULTIMER_SPEC = ModelSpec(
+    key="alphafold2_multimer",
+    public_name="AlphaFold2Multimer",
+    family="alphafold",
+    wrapper_class_path="boileroom.models.alphafold.alphafold2_multimer.AlphaFold2Multimer",
+    modal_class_path="boileroom.models.alphafold.alphafold2_multimer.ModalAlphaFold2Multimer",
+    apptainer_core_class_path="boileroom.models.alphafold.core.AlphaFold2MultimerCore",
+    apptainer_image_name=ALPHAFOLD2_MULTIMER_IMAGE_NAME,
+    supported_backends=("modal", "apptainer"),
+    contract=ModelContract(
+        task_method="fold",
+        task_kind="structure",
+        static_config_keys=frozenset(
+            {
+                "device",
+                "colabfold_python",
+                "data_dir",
+                "model_type",
+                "num_models",
+                "num_recycle",
+                "use_templates",
+                "rank_by",
+            }
+        ),
+        minimal_output_fields=("metadata", "atom_array"),
+        optional_output_fields=("ranking", "plddt", "ptm", "iptm", "pae", "pdb", "cif"),
+        supports_batch=False,
+        supports_multimer=True,
+    ),
+)
+
+MODEL_SPECS = (
+    ESMFOLD_SPEC,
+    ESM2_SPEC,
+    ESMFOLD2_SPEC,
+    ESMC_SPEC,
+    ESM3_SPEC,
+    CHAI1_SPEC,
+    BOLTZ2_SPEC,
+    SAE_SPEC,
+    PROTENIX_SPEC,
+    ALPHAFOLD2_MULTIMER_SPEC,
+)
 MODEL_SPECS_BY_KEY = {spec.key: spec for spec in MODEL_SPECS}
 MODEL_SPECS_BY_PUBLIC_NAME = {spec.public_name: spec for spec in MODEL_SPECS}
 
@@ -299,6 +388,7 @@ def get_model_spec(identifier: str) -> ModelSpec:
 
 
 __all__ = [
+    "ALPHAFOLD2_MULTIMER_SPEC",
     "BOLTZ2_SPEC",
     "CHAI1_SPEC",
     "ESM2_SPEC",
@@ -312,6 +402,7 @@ __all__ = [
     "SAE_SPEC",
     "ModelContract",
     "ModelSpec",
+    "PROTENIX_SPEC",
     "get_model_spec",
     "resolve_object",
 ]

@@ -26,11 +26,13 @@ from boileroom.images.metadata import (  # noqa: E402
     RuntimeImageSpec,
     SUPPORTED_CUDA_VERSIONS,
     get_supported_cuda,
+    get_supported_platforms,
     normalize_docker_repository,
     normalize_cuda_version,
     normalize_requested_tag,
     published_image_references,
     select_model_image_specs,
+    split_platforms,
 )
 from scripts.cli_utils import (  # noqa: E402
     CONTEXT_SETTINGS,
@@ -460,17 +462,23 @@ def run_build(options: BuildOptions) -> None:
         tag = resolve_publish_tag(options.tag)
         docker_repository = normalize_docker_repository(options.docker_user)
         cuda_versions = compute_cuda_versions(options.cuda_versions, options.all_cuda)
+        requested_platforms = split_platforms(options.platform)
+        platform = ",".join(requested_platforms)
         model_specs = select_model_image_specs(options.model_keys)
         if options.base_mode is BaseMode.ONLY and options.model_keys:
             raise ValueError("--base-mode=only cannot be combined with --model.")
         unsupported_selections = [
             spec.key
             for spec in model_specs
-            if options.model_keys and not set(cuda_versions).intersection(get_supported_cuda(spec))
+            if options.model_keys
+            and (
+                not set(cuda_versions).intersection(get_supported_cuda(spec))
+                or not set(requested_platforms).issubset(get_supported_platforms(spec))
+            )
         ]
         if unsupported_selections:
             raise ValueError(
-                "Requested model image(s) do not support the selected CUDA versions: "
+                "Requested model image(s) do not support the selected CUDA versions or platforms: "
                 + ", ".join(unsupported_selections)
             )
         output_flag = resolve_output_flag(options.push, options.load, options.platform)
@@ -480,7 +488,7 @@ def run_build(options: BuildOptions) -> None:
                 raise ValueError("--local-base cannot be combined with --base-mode=existing.")
             if not options.push:
                 raise ValueError("--local-base only applies to pushed builds.")
-            if "," in options.platform:
+            if "," in platform:
                 raise ValueError("--local-base requires a single --platform value.")
             use_local_docker_build = False
         ensure_docker()
@@ -510,7 +518,7 @@ def run_build(options: BuildOptions) -> None:
     else:
         log_info(f"Model images: {', '.join(spec.image_name for spec in model_specs)}")
     log_info(f"CUDA versions: {', '.join(cuda_versions)}")
-    log_info(f"Platforms: {options.platform}")
+    log_info(f"Platforms: {platform}")
     if options.verbose:
         if options.local_base:
             output_mode = "load into local Docker then push"
@@ -549,7 +557,7 @@ def run_build(options: BuildOptions) -> None:
                     cuda_version,
                     tag,
                     docker_repository,
-                    options.platform,
+                    platform,
                     output_flag,
                     options.no_cache,
                     use_local_docker_build,
@@ -571,6 +579,13 @@ def run_build(options: BuildOptions) -> None:
                 log_warn(
                     f"Skipping {image_spec.image_name} for CUDA {cuda_version} "
                     f"(supported CUDA variants: {', '.join(supported_cuda)})"
+                )
+                continue
+            supported_platforms = get_supported_platforms(image_spec)
+            if not set(requested_platforms).issubset(supported_platforms):
+                log_warn(
+                    f"Skipping {image_spec.image_name} for platforms {', '.join(requested_platforms)} "
+                    f"(supported platforms: {', '.join(supported_platforms)})"
                 )
                 continue
             target_reference = published_image_references(image_spec.image_name, cuda_version, tag, docker_repository)[0]
@@ -599,7 +614,7 @@ def run_build(options: BuildOptions) -> None:
                 published_references.extend(
                     build_model(
                         task,
-                        options.platform,
+                        platform,
                         output_flag,
                         options.no_cache,
                         use_local_docker_build,
@@ -617,7 +632,7 @@ def run_build(options: BuildOptions) -> None:
                 executor.submit(
                     build_model,
                     task,
-                    options.platform,
+                    platform,
                     output_flag,
                     options.no_cache,
                     use_local_docker_build,

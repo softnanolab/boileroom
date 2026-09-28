@@ -1,14 +1,9 @@
 """Core Boltz2 algorithm implementation without modal dependencies."""
 
-import contextlib
 import dataclasses
-import hashlib
-import json
 import logging
 import os
-import shutil
-from collections.abc import Iterator, Sequence
-from datetime import UTC, datetime
+from collections.abc import Sequence
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, ClassVar, cast
@@ -30,6 +25,7 @@ from boltz.model.models.boltz2 import Boltz2 as Boltz2Model
 from pytorch_lightning import Trainer, seed_everything
 
 from ...base import FoldingAlgorithm
+from ...msa_cache import MSACache
 from ...utils import MODAL_MODEL_DIR, Timer, safe_mkdir
 from .types import Boltz2Output
 
@@ -200,31 +196,11 @@ class Boltz2Core(FoldingAlgorithm):
 
         self.ready = True
 
-    def _get_sequence_hash(self, sequence: str) -> str:
-        """Compute SHA256 hash of a protein sequence.
+    def _msa_cache_base_dir(self) -> Path:
+        """Return the base directory that houses the Boltz MSA cache.
 
-        Parameters
-        ----------
-        sequence : str
-            Protein sequence string.
-
-        Returns
-        -------
-        str
-            Hexadecimal digest of the sequence hash.
-        """
-        return hashlib.sha256(sequence.encode()).hexdigest()
-
-    def _get_msa_cache_dir(self) -> Path:
-        """Get the MSA cache directory path.
-
-        Returns the cache directory at {cache_dir}/boltz/msa_cache or {MODEL_DIR}/boltz/msa_cache.
-        Handles both local and Modal paths (checks MODAL_MODEL_DIR if available).
-
-        Returns
-        -------
-        Path
-            Path to the MSA cache directory. Directory is created if it doesn't exist.
+        Resolves to ``{cache_dir}`` when configured, otherwise ``{MODEL_DIR}/boltz``,
+        with Modal's mounted model directory taking precedence when present.
         """
         cache_dir_str = self.config.get("cache_dir")
         if cache_dir_str is not None:
@@ -234,219 +210,48 @@ class Boltz2Core(FoldingAlgorithm):
                 raise ValueError("model_dir must be set when cache_dir is not provided")
             base_cache_dir = Path(self.model_dir) / "boltz"
 
-        # Check if we're in Modal environment and adjust path
+        # Prefer Modal's mounted model directory when running on Modal.
         modal_model_dir = os.environ.get("MODAL_MODEL_DIR")
         if modal_model_dir:
             base_cache_dir = Path(modal_model_dir) / "boltz"
         elif cache_dir_str is None and self.model_dir == MODAL_MODEL_DIR:
-            # If model_dir was set to MODAL_MODEL_DIR but env var not set, use it directly
             base_cache_dir = Path(MODAL_MODEL_DIR) / "boltz"
+        return base_cache_dir
 
-        msa_cache_dir = base_cache_dir / "msa_cache"
-        safe_mkdir(msa_cache_dir, parents=True)
-        return msa_cache_dir
-
-    def _get_msa_cache_index_path(self) -> Path:
-        """Get the path to the MSA cache index file.
-
-        Returns
-        -------
-        Path
-            Path to msa_index.json in the cache directory.
-        """
-        return self._get_msa_cache_dir() / "msa_index.json"
-
-    def _load_msa_cache_index(self) -> dict[str, dict[str, Any]]:
-        """Load the MSA cache index from disk.
-
-        Returns
-        -------
-        Dict[str, Dict[str, Any]]
-            Dictionary mapping sequence hash to cache metadata. Returns empty dict if file doesn't exist
-            or if there's an error loading it.
-        """
-        index_path = self._get_msa_cache_index_path()
-        if not index_path.exists():
-            return {}
-
-        try:
-            with index_path.open("r") as f:
-                return json.load(f)
-        except (json.JSONDecodeError, OSError) as e:
-            logger.warning(f"Failed to load MSA cache index from {index_path}: {e}. Recreating index.")
-            # Backup corrupted index and create new one
-            if index_path.exists():
-                backup_path = index_path.with_suffix(".json.bak")
-                try:
-                    shutil.move(str(index_path), str(backup_path))
-                    logger.info(f"Moved corrupted index to {backup_path}")
-                except OSError:
-                    pass
-            return {}
-
-    def _save_msa_cache_index(self, index: dict[str, dict[str, Any]]) -> None:
-        """Save the MSA cache index to disk atomically.
-
-        Writes to a temporary file first, then renames it to the final location to ensure atomic updates.
-
-        Parameters
-        ----------
-        index : Dict[str, Dict[str, Any]]
-            Dictionary mapping sequence hash to cache metadata to save.
-        """
-        index_path = self._get_msa_cache_index_path()
-        cache_dir = index_path.parent
-        safe_mkdir(cache_dir, parents=True)
-
-        # Write to temporary file first for atomic update
-        temp_path = index_path.with_name(f"{index_path.name}.{os.getpid()}.tmp")
-        try:
-            with temp_path.open("w") as f:
-                json.dump(index, f, indent=2)
-            # Atomic rename
-            temp_path.replace(index_path)
-        except OSError as e:
-            logger.warning(f"Failed to save MSA cache index to {index_path}: {e}")
-            # Clean up temp file if rename failed
-            if temp_path.exists():
-                with contextlib.suppress(OSError):
-                    temp_path.unlink()
-
-    @contextlib.contextmanager
-    def _locked_msa_cache_index(self) -> Iterator[dict[str, dict[str, Any]]]:
-        """Yield the MSA cache index while holding an exclusive file lock."""
-        import fcntl
-
-        index_path = self._get_msa_cache_index_path()
-        safe_mkdir(index_path.parent, parents=True)
-        lock_path = index_path.with_suffix(".json.lock")
-        with lock_path.open("a+") as lock_file:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-            try:
-                index: dict[str, dict[str, Any]] = self._load_msa_cache_index()
-                yield index
-            finally:
-                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+    def _msa_cache(self) -> MSACache:
+        """Return the shared content-addressed cache for Boltz ``.csv`` MSAs."""
+        return MSACache(self._msa_cache_base_dir(), suffix=".csv")
 
     def _check_msa_cache(self, sequences: list[str], *, cache_enabled: bool) -> dict[str, Path]:
-        """Check the MSA cache for cached MSAs for the given sequences.
+        """Return cached MSA paths for the sequences present in the cache.
 
         Parameters
         ----------
-        sequences : List[str]
-            List of individual protein sequences (after splitting by colon for multimers).
+        sequences : list[str]
+            Individual protein sequences (after splitting multimers on ``:``).
+        cache_enabled : bool
+            When ``False`` the cache is bypassed and an empty mapping is returned.
 
         Returns
         -------
-        Dict[str, Path]
-            Dictionary mapping sequence string to cached MSA Path if found, empty dict otherwise.
-            Only includes entries where the cached file actually exists.
+        dict[str, Path]
+            Mapping from sequence to its cached MSA file, for cache hits only.
         """
         if not cache_enabled:
             return {}
-
-        try:
-            cache_dir = self._get_msa_cache_dir()
-            with self._locked_msa_cache_index() as index:
-                index = cast(dict[str, dict[str, Any]], index)
-                cached_paths: dict[str, Path] = {}
-                index_updated = False
-                now = datetime.now(UTC).isoformat()
-
-                for sequence in sequences:
-                    seq_hash = self._get_sequence_hash(sequence)
-                    if seq_hash in index:
-                        entry = index[seq_hash]
-                        # Index stores relative path, construct full path
-                        msa_path_str = entry.get("msa_path", "")
-                        if not msa_path_str:
-                            # Fallback: try hash-based path structure
-                            msa_path = cache_dir / seq_hash[:2] / seq_hash[2:4] / f"{seq_hash}.csv"
-                        else:
-                            msa_path = cache_dir / msa_path_str
-
-                        # Check if file actually exists
-                        if msa_path.exists() and msa_path.is_file():
-                            cached_paths[sequence] = msa_path
-                            # Log hash and path so users can locate and remove cached MSAs if needed
-                            logger.info(
-                                "Using cached MSA for sequence hash %s at %s",
-                                seq_hash,
-                                msa_path,
-                            )
-                            # Update last_accessed timestamp
-                            if entry.get("last_accessed") != now:
-                                entry["last_accessed"] = now
-                                index_updated = True
-                        else:
-                            # File doesn't exist, remove from index
-                            logger.debug(f"Cached MSA file not found for hash {seq_hash}, removing from index")
-                            del index[seq_hash]
-                            index_updated = True
-
-                # Save updated index if any timestamps were updated or entries removed
-                if index_updated:
-                    self._save_msa_cache_index(index)
-
-                return cached_paths
-        except Exception as e:
-            logger.warning(f"Error checking MSA cache: {e}. Continuing without cache.")
-            return {}
+        cache = self._msa_cache()
+        cached_paths: dict[str, Path] = {}
+        for sequence in sequences:
+            path = cache.get(MSACache.hash_key(sequence))
+            if path is not None:
+                cached_paths[sequence] = path
+        return cached_paths
 
     def _save_msa_to_cache(self, sequence: str, msa_source_path: Path, *, cache_enabled: bool) -> None:
-        """Save a single MSA file to the cache.
-
-        Parameters
-        ----------
-        sequence : str
-            Protein sequence string.
-        msa_source_path : Path
-            Path to the source MSA file (typically a .csv file from preprocessing output).
-        """
+        """Copy a single generated ``.csv`` MSA into the shared cache."""
         if not cache_enabled:
             return
-
-        try:
-            cache_dir = self._get_msa_cache_dir()
-            seq_hash = self._get_sequence_hash(sequence)
-
-            # Create hash-prefixed directory structure: {hash[:2]}/{hash[2:4]}/
-            hash_prefix_dir = cache_dir / seq_hash[:2] / seq_hash[2:4]
-            safe_mkdir(hash_prefix_dir, parents=True)
-
-            # Destination path
-            msa_cache_path = hash_prefix_dir / f"{seq_hash}.csv"
-
-            # Only copy if source file exists and destination doesn't already exist
-            if not msa_source_path.exists():
-                logger.warning(f"Source MSA file not found: {msa_source_path}")
-                return
-
-            if msa_cache_path.exists():
-                # Already cached, skip
-                logger.debug(f"MSA already cached for sequence hash {seq_hash}")
-                return
-
-            # Copy MSA file to cache
-            shutil.copy2(msa_source_path, msa_cache_path)
-            file_size = msa_cache_path.stat().st_size
-
-            # Update index under lock so concurrent writers cannot clobber entries.
-            with self._locked_msa_cache_index() as index:
-                index = cast(dict[str, dict[str, Any]], index)
-                now = datetime.now(UTC).isoformat()
-                relative_path = f"{seq_hash[:2]}/{seq_hash[2:4]}/{seq_hash}.csv"
-                index[seq_hash] = {
-                    "msa_path": relative_path,
-                    "created_at": now,
-                    "last_accessed": now,
-                    "file_size": file_size,
-                }
-                self._save_msa_cache_index(index)
-
-            logger.debug(f"Cached MSA for sequence hash {seq_hash}")
-        except Exception as e:
-            logger.warning(f"Error saving MSA to cache: {e}. Continuing without caching.")
+        self._msa_cache().put(MSACache.hash_key(sequence), msa_source_path)
 
     def _save_msas_to_cache(
         self,

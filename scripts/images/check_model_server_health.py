@@ -24,6 +24,7 @@ from boileroom.images.metadata import (  # noqa: E402
     normalize_docker_repository,
     normalize_requested_tag,
     select_model_image_specs,
+    current_docker_platform,
 )
 from scripts.cli_utils import (  # noqa: E402
     CONTEXT_SETTINGS,
@@ -201,8 +202,15 @@ def run_server_health_checks(options: HealthCheckOptions) -> None:
         cuda_versions,
         docker_repository=docker_repository,
         image_specs=select_model_image_specs(options.model_keys),
+        platform=current_docker_platform(),
     )
     if not targets:
+        if options.model_keys:
+            print(
+                f"No image targets for model(s) {', '.join(options.model_keys)} on this platform/CUDA selection; "
+                "nothing to check."
+            )
+            return
         raise SystemExit("No image targets matched the requested CUDA selection.")
 
     for image_key, image_reference, _display_tag, _requirements_path, _core_path in targets:

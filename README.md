@@ -67,6 +67,8 @@ per-residue arrays on `[0, 1]`, and scalar scores such as `ptm` and `iptm` are r
 In `0.3.1`, this replaces ESMFold's old padded pLDDT batch array and moves Boltz `ptm`/`iptm` from nested
 `confidence` dictionaries to top-level fields.
 
+Protenix and AlphaFold2-Multimer keep their model runners loaded between `fold()` calls. Create one model instance and reuse it for successive jobs, just like the other wrappers. They fetch MSAs from the ColabFold MMseqs2 server by default; neither needs local genetic databases. See [docs/models.md](docs/models.md) for examples, configuration and Modal GPU defaults.
+
 ## Available Models
 
 | Model      | Status | Description                                    | Reference                                              |
@@ -78,6 +80,8 @@ In `0.3.1`, this replaces ESMFold's old padded pLDDT batch array and moves Boltz
 | ESM3     | ✅      | MIT-licensed multimodal model, embedding-only in Boileroom | [Chan Zuckerberg Biohub](https://github.com/Biohub/esm) |
 | Chai-1    | ✅      | Protein design and structure prediction model | [Chai Discovery](https://github.com/chaidiscovery/chai-lab) |
 | Boltz-2   | ✅      | Diffusion-based protein structure prediction | [Boltz / MIT](https://github.com/jwohlwend/boltz) |
+| Protenix  | 🍊      | AlphaFold3-style biomolecular structure prediction (Protenix v2) | [ByteDance](https://github.com/bytedance/Protenix) |
+| AlphaFold2-Multimer | 🍊 | Protein complex prediction via ColabFold (`alphafold2_multimer_v3`) | [Google DeepMind](https://github.com/google-deepmind/alphafold) / [ColabFold](https://github.com/sokrypton/ColabFold) |
 
 > **Licensing:** all bundled model weights are MIT-licensed except **Chai-1**, whose weights are released under the non-commercial Chai Discovery Community License. Review Chai Discovery's terms before using Chai-1 outside research.
 
@@ -110,7 +114,7 @@ For Modal integration tests, run the model families in parallel shards:
 uv run pytest -v -n 4 --dist loadgroup -m integration
 ```
 
-This starts four pytest workers and keeps each model family on its own worker, so Boltz, Chai, ESM2, and ESMFold use separate Modal apps without registering unrelated GPU functions in the same app.
+This starts four pytest workers and keeps each model family on its own worker, so each model family (Boltz, Chai, ESM2, ESMFold, ESMFold2, Protenix, AlphaFold2-Multimer) uses its own Modal app without registering unrelated GPU functions in the same app.
 
 To run the same integration tests in series, omit xdist:
 
@@ -165,4 +169,4 @@ If you use `boileroom` in your research, please cite:
 ## Acknowledgments
 
 - [Modal Labs](https://modal.com/) for the serverless infrastructure
-- The teams behind ESMFold, AlphaFold, and other protein prediction models
+- The teams behind ESMFold, AlphaFold, ColabFold, Protenix, and other protein prediction models

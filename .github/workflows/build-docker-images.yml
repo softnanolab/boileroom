@@ -17,6 +17,11 @@ on:
         required: true
         type: boolean
         default: false
+      models:
+        description: Optional space-separated model selectors for validation-only runs.
+        required: false
+        type: string
+        default: ""
       docker_repository:
         description: Docker repository namespace for manual runs, for example docker.io/my-dockerhub-user.
         required: true
@@ -132,29 +137,37 @@ jobs:
 
       - name: Determine image metadata
         id: image_metadata
+        env:
+          MODELS_FOR_RUN: ${{ inputs.models || '' }}
         run: |
           uv run --no-project --with pyyaml python - <<'PY' >> "$GITHUB_OUTPUT"
           import json
+          import os
 
           from boileroom.images.metadata import (
               DEFAULT_CUDA_VERSION,
-              MODEL_IMAGE_SPECS,
               SUPPORTED_CUDA_VERSIONS,
               get_supported_cuda,
+              get_supported_platforms,
+              select_model_image_specs,
           )
 
+          selected = [] if os.environ["SHOULD_PROMOTE"] == "true" else os.environ["MODELS_FOR_RUN"].split()
+          specs = select_model_image_specs(selected)
           amd64_model_matrix = {
               "include": [
                   {"model": spec.key, "cuda_version": cuda_version}
-                  for spec in MODEL_IMAGE_SPECS
+                  for spec in specs
                   for cuda_version in get_supported_cuda(spec)
+                  if "linux/amd64" in get_supported_platforms(spec)
               ]
           }
           arm64_model_matrix = {
               "include": [
                   {"model": spec.key, "cuda_version": DEFAULT_CUDA_VERSION}
-                  for spec in MODEL_IMAGE_SPECS
+                  for spec in specs
                   if DEFAULT_CUDA_VERSION in get_supported_cuda(spec)
+                  and "linux/arm64" in get_supported_platforms(spec)
               ]
           }
 
@@ -311,6 +324,7 @@ jobs:
         run: docker builder prune --all --force
 
   build-arm64-base:
+    if: ${{ fromJSON(needs.prepare-release.outputs.arm64_model_matrix).include[0] != null }}
     needs: prepare-release
     name: Build Base (linux/arm64, CUDA ${{ needs.prepare-release.outputs.default_cuda_version }})
     runs-on: ubuntu-24.04-arm
@@ -374,6 +388,7 @@ jobs:
           overwrite: true
 
   build-arm64-models:
+    if: ${{ fromJSON(needs.prepare-release.outputs.arm64_model_matrix).include[0] != null }}
     needs: [prepare-release, build-arm64-base]
     name: Build Model (${{ matrix.model }}, linux/arm64, CUDA ${{ matrix.cuda_version }})
     runs-on: ubuntu-24.04-arm

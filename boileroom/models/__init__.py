@@ -29,6 +29,14 @@ def __getattr__(name: str):
         from .boltz.boltz2 import Boltz2
 
         return Boltz2
+    if name == "Protenix":
+        from .protenix.protenix import Protenix
+
+        return Protenix
+    if name == "AlphaFold2Multimer":
+        from .alphafold.alphafold2_multimer import AlphaFold2Multimer
+
+        return AlphaFold2Multimer
     if name == "SAE":
         from .sae.sae import SAE
 
@@ -44,5 +52,7 @@ __all__ = [
     "ESMFold2",
     "Chai1",
     "Boltz2",
+    "Protenix",
+    "AlphaFold2Multimer",
     "SAE",
 ]

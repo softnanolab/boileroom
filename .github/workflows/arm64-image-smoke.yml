@@ -34,9 +34,9 @@ jobs:
           uv run --no-project --with pyyaml python - <<'PY' >> "$GITHUB_OUTPUT"
           import json
 
-          from boileroom.images.metadata import DEFAULT_CUDA_VERSION, MODEL_IMAGE_SPECS, get_supported_cuda
+          from boileroom.images.metadata import DEFAULT_CUDA_VERSION, MODEL_IMAGE_SPECS, get_supported_cuda, get_supported_platforms
 
-          models = [spec.key for spec in MODEL_IMAGE_SPECS if DEFAULT_CUDA_VERSION in get_supported_cuda(spec)]
+          models = [spec.key for spec in MODEL_IMAGE_SPECS if DEFAULT_CUDA_VERSION in get_supported_cuda(spec) and "linux/arm64" in get_supported_platforms(spec)]
           print(f"default_cuda_version={DEFAULT_CUDA_VERSION}")
           print(f"models={json.dumps(models, separators=(',', ':'))}")
           PY

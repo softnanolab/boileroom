@@ -7,14 +7,16 @@ from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any, ClassVar, Literal, Protocol, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol, cast
 
 import numpy as np
-import torch
 
 from .images.metadata import format_image_reference, get_image_tag
 from .models.registry import ModelSpec, resolve_object
 from .utils import validate_sequence
+
+if TYPE_CHECKING:
+    import torch
 
 logger = logging.getLogger(__name__)
 
@@ -117,7 +119,7 @@ class Algorithm(ABC):
         # updating the model if anything has changed
         self.config = {**self.config, **config}
 
-    def _resolve_device(self) -> torch.device:
+    def _resolve_device(self) -> "torch.device":
         """Select the computation device based on instance configuration and system capability.
 
         If the instance config contains a "device" entry, that device is returned; otherwise return "cuda:0" when CUDA is available, falling back to "cpu" when not.
@@ -127,6 +129,8 @@ class Algorithm(ABC):
         torch.device
             The resolved device.
         """
+        import torch
+
         requested = self.config.get("device")
         if requested is not None:
             return torch.device(requested)

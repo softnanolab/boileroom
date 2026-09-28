@@ -32,6 +32,7 @@
 
 ## Runtime Design
 - Core classes own validation, loading, and `fold()` / `embed()` behavior.
+- Load models once per live runtime and reuse their weights and runners across `fold()` / `embed()` calls; reload only after shutdown or failure.
 - Modal wrappers should stay thin and delegate directly to the core.
 - Apptainer runs the core in an HTTP microservice inside the container.
 - Models in the same family may share a runtime image.

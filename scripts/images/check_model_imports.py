@@ -14,9 +14,9 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from boileroom.images.import_checks import (  # noqa: E402
-    IMPORT_NAME_OVERRIDES,
     compute_cuda_versions,
     iter_image_targets,
+    requirement_import_names,
 )
 from boileroom.images.metadata import (  # noqa: E402
     DEFAULT_DOCKER_REPOSITORY,
@@ -24,6 +24,7 @@ from boileroom.images.metadata import (  # noqa: E402
     normalize_docker_repository,
     normalize_requested_tag,
     select_model_image_specs,
+    current_docker_platform,
 )
 from scripts.cli_utils import (  # noqa: E402
     CONTEXT_SETTINGS,
@@ -108,30 +109,16 @@ def _check_image(
         check=True,
     )
 
+    deps = [*requirement_import_names(requirements_path), "numpy"]
+
     script = f"""
 import ast
 import importlib
-import re
 import sys
 from pathlib import Path
 
-requirements_txt = Path({str(requirements_path)!r})
 core_file = Path({str(core_path)!r})
-import_name_overrides = {IMPORT_NAME_OVERRIDES!r}
-from boileroom.images.import_checks import requirement_line_to_package_name
-
-deps = []
-with requirements_txt.open(encoding="utf-8") as handle:
-    for line in handle:
-        stripped = line.strip()
-        if not stripped or stripped.startswith('#'):
-            continue
-        pkg_name = requirement_line_to_package_name(stripped)
-        import_name = import_name_overrides.get(pkg_name, pkg_name.replace('-', '_'))
-        if import_name:
-            deps.append(import_name)
-
-deps.append('numpy')
+deps = {deps!r}
 
 try:
     ast.parse(core_file.read_text(encoding='utf-8'), filename=str(core_file))
@@ -195,8 +182,15 @@ def run_import_checks(options: ImportCheckOptions) -> None:
         cuda_versions,
         docker_repository=docker_repository,
         image_specs=select_model_image_specs(options.model_keys),
+        platform=current_docker_platform(),
     )
     if not targets:
+        if options.model_keys:
+            print(
+                f"No image targets for model(s) {', '.join(options.model_keys)} on this platform/CUDA selection; "
+                "nothing to check."
+            )
+            return
         raise SystemExit("No image targets matched the requested CUDA selection.")
 
     for image_key, image_reference, _display_tag, requirements_path, core_path in targets:

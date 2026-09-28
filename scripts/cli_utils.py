@@ -68,6 +68,7 @@ def model_option(model_keys: Sequence[str], help_text: str) -> Callable[[F], F]:
             F,
             click.option(
                 "--model",
+                "--only",
                 "model_keys",
                 multiple=True,
                 type=click.Choice(tuple(model_keys)),
