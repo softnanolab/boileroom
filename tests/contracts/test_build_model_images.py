@@ -382,11 +382,11 @@ def test_main_skips_existing_base_and_model_tags(monkeypatch: MonkeyPatch, tmp_p
         )
         return image_reference.endswith(existing_refs)
 
-    def fake_build_base(cuda_version: str, tag: str, docker_repository: str, *_args, **_kwargs) -> str:
+    def fake_build_base(cuda_version: str, tag: str, docker_repository: str, *_args: object, **_kwargs: object) -> str:
         built_bases.append(f"{cuda_version}:{tag}")
         return f"{docker_repository}/boileroom-base:cuda{cuda_version}-{tag}"
 
-    def fake_build_model(task, *_args, **_kwargs):
+    def fake_build_model(task: build_model_images.BuildTask, *_args: object, **_kwargs: object) -> tuple[str, ...]:
         built_tasks.append((task.image_spec.image_name, task.base_image_reference))
         return (f"{task.image_spec.image_name}:built",)
 
@@ -447,7 +447,7 @@ def test_run_build_skips_model_specs_with_unsupported_platform(
     def fake_build_base(cuda_version: str, tag: str, docker_repository: str, *_args, **_kwargs) -> str:
         return f"{docker_repository}/boileroom-base:cuda{cuda_version}-{tag}"
 
-    def fake_build_model(task, *_args, **_kwargs):
+    def fake_build_model(task: build_model_images.BuildTask, *_args: object, **_kwargs: object) -> tuple[str, ...]:
         built_models.append(task.image_spec.image_name)
         return (f"{task.image_spec.image_name}:built",)
 
@@ -494,11 +494,11 @@ def test_base_only_build_skips_model_tasks(monkeypatch: MonkeyPatch, tmp_path: P
     built_bases: list[str] = []
     built_models: list[str] = []
 
-    def fake_build_base(cuda_version: str, *_args, **_kwargs) -> str:
+    def fake_build_base(cuda_version: str, *_args: object, **_kwargs: object) -> str:
         built_bases.append(cuda_version)
         return f"docker.io/jakublala/boileroom-base:cuda{cuda_version}-sha-test"
 
-    def fake_build_model(task, *_args, **_kwargs):
+    def fake_build_model(task: build_model_images.BuildTask, *_args: object, **_kwargs: object) -> tuple[str, ...]:
         built_models.append(task.image_spec.key)
         return ()
 
@@ -552,7 +552,7 @@ def test_model_selection_builds_only_requested_image(
     def fake_image_reference_exists(_image_reference: str) -> bool:
         return False
 
-    def fake_build_model(task, *_args, **_kwargs):
+    def fake_build_model(task: build_model_images.BuildTask, *_args: object, **_kwargs: object) -> tuple[str, ...]:
         built_models.append(task.image_spec.key)
         return ()
 
@@ -610,14 +610,14 @@ def test_local_base_push_builds_locally_then_pushes(monkeypatch: MonkeyPatch, tm
         return f"{docker_repository}/boileroom-base:cuda{cuda_version}-{tag}"
 
     def fake_build_model(
-        task,
+        task: build_model_images.BuildTask,
         _platform: str,
         _output_flag: str,
         _no_cache: bool,
         use_local_docker_build: bool,
         _verbose: bool,
         push_after_build: bool = False,
-    ):
+    ) -> tuple[str, ...]:
         model_calls.append((use_local_docker_build, push_after_build, task.base_image_reference))
         return (f"{task.image_spec.image_name}:built",)
 
