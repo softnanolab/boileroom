@@ -53,7 +53,7 @@ def test_model_specs_report_supported_cuda_from_config() -> None:
     assert get_supported_cuda(get_model_image_spec("boltz")) == ("12.6",)
     assert get_supported_cuda(get_model_image_spec("chai")) == ("11.8", "12.6")
     assert get_supported_cuda(get_model_image_spec("esm")) == ("11.8", "12.6")
-    assert get_supported_cuda(get_model_image_spec("esmfold2")) == ("11.8", "12.6")
+    assert get_supported_cuda(get_model_image_spec("esmfold2")) == ("12.6",)
 
 
 def test_image_tag_uses_env_override(monkeypatch) -> None:

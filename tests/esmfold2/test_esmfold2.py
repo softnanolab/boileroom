@@ -2,6 +2,7 @@
 
 import sys
 from contextlib import nullcontext
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -272,15 +273,15 @@ def test_esmfold2_forwards_msa_sampling_options(monkeypatch: pytest.MonkeyPatch)
             **core.config,
             "msa_max_depth": None,
             "msa_column_mask_rate": 0.0,
-            "lm_dropout": 0.0,
         },
         request_index=0,
     )
 
     assert captured["msa_max_depth"] is None
-    assert captured["msa_subsample_at_inference"] is False
     assert captured["msa_column_mask_rate"] == 0.0
-    assert captured["lm_dropout"] == 0.0
+    # esm>=3.4.1 removed these forward() kwargs and raises TypeError on unknown ones.
+    for removed in ("early_exit", "lm_dropout", "msa_subsample_at_inference"):
+        assert removed not in captured
 
 
 def test_esmfold2_apptainer_wrapper_encodes_rich_inputs(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -313,3 +314,83 @@ def test_esmfold2_rejects_empty_chain() -> None:
 
     with pytest.raises(ValueError, match="empty chain"):
         core._coerce_requests("A::B")
+
+
+def test_esmfold2_ccd_cache_ignores_legacy_file_and_reuses_pinned_snapshot(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An old unpinned CCD must never satisfy a new revision-pinned load."""
+    from boileroom.models.esmfold2.core import ESMFOLD2_HF_REPO, ESMFOLD2_HF_REVISION
+
+    legacy = tmp_path / "ccd.pkl"
+    legacy.write_text("legacy snapshot")
+    calls = []
+
+    def download(**kwargs: str) -> None:
+        calls.append(kwargs)
+        directory = Path(kwargs["local_dir"])
+        directory.mkdir(parents=True)
+        (directory / "ccd.pkl").write_text("pinned snapshot")
+
+    monkeypatch.setitem(sys.modules, "huggingface_hub", SimpleNamespace(hf_hub_download=download))
+    directory = _core_cls()._ensure_ccd_cache(tmp_path)
+    assert directory == tmp_path / ESMFOLD2_HF_REVISION
+    assert (directory / "ccd.pkl").read_text() == "pinned snapshot"
+    assert legacy.read_text() == "legacy snapshot"
+    assert _core_cls()._ensure_ccd_cache(tmp_path) == directory
+    assert calls == [
+        {
+            "repo_id": ESMFOLD2_HF_REPO,
+            "filename": "ccd.pkl",
+            "revision": ESMFOLD2_HF_REVISION,
+            "local_dir": str(directory),
+        }
+    ]
+
+
+def test_esmfold2_ccd_download_failure_is_not_treated_as_cache_hit(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A failed pinned download must surface even when a legacy file exists."""
+    (tmp_path / "ccd.pkl").write_text("legacy snapshot")
+
+    def download(**kwargs: str) -> None:
+        raise OSError("download failed")
+
+    monkeypatch.setitem(sys.modules, "huggingface_hub", SimpleNamespace(hf_hub_download=download))
+    with pytest.raises(OSError, match="download failed"):
+        _core_cls()._ensure_ccd_cache(tmp_path)
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_esmfold2_buffered_loading_preserves_validation_and_restores_loader(
+    monkeypatch: pytest.MonkeyPatch, fail: bool
+) -> None:
+    """Only the I/O backend changes; arguments and upstream errors survive."""
+    from unittest.mock import Mock
+
+    from boileroom.models.esmfold2.loading import load_pretrained
+
+    original = Mock()
+    reader = Mock(return_value={"tensor": "weights"})
+    hub = SimpleNamespace(load_file=original)
+    monkeypatch.setitem(sys.modules, "esm", SimpleNamespace())
+    monkeypatch.setitem(sys.modules, "esm.models", SimpleNamespace(hub=hub))
+    monkeypatch.setitem(sys.modules, "safetensors.torch", SimpleNamespace(load_file=reader))
+
+    def from_pretrained(name: str, **kwargs: str) -> str:
+        assert name == "biohub/ESMFold2"
+        assert kwargs == {"revision": "fixed-sha", "cache_dir": "/cache"}
+        assert hub.load_file("shard.safetensors") == {"tensor": "weights"}
+        if fail:
+            raise RuntimeError("unexpected checkpoint key")
+        return "loaded model"
+
+    model = SimpleNamespace(from_pretrained=from_pretrained)
+    if fail:
+        with pytest.raises(RuntimeError, match="unexpected checkpoint key"):
+            load_pretrained(model, "biohub/ESMFold2", revision="fixed-sha", cache_dir="/cache")
+    else:
+        assert load_pretrained(model, "biohub/ESMFold2", revision="fixed-sha", cache_dir="/cache") == "loaded model"
+    reader.assert_called_once_with("shard.safetensors", backend="pread")
+    assert hub.load_file is original
