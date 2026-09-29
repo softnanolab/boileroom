@@ -18,6 +18,8 @@ _KIT_CONFIG_BY_CAPABILITY: dict[str, dict[tuple[int, int], str]] = {
     "esmfold2": {(8, 0): "a100", (9, 0): "h100"},
     "protenix": {(8, 0): "a100", (9, 0): "h100"},
 }
+# Card names the kit config was validated on; H200 is the same Hopper (GH100) silicon Modal serves for H100 requests.
+_KIT_CARD_NAMES: dict[str, tuple[str, ...]] = {"a100": ("a100",), "h100": ("h100", "h200")}
 _UNSERVED_REASON: dict[str, str] = {
     "esmfold2": (
         "the kit refuses a partial lever set on sm89 (e.g. fast: t10 needs 168 KB of shared memory and t3 has no "
@@ -103,7 +105,7 @@ def resolve_optimization(family: str, mode: str, gpu: GpuInfo | None = None) -> 
         raise OptimizationUnavailableError(f"optimization={mode!r} for {family} needs a GPU to resolve against")
     sm = f"sm{gpu.capability[0]}{gpu.capability[1]}"
     config = _KIT_CONFIG_BY_CAPABILITY[family].get(gpu.capability)
-    if config is not None and config not in gpu.name.lower():
+    if config is not None and not any(card in gpu.name.lower() for card in _KIT_CARD_NAMES[config]):
         config = None  # same compute capability, different card (e.g. A30 is sm80): the kit was not validated on it
     if config is None:
         served = ", ".join(f"sm{a}{b}" for a, b in _KIT_CONFIG_BY_CAPABILITY[family])

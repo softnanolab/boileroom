@@ -17,6 +17,7 @@ A100 = GpuInfo("NVIDIA A100-SXM4-80GB", (8, 0))
 H100 = GpuInfo("NVIDIA H100 80GB HBM3", (9, 0))
 
 
+H200 = GpuInfo("NVIDIA H200", (9, 0))
 A30 = GpuInfo("NVIDIA A30", (8, 0))
 
 
@@ -51,7 +52,7 @@ def test_vanilla_resolves_on_any_gpu(family: str, gpu: GpuInfo | None) -> None:
 
 @pytest.mark.parametrize("family", ["esmfold2", "protenix"])
 @pytest.mark.parametrize("mode", ["exact", "fast"])
-@pytest.mark.parametrize("gpu", [A100, H100])
+@pytest.mark.parametrize("gpu", [A100, H100, H200])
 def test_kit_modes_resolve_on_a100_and_h100(family: str, mode: str, gpu: GpuInfo) -> None:
     resolution = resolve_optimization(family, mode, gpu)
     assert resolution.active == mode
