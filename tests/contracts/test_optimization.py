@@ -2,7 +2,7 @@
 
 import pytest
 
-from boileroom.models.registry import ESMFOLD2_SPEC, PROTENIX_SPEC
+from boileroom.models.registry import ESMFOLD2_SPEC, PROTENIX_SPEC, ModelSpec
 from boileroom.optimization import (
     DEFAULT_OPTIMIZATION,
     GpuInfo,
@@ -17,12 +17,22 @@ A100 = GpuInfo("NVIDIA A100-SXM4-80GB", (8, 0))
 H100 = GpuInfo("NVIDIA H100 80GB HBM3", (9, 0))
 
 
+A30 = GpuInfo("NVIDIA A30", (8, 0))
+
+
+@pytest.mark.parametrize("family", ["esmfold2", "protenix"])
+@pytest.mark.parametrize("mode", ["exact", "fast"])
+def test_same_capability_other_card_is_refused(family: str, mode: str) -> None:
+    with pytest.raises(OptimizationUnavailableError, match="NVIDIA A30"):
+        resolve_optimization(family, mode, A30)
+
+
 def test_default_is_vanilla() -> None:
     assert DEFAULT_OPTIMIZATION == "vanilla"
 
 
 @pytest.mark.parametrize("spec", [ESMFOLD2_SPEC, PROTENIX_SPEC])
-def test_optimization_is_a_static_option(spec) -> None:
+def test_optimization_is_a_static_option(spec: ModelSpec) -> None:
     assert "optimization" in spec.contract.static_config_keys
 
 
@@ -86,7 +96,7 @@ def test_esmfold2_core_refuses_before_loading_weights(monkeypatch: pytest.Monkey
 def test_esmfold2_core_vanilla_needs_no_gpu_probe(monkeypatch: pytest.MonkeyPatch) -> None:
     from boileroom.models.esmfold2 import core as esmfold2_core
 
-    def fail(device=None):
+    def fail(device: str | None = None) -> GpuInfo:
         raise AssertionError("vanilla must not probe the GPU")
 
     monkeypatch.setattr(esmfold2_core, "detect_gpu", fail)

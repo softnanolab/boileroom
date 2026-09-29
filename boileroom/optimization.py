@@ -103,6 +103,8 @@ def resolve_optimization(family: str, mode: str, gpu: GpuInfo | None = None) -> 
         raise OptimizationUnavailableError(f"optimization={mode!r} for {family} needs a GPU to resolve against")
     sm = f"sm{gpu.capability[0]}{gpu.capability[1]}"
     config = _KIT_CONFIG_BY_CAPABILITY[family].get(gpu.capability)
+    if config is not None and config not in gpu.name.lower():
+        config = None  # same compute capability, different card (e.g. A30 is sm80): the kit was not validated on it
     if config is None:
         served = ", ".join(f"sm{a}{b}" for a, b in _KIT_CONFIG_BY_CAPABILITY[family])
         why = _UNSERVED_REASON[family] if gpu.capability == (8, 9) else f"the kit is only validated on {served}"
