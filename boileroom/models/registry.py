@@ -178,7 +178,7 @@ ESMFOLD2_SPEC = ModelSpec(
     contract=ModelContract(
         task_method="fold",
         task_kind="structure",
-        static_config_keys=frozenset({"device", "model_name", "cache_dir", "ccd_cache_dir", "dtype"}),
+        static_config_keys=frozenset({"device", "model_name", "cache_dir", "ccd_cache_dir", "dtype", "optimization"}),
         minimal_output_fields=("metadata", "atom_array"),
         optional_output_fields=(
             "plddt",
@@ -272,6 +272,7 @@ PROTENIX_SPEC = ModelSpec(
                 "enable_cache",
                 "enable_fusion",
                 "enable_tf32",
+                "optimization",
             }
         ),
         minimal_output_fields=("metadata", "atom_array"),

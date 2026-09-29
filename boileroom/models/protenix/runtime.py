@@ -12,6 +12,9 @@ class ProtenixRuntime:
 
     def __init__(self, config: dict[str, Any], work_dir: str) -> None:
         """Load weights after the worker has configured its environment."""
+        mode = config.get("optimization", "vanilla")
+        if mode != "vanilla":
+            _enable_kit(mode)  # the kit refuses late activation, so it must precede any protenix import
         from runner.batch_inference import get_default_runner, inference_configs, init_logging
 
         init_logging()
@@ -69,3 +72,15 @@ class ProtenixRuntime:
         if errors:
             details = "\n".join(path.read_text(encoding="utf-8") for path in errors)
             raise RuntimeError(f"Protenix inference failed:\n{details[-12000:]}")
+
+
+def _enable_kit(mode: str) -> None:
+    try:
+        import protenix_opt
+    except ImportError as error:
+        raise RuntimeError(
+            f"optimization={mode!r} needs the protenix kit image (protenix_opt is not installed)"
+        ) from error
+    report = protenix_opt.enable(mode, strict=True)
+    if not report.get("active"):
+        raise RuntimeError(f"optimization={mode!r} did not activate: {report.get('reason')}")

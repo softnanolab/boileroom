@@ -16,6 +16,7 @@ from biotite.structure.io.pdb import PDBFile
 from biotite.structure.io.pdbx import CIFFile, get_structure
 
 from ...base import FoldingAlgorithm, PredictionMetadata
+from ...optimization import OptimizationResolution, detect_gpu, resolve_optimization, validate_optimization
 from ...utils import Timer, get_model_cache_dir
 from .._runtime_utils import command_env, include_field
 from .._worker import ModelWorker
@@ -45,6 +46,7 @@ class ProtenixCore(FoldingAlgorithm):
         "enable_cache": True,
         "enable_fusion": True,
         "enable_tf32": True,
+        "optimization": "vanilla",
         "use_seeds_in_json": False,
         "use_tfg_guidance": False,
         "unpaired_msa": None,
@@ -62,6 +64,7 @@ class ProtenixCore(FoldingAlgorithm):
             "enable_cache",
             "enable_fusion",
             "enable_tf32",
+            "optimization",
         }
     )
 
@@ -70,6 +73,8 @@ class ProtenixCore(FoldingAlgorithm):
         if config and "protenix_command" in config:
             raise ValueError("protenix_command is no longer supported; Protenix uses its Python runner")
         super().__init__(config or {})
+        validate_optimization(self.config["optimization"])
+        self.optimization: OptimizationResolution | None = None
         self._worker: ModelWorker | None = None
         self._metadata_template = self._initialize_metadata(
             model_name="Protenix",
@@ -83,10 +88,13 @@ class ProtenixCore(FoldingAlgorithm):
     def _load(self) -> None:
         """Validate configuration and load model weights once per core."""
         _validate_config(self.config)
+        mode = str(self.config["optimization"])
+        gpu = None if mode == "vanilla" else detect_gpu(self.config.get("device"))
+        self.optimization = resolve_optimization("protenix", mode, gpu)
         if self._worker is None:
             self._worker = ModelWorker(
-                self.config,
-                _command_env(self.config),
+                {**self.config, "optimization_kit_config": self.optimization.kit_config},
+                _command_env(self.config, self.optimization),
                 runtime_path=Path(__file__).with_name("runtime.py"),
                 runtime_class="ProtenixRuntime",
                 label="Protenix",
@@ -117,6 +125,7 @@ class ProtenixCore(FoldingAlgorithm):
             self._metadata_template,
             model_version=str(effective_config["model_name"]),
             sequence_lengths=self._compute_sequence_lengths(validated_sequences),
+            optimization=self.optimization.to_dict() if self.optimization else None,
         )
 
         with TemporaryDirectory() as buffer_dir:
@@ -236,8 +245,10 @@ class ProtenixCore(FoldingAlgorithm):
         return filtered
 
 
-def _command_env(config: dict[str, Any]) -> dict[str, str]:
+def _command_env(config: dict[str, Any], optimization: OptimizationResolution | None = None) -> dict[str, str]:
     env = command_env(config, {"PROTENIX_ROOT_DIR": str(get_model_cache_dir("protenix"))})
+    if optimization is not None and optimization.active != "vanilla":
+        env["MODEL_OPT_TARGET_GPU"] = str(optimization.kit_config).upper()
     # Protenix's MSA client speaks the ColabFold MMseqs2 API but defaults to its own
     # server, which can queue jobs for a long time; use the configured server instead.
     env["MMSEQS_SERVICE_HOST_URL"] = str(config["msa_server_url"])

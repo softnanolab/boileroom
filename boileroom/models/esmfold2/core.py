@@ -8,6 +8,7 @@ import math
 import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from functools import partial
 from io import StringIO
 from pathlib import Path
 from typing import Any, ClassVar, cast
@@ -15,6 +16,13 @@ from typing import Any, ClassVar, cast
 import numpy as np
 
 from ...base import FoldingAlgorithm, PredictionMetadata
+from ...optimization import (
+    OptimizationResolution,
+    OptimizationUnavailableError,
+    detect_gpu,
+    resolve_optimization,
+    validate_optimization,
+)
 from ...utils import MODAL_MODEL_DIR, Timer, safe_mkdir, validate_sequence
 from .payloads import decode_structure_input
 from .types import (
@@ -70,6 +78,7 @@ class ESMFold2Core(FoldingAlgorithm):
         "cache_dir": None,
         "ccd_cache_dir": None,
         "dtype": None,
+        "optimization": "vanilla",
         "num_loops": 3,
         "num_sampling_steps": 50,
         "num_diffusion_samples": 1,
@@ -84,12 +93,14 @@ class ESMFold2Core(FoldingAlgorithm):
         "include_fields": None,
     }
     STATIC_CONFIG_KEYS: ClassVar[frozenset[str]] = frozenset(
-        {"device", "model_name", "revision", "cache_dir", "ccd_cache_dir", "dtype"}
+        {"device", "model_name", "revision", "cache_dir", "ccd_cache_dir", "dtype", "optimization"}
     )
 
     def __init__(self, config: dict | None = None) -> None:
         """Create an ESMFold2 core instance."""
         super().__init__(config)
+        validate_optimization(self.config["optimization"])
+        self.optimization: OptimizationResolution | None = None
         self._metadata_template = self._initialize_metadata(
             model_name="ESMFold2",
             model_version=str(self.config["model_name"]),
@@ -118,10 +129,19 @@ class ESMFold2Core(FoldingAlgorithm):
     def _load(self) -> None:
         """Load Biohub ESMFold2 from Hugging Face and prepare the input builder."""
         import torch
-        from esm.models.esmfold2 import ESMFold2InputBuilder, EsmFold2Model
+
+        self._activate_optimization()
+        kit = self.optimization is not None and self.optimization.active != "vanilla"
+
+        from esm.models.esmfold2 import ESMFold2InputBuilder
 
         from .loading import load_pretrained
 
+        if kit:
+            # The kit patches the transformers ESMFold2Model, not esm's EsmFold2Model.
+            from transformers.models.esmfold2.modeling_esmfold2 import ESMFold2Model as ModelClass
+        else:
+            from esm.models.esmfold2 import EsmFold2Model as ModelClass
         cache_dir = self._resolve_cache_dir("cache_dir", "esmfold2")
         ccd_cache_dir = self._resolve_cache_dir("ccd_cache_dir", "esmfold2")
 
@@ -135,14 +155,62 @@ class ESMFold2Core(FoldingAlgorithm):
             kwargs["dtype"] = getattr(torch, dtype) if isinstance(dtype, str) else dtype
 
         if self.model is None:
-            self.model = load_pretrained(EsmFold2Model, model_name, **kwargs)
+            if kit:
+                # The kit's pinned snapshots load by repo id from HF_HOME, as its own CLI does.
+                kwargs = {key: value for key, value in kwargs.items() if key not in ("cache_dir", "revision")}
+            loader = ModelClass.from_pretrained if kit else partial(load_pretrained, ModelClass)
+            self.model = loader(model_name, **kwargs)
 
         self._device = self._resolve_device()
         self.model = self.model.to(self._device)
         self.model.eval()
         ccd_cache_dir = self._ensure_ccd_cache(ccd_cache_dir)
         self.input_builder = ESMFold2InputBuilder(ccd_cache=ccd_cache_dir)
+        self._configure_optimization()
         self.ready = True
+
+    def _kit_variant(self) -> str:
+        """Kit variant for the loaded checkpoint; the bakeoff workload folds without an MSA."""
+        return "fast" if str(self.config["model_name"]).endswith("ESMFold2-Fast") else "full_nomsa"
+
+    def _activate_optimization(self) -> None:
+        """Resolve ``optimization`` on this GPU and arm the kit; runs before any weights load."""
+        mode = str(self.config["optimization"])
+        gpu = None if mode == "vanilla" else detect_gpu(self.config.get("device"))
+        self.optimization = resolve_optimization("esmfold2", mode, gpu)
+        if mode == "vanilla":
+            return
+        try:
+            import esmfold2_opt
+        except ImportError as error:
+            raise OptimizationUnavailableError(
+                f"optimization={mode!r} needs the esmfold2 kit image (esmfold2_opt is not installed here)"
+            ) from error
+        report = esmfold2_opt.enable(mode, variant=self._kit_variant())
+        if not report.get("active"):
+            raise OptimizationUnavailableError(
+                f"optimization={mode!r} did not activate on {gpu.name if gpu else 'this GPU'}: {report.get('reason')}"
+            )
+
+    def _configure_optimization(self) -> None:
+        """Install the armed kit's levers on the loaded model and refuse a partial application."""
+        if self.optimization is None or self.optimization.active == "vanilla":
+            return
+        from esmfold2_opt import stack
+
+        stack.apply_to(
+            self.model,
+            self.input_builder,
+            trigger="boileroom",
+            samples=int(self.config["num_diffusion_samples"]),
+            out_dir=None,
+        )
+        report = stack.status()
+        if report.get("partial") or not report.get("active", False):
+            raise OptimizationUnavailableError(
+                f"optimization={self.optimization.requested!r} applied only part of its lever set: "
+                f"{report.get('partial') or report.get('reason')}"
+            )
 
     @staticmethod
     def _ensure_ccd_cache(ccd_cache_dir: Path) -> Path:
@@ -193,6 +261,7 @@ class ESMFold2Core(FoldingAlgorithm):
             preprocessing_time=preprocessing_time,
             inference_time=inference_time,
             postprocessing_time=postprocessing_time,
+            optimization=self.optimization.to_dict() if self.optimization else None,
         )
         return self._convert_results(results, metadata, effective_config)
 
@@ -214,29 +283,48 @@ class ESMFold2Core(FoldingAlgorithm):
         complex_id_base = str(config.get("complex_id") or "pred")
         complex_id = complex_id_base if request_index == 0 else f"{complex_id_base}_{request_index}"
 
-        with Timer("ESMFold2 preprocessing") as preprocess_timer:
-            features, chain_infos = self.input_builder.prepare_input(esm_input, seed=seed, device=self.model.device)
-
         sampler_kwargs = self._sampler_kwargs(config)
-        with Timer("ESMFold2 inference") as inference_timer, torch.no_grad(), _seed_context(seed):
-            output = self.model(
-                **features,
-                num_loops=int(config["num_loops"]),
-                num_sampling_steps=int(config["num_sampling_steps"]),
-                num_diffusion_samples=num_diffusion_samples,
-                msa_max_depth=config.get("msa_max_depth"),
-                msa_column_mask_rate=float(config.get("msa_column_mask_rate", 0.1)),
-                **sampler_kwargs,
-            )
+        if self.optimization is not None and self.optimization.active != "vanilla":
+            # The kit hooks ESMFold2InputBuilder.fold(), so kit modes fold through it (lm_dropout off, as in the direct call).
+            with Timer("ESMFold2 inference") as inference_timer:
+                decoded = self.input_builder.fold(
+                    self.model,
+                    esm_input,
+                    num_loops=int(config["num_loops"]),
+                    num_sampling_steps=int(config["num_sampling_steps"]),
+                    num_diffusion_samples=num_diffusion_samples,
+                    seed=seed,
+                    lm_dropout=None,
+                    msa_max_depth=config.get("msa_max_depth"),
+                    msa_column_mask_rate=float(config.get("msa_column_mask_rate", 0.1)),
+                    complex_id=complex_id,
+                    **sampler_kwargs,
+                )
+            preprocess_timer = postprocess_timer = Timer("unused")
+            preprocess_timer.duration = postprocess_timer.duration = 0.0
+        else:
+            with Timer("ESMFold2 preprocessing") as preprocess_timer:
+                features, chain_infos = self.input_builder.prepare_input(esm_input, seed=seed, device=self.model.device)
 
-        with Timer("ESMFold2 postprocessing") as postprocess_timer:
-            decoded = self.input_builder.decode(
-                output,
-                features,
-                chain_infos,
-                num_diffusion_samples=num_diffusion_samples,
-                complex_id=complex_id,
-            )
+            with Timer("ESMFold2 inference") as inference_timer, torch.no_grad(), _seed_context(seed):
+                output = self.model(
+                    **features,
+                    num_loops=int(config["num_loops"]),
+                    num_sampling_steps=int(config["num_sampling_steps"]),
+                    num_diffusion_samples=num_diffusion_samples,
+                    msa_max_depth=config.get("msa_max_depth"),
+                    msa_column_mask_rate=float(config.get("msa_column_mask_rate", 0.1)),
+                    **sampler_kwargs,
+                )
+
+            with Timer("ESMFold2 postprocessing") as postprocess_timer:
+                decoded = self.input_builder.decode(
+                    output,
+                    features,
+                    chain_infos,
+                    num_diffusion_samples=num_diffusion_samples,
+                    complex_id=complex_id,
+                )
 
         results = decoded if isinstance(decoded, list) else [decoded]
         timing = {

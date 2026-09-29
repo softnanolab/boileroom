@@ -45,6 +45,7 @@ class PredictionMetadata:
     preprocessing_time: float | None = None  # in seconds
     inference_time: float | None = None  # in seconds
     postprocessing_time: float | None = None  # in seconds
+    optimization: dict[str, Any] | None = None  # resolved optimization mode and GPU
 
 
 class StructurePrediction(Protocol):
