@@ -45,6 +45,19 @@ The A100 runs landed on a mix of SXM4 and PCIe cards; the H100 rows are pinned r
 | ESMFold2-Fast | L4: 2.51 s, $0.00056 | 0.33 s, $0.00023 | 0.19 s, $0.00021 | not run |
 | Protenix v2 | L40S: 12.2 s, $0.0066 | 3.5 s, $0.0024 | 1.4 s, $0.0015 | not run |
 
+Same GPU, vanilla vs kit (median warm wall time per fold and cost; speedup equals cost ratio because the GPU is the same):
+
+| Model | GPU | vanilla | `exact` | `fast` |
+| --- | --- | --- | --- | --- |
+| ESMFold2 (full) | A100 | 2.04 s, $0.00141 | 0.79 s, $0.00055 (2.6x) | 0.47 s, $0.00032 (4.4x) |
+| ESMFold2 (full) | H100 | 1.43 s, $0.00157 | 0.48 s, $0.00053 (3.0x) | 0.26 s, $0.00029 (5.5x) |
+| ESMFold2-Fast | A100 | 1.51 s, $0.00105 | 0.62 s, $0.00043 (2.5x) | 0.33 s, $0.00023 (4.6x) |
+| ESMFold2-Fast | H100 | 0.79 s, $0.00087 | 0.39 s, $0.00043 (2.0x) | 0.19 s, $0.00021 (4.2x) |
+| Protenix v2 | A100 | 14.5 s, $0.0100 | 3.6 s, $0.0025 (4.0x) | 3.5 s, $0.0024 (4.1x) |
+| Protenix v2 | H100 | 12.4 s, $0.0136 | 1.9 s, $0.0021 (6.4x) | 1.4 s, $0.0015 (9.1x) |
+
+Vanilla on A100/H100 costs more per fold than vanilla on the eval GPUs (L4 $0.00098 / $0.00056 for ESMFold2 / ESMFold2-Fast, L40S $0.0066 for Protenix), so the kit is what makes those GPUs worth using. A100 rows mix cards (ESMFold2-Fast and Protenix vanilla/exact on SXM4, `fast` on PCIe; full ESMFold2 vanilla/fast on PCIe, `exact` on SXM4), so A100 ratios carry a few percent of hardware noise.
+
 `exact` (bit-identical with `--det 1`) lowers warm cost per fold by 1.8x for full ESMFold2 (H100: 0.48 s,
 $0.00053), 1.3x for ESMFold2-Fast and 2.6-3.1x for Protenix, against the eval-GPU vanilla.
 
