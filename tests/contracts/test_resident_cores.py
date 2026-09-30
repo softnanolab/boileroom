@@ -10,14 +10,16 @@ import pytest
 
 @pytest.mark.parametrize(
     "family,class_name",
-    [("protenix", "ProtenixCore"), ("alphafold", "AlphaFold2MultimerCore")],
+    [("protenix", "ProtenixCore"), ("opendde", "OpenDDECore"), ("alphafold", "AlphaFold2MultimerCore")],
 )
 def test_core_loads_once_for_multiple_fold_jobs(monkeypatch, tmp_path, family, class_name) -> None:
     """Repeated folds use one worker and fresh files, and closing releases it."""
     module = importlib.import_module(f"boileroom.models.{family}.core")
     worker = Mock()
     factory = Mock(return_value=worker)
-    monkeypatch.setattr(module, "ModelWorker", factory)
+    # OpenDDE inherits its worker lifecycle from ProtenixCore.
+    worker_module = importlib.import_module("boileroom.models.protenix.core") if family == "opendde" else module
+    monkeypatch.setattr(worker_module, "ModelWorker", factory)
     monkeypatch.setenv("MODEL_DIR", str(tmp_path))
     core = getattr(module, class_name)({"use_msa_server": False} if family == "alphafold" else {})
     monkeypatch.setattr(core, "_collect_outputs", lambda output, metadata, config: SimpleNamespace(metadata=metadata))

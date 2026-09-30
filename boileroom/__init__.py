@@ -33,6 +33,10 @@ def __getattr__(name: str):
         from .models import Protenix
 
         return Protenix
+    if name == "OpenDDE":
+        from .models import OpenDDE
+
+        return OpenDDE
     if name == "AlphaFold2Multimer":
         from .models import AlphaFold2Multimer
 
@@ -44,4 +48,16 @@ def __getattr__(name: str):
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
-__all__ = ["ESMFold", "ESM2", "ESMFold2", "ESMC", "ESM3", "Chai1", "Boltz2", "SAE", "Protenix", "AlphaFold2Multimer"]
+__all__ = [
+    "ESMFold",
+    "ESM2",
+    "ESMFold2",
+    "ESMC",
+    "ESM3",
+    "Chai1",
+    "Boltz2",
+    "SAE",
+    "Protenix",
+    "OpenDDE",
+    "AlphaFold2Multimer",
+]

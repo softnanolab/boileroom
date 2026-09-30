@@ -117,6 +117,14 @@ MODEL_IMAGE_SPECS: Final[tuple[RuntimeImageSpec, ...]] = (
         config_relative_path="boileroom/models/protenix/config.yaml",
         modal_runtime_env=(("LAYERNORM_TYPE", "openfold"),),
     ),
+    RuntimeImageSpec(
+        key="opendde",
+        image_name="boileroom-opendde",
+        dockerfile_relative_path="boileroom/models/opendde/Dockerfile",
+        context_relative_path="boileroom/models/opendde",
+        config_relative_path="boileroom/models/opendde/config.yaml",
+        modal_runtime_env=(("LAYERNORM_TYPE", "fast_layernorm"),),
+    ),
 )
 
 MODEL_IMAGE_SPECS_BY_KEY: Final = {family_key: spec for spec in MODEL_IMAGE_SPECS for family_key in spec.family_keys}

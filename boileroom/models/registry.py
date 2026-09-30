@@ -1,6 +1,6 @@
 """Model registry and shared contract metadata."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from importlib import import_module
 from typing import Any, Literal
 
@@ -14,6 +14,7 @@ ESMFOLD2_IMAGE_NAME = get_model_image_spec("esmfold2").image_name
 CHAI_IMAGE_NAME = get_model_image_spec("chai").image_name
 BOLTZ_IMAGE_NAME = get_model_image_spec("boltz").image_name
 PROTENIX_IMAGE_NAME = get_model_image_spec("protenix").image_name
+OPENDDE_IMAGE_NAME = get_model_image_spec("opendde").image_name
 ALPHAFOLD2_MULTIMER_IMAGE_NAME = get_model_image_spec("alphafold").image_name
 
 
@@ -295,6 +296,21 @@ PROTENIX_SPEC = ModelSpec(
     ),
 )
 
+OPENDDE_SPEC = ModelSpec(
+    key="opendde",
+    public_name="OpenDDE",
+    family="opendde",
+    wrapper_class_path="boileroom.models.opendde.opendde.OpenDDE",
+    modal_class_path="boileroom.models.opendde.opendde.ModalOpenDDE",
+    apptainer_core_class_path="boileroom.models.opendde.core.OpenDDECore",
+    apptainer_image_name=OPENDDE_IMAGE_NAME,
+    supported_backends=PROTENIX_SPEC.supported_backends,
+    contract=replace(
+        PROTENIX_SPEC.contract,
+        static_config_keys=PROTENIX_SPEC.contract.static_config_keys | {"opendde_python"},
+    ),
+)
+
 SAE_SPEC = ModelSpec(
     key="sae",
     public_name="SAE",
@@ -372,6 +388,7 @@ MODEL_SPECS = (
     BOLTZ2_SPEC,
     SAE_SPEC,
     PROTENIX_SPEC,
+    OPENDDE_SPEC,
     ALPHAFOLD2_MULTIMER_SPEC,
 )
 MODEL_SPECS_BY_KEY = {spec.key: spec for spec in MODEL_SPECS}
@@ -404,6 +421,7 @@ __all__ = [
     "ModelContract",
     "ModelSpec",
     "PROTENIX_SPEC",
+    "OPENDDE_SPEC",
     "get_model_spec",
     "resolve_object",
 ]
