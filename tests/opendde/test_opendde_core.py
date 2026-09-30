@@ -155,9 +155,8 @@ def test_worker_uses_isolated_interpreter_and_opendde_runtime(module, monkeypatc
 
 def test_kit_mode_refused_on_unserved_gpu_before_worker(module, monkeypatch) -> None:
     """An L40S cannot run the kit; the refusal names the card and no worker starts."""
-    from boileroom.optimization import GpuInfo
-
     import boileroom.models.protenix.core as protenix_core
+    from boileroom.optimization import GpuInfo
 
     factory = Mock()
     monkeypatch.setattr(protenix_core, "ModelWorker", factory)
@@ -169,9 +168,8 @@ def test_kit_mode_refused_on_unserved_gpu_before_worker(module, monkeypatch) -> 
 
 def test_metadata_records_optimization(module, monkeypatch, tmp_path: Path) -> None:
     """The requested and resolved mode land in the output metadata."""
-    from boileroom.optimization import GpuInfo
-
     import boileroom.models.protenix.core as protenix_core
+    from boileroom.optimization import GpuInfo
 
     monkeypatch.setenv("MODEL_DIR", str(tmp_path))
     monkeypatch.setattr(protenix_core, "ModelWorker", Mock())

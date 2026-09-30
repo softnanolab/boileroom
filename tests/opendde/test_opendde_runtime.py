@@ -47,7 +47,9 @@ def test_runtime_loads_once_and_resets_request_state(monkeypatch, tmp_path) -> N
     runtime = OpenDDERuntime(config, str(tmp_path))
     kwargs = batch.get_default_runner.call_args.kwargs
     assert kwargs["model_name"] == "opendde_v1" and kwargs["dump_dir"] == str(tmp_path)
-    runtime.predict("a.json", "a", {**config, "seeds": "2,10", "cycle": 4, "sample": 2, "step": 50, "use_tfg_guidance": True})
+    runtime.predict(
+        "a.json", "a", {**config, "seeds": "2,10", "cycle": 4, "sample": 2, "step": 50, "use_tfg_guidance": True}
+    )
     runtime.predict("b.json", "b", config)
     batch.get_default_runner.assert_called_once()
     (first, first_cycle), (second, second_cycle) = calls
