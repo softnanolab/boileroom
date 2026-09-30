@@ -6,6 +6,7 @@
 - **boltz**: `boileroom/models/boltz/Dockerfile` → installs Boltz runtime dependencies from `requirements.txt`. Tag: `docker.io/jakublala/boileroom-boltz`.
 - **chai1**: `boileroom/models/chai/Dockerfile` → installs Chai runtime dependencies from `requirements.txt`, sets HF env vars. Tag: `docker.io/jakublala/boileroom-chai1`.
 - **esm**: `boileroom/models/esm/Dockerfile` → installs ESM runtime dependencies from `requirements.txt` shared by esm2/esmfold. Tag: `docker.io/jakublala/boileroom-esm`.
+- **opendde**: `boileroom/models/opendde/Dockerfile` → OpenDDE 1.1.1 and the Anthropic kit stack (Python 3.11, torch 2.7.1+cu126, cuequivariance 0.10.0) in `/opt/opendde`, CUDA 12.6 `nvcc` for the fused LayerNorm/Triton JIT, GCC 13 libstdc++ for `exact`, HMMER/Kalign. Tag: `docker.io/jakublala/boileroom-opendde`. Platform: `linux/amd64`.
 - **protenix**: `boileroom/models/protenix/Dockerfile` → installs Protenix plus HMMER/Kalign CLI dependencies. Tag: `docker.io/jakublala/boileroom-protenix`. Platform: `linux/amd64`.
 - **esmfold2**: `boileroom/models/esmfold2/Dockerfile` → installs the MIT-licensed 2026 Chan Zuckerberg Biohub `esm` package (`esm==3.4.1.post1`, torch 2.11, CUDA 12.6 only) from `requirements.txt`. Tag: `docker.io/jakublala/boileroom-esmfold2`. **Shared by ESMFold2, ESM-C, and ESM3** — all three use the same Biohub `esm` package, so ESM-C/ESM3 run on this image instead of a separate one.
 
@@ -79,7 +80,7 @@ The `.github/workflows/arm64-image-smoke.yml` workflow runs on pull requests to 
 
 The workflow does not install the full project dependency set on the host runner. Host-side image scripts run with `uv run --no-project --with pyyaml`, while heavy model dependencies such as PyTorch and SciPy are validated inside the Docker images themselves.
 
-Image configs can restrict supported platforms. AlphaFold2-Multimer and Protenix currently advertise `linux/amd64` only, so ARM64 smoke builds and checks skip those images while still validating the ARM64-compatible model images.
+Image configs can restrict supported platforms. AlphaFold2-Multimer, Protenix and OpenDDE currently advertise `linux/amd64` only, so ARM64 smoke builds and checks skip those images while still validating the ARM64-compatible model images.
 
 On `main`, ARM64 image smoke is folded into the Docker publishing workflow instead of running as a second separate workflow. That keeps the branch smoke path fast and local while making release promotion wait for the same ARM64 smoke coverage.
 

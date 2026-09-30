@@ -1,6 +1,6 @@
 # Kit optimization modes (`optimization`)
 
-ESMFold2 (including ESMFold2-Fast) and Protenix accept a static init option
+ESMFold2 (including ESMFold2-Fast), Protenix and OpenDDE accept a static init option
 `optimization = "vanilla" | "exact" | "fast"` (default `"vanilla"`). `exact` and `fast` drive the
 prebuilt kernels of [anthropics/uplifting-biomolecular-modeling](https://github.com/anthropics/uplifting-biomolecular-modeling)
 (Apache-2.0, kit commit `f4f62fa`).
@@ -27,6 +27,9 @@ The kit ships its own pinned stack, so kit modes need a kit image, not the defau
   `ESMFold2InputBuilder.fold()`, which the kit hooks; `vanilla` keeps loading esm's `EsmFold2Model`.
 - Protenix: python 3.11, torch 2.13.0+cu130, cuequivariance 0.11.1, protenix 2.0.0, driver 580+.
   The kit is enabled inside the worker before any `protenix` import (the kit refuses late activation).
+- OpenDDE: python 3.11, torch 2.7.1+cu126, cuequivariance 0.10.0, opendde 1.1.1, CUDA 12.6 `nvcc` and gcc at run time
+  (fused LayerNorm and Triton JIT), libstdc++ from GCC 13 for `exact`, driver 560+. The Dockerfile installs the pinned kit
+  commit; the kit is enabled in the worker before `runner` is imported.
 - ESM-C must be the 2026-06-03 snapshot (`45b0fa5d7fb0`); the 2026-09-14 re-upload renames every weight and
   loads as uninitialised memory (NaN structures).
 

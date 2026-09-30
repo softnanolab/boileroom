@@ -89,6 +89,18 @@ Protenix keeps its runner in a persistent worker, retaining a hard `timeout_seco
 
 The prerelease CLI setting `protenix_command` has been removed. `model_name`, `device`, `msa_server_url`, `use_template`, `trimul_kernel`, `triatt_kernel`, `enable_cache`, `enable_fusion`, and `enable_tf32` are now initialization-only settings. Create a new instance to change them.
 
+### OpenDDE
+`OpenDDE` wraps the AF3-style [OpenDDE](https://github.com/aurekaresearch/OpenDDE) runner (`opendde==1.1.1`, single released model `opendde_v1`). Its runner API, JSON input and output files match Protenix 2.0, so it shares Protenix's interface end to end: one sequence entry per call with `:` joining chains, `unpaired_msa` A3M passthrough, the ColabFold MMseqs2 server via `msa_server_url`, the persistent worker with `timeout_seconds`, and the same `OpenDDEOutput` fields (`atom_array`, `confidence`, `plddt`, `ptm`, `iptm`, `pae`, `token_chain_ids`, `token_res_ids`, `atom_plddt`, `seeds`, `sample_ranks`, `pdb`, `cif`). Differences: `dtype` is `bf16` (default) or `fp32`, `trimul_kernel`/`triatt_kernel` default to `auto`, and the runner lives in its own Python 3.11 virtualenv (`opendde_python`, initialization-only). Weights download to `$MODEL_DIR/opendde` on first use.
+
+```python
+from boileroom import OpenDDE
+
+with OpenDDE(backend="modal", config={"optimization": "fast"}) as model:
+    result = model.fold("SEQ_A:SEQ_B", options={"include_fields": ["pae", "token_chain_ids", "ptm", "iptm"]})
+```
+
+`optimization="exact" | "fast"` uses the Anthropic OpenDDE kit (A100/H100/H200; see [optimization.md](optimization.md)). Fused LayerNorm (`LAYERNORM_TYPE=fast_layernorm`) is used in every mode and JIT-compiles once into `$MODEL_DIR/opendde/jit`.
+
 ### AlphaFold2-Multimer
 `AlphaFold2Multimer` keeps ColabFold's Python model runners and parameters resident, using `alphafold2_multimer_v3`
 by default. Repeated `fold()` calls reuse the same runners and JAX compilation cache. MSAs are
