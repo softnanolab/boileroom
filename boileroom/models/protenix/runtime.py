@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -54,11 +55,25 @@ class ProtenixRuntime:
         configs.dtype = config["dtype"]
         configs.use_msa = config["use_msa"]
         configs.dump_dir = output_dir
+        staging = config.get("template_staging")
+        use_template = config["use_template"] or staging is not None
+        if staging is not None:
+            # Caller-supplied templates: point the featurizer at the staged
+            # directory and forbid it from fetching anything. The architecture
+            # does not depend on use_template, so one runner serves both kinds
+            # of request; only the data path differs.
+            template = configs.data.template
+            template.prot_template_mmcif_dir = staging["mmcif_dir"]
+            template.release_dates_path = staging["release_dates_path"]
+            template.obsolete_pdbs_path = staging["obsolete_pdbs_path"]
+            template.fetch_remote = False
+            template.kalign_binary_path = _kalign_path()
+        configs.use_template = use_template
         configs.input_json_path = preprocess_input(
             input_json,
             out_dir=output_dir,
             use_msa=config["use_msa"],
-            use_template=config["use_template"],
+            use_template=use_template,
             msa_server_mode="colabfold",
         )
         self.runner.configs = configs
@@ -72,6 +87,13 @@ class ProtenixRuntime:
         if errors:
             details = "\n".join(path.read_text(encoding="utf-8") for path in errors)
             raise RuntimeError(f"Protenix inference failed:\n{details[-12000:]}")
+
+
+def _kalign_path() -> str:
+    path = shutil.which("kalign")
+    if path is None:
+        raise RuntimeError("templates need the kalign binary on PATH (apt-get install kalign)")
+    return path
 
 
 def _enable_kit(mode: str) -> None:

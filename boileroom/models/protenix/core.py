@@ -22,6 +22,7 @@ from ...utils import Timer, get_model_cache_dir
 from .._runtime_utils import command_env, include_field
 from .._worker import ModelWorker
 from .outputs import read_json, read_token_confidence, sample_identity
+from .templates import stage_templates
 from .types import ProtenixOutput
 
 logger = logging.getLogger(__name__)
@@ -51,6 +52,8 @@ class ProtenixCore(FoldingAlgorithm):
         "use_seeds_in_json": False,
         "use_tfg_guidance": False,
         "unpaired_msa": None,
+        "templates": None,
+        "templates_chain": 0,
         "include_fields": None,
         "timeout_seconds": 3500,
     }
@@ -77,6 +80,9 @@ class ProtenixCore(FoldingAlgorithm):
     RUNTIME_PATH: ClassVar[Path] = Path(__file__).with_name("runtime.py")
     OUTPUT_CLASS: ClassVar[type[ProtenixOutput]] = ProtenixOutput
     DTYPES: ClassVar[frozenset[str]] = frozenset({"bf16", "fp16", "fp32"})
+    #: Whether this family's runtime honours ``templates``. A family that does not must
+    #: refuse them: a prediction that quietly ignored a template is mislabelled.
+    SUPPORTS_USER_TEMPLATES: ClassVar[bool] = True
 
     def __init__(self, config: dict[str, Any] | None = None) -> None:
         """Create a Protenix core with one reusable model worker."""
@@ -150,8 +156,9 @@ class ProtenixCore(FoldingAlgorithm):
         with TemporaryDirectory() as buffer_dir:
             buffer_path = Path(buffer_dir)
             with Timer(f"{self.DISPLAY_NAME} preprocessing") as preprocess_timer:
+                staged = self._stage_templates(validated_sequences[0], buffer_path, effective_config)
                 input_json = self._write_input_json(
-                    validated_sequences[0], buffer_path, effective_config.get("unpaired_msa")
+                    validated_sequences[0], buffer_path, effective_config.get("unpaired_msa"), staged, effective_config["templates_chain"]
                 )
                 output_dir = buffer_path / "outputs"
                 output_dir.mkdir(parents=True, exist_ok=True)
@@ -160,7 +167,12 @@ class ProtenixCore(FoldingAlgorithm):
                 if not self.ready:
                     self._load()
                 assert self._worker is not None
-                self._worker.predict(str(input_json), str(output_dir), effective_config)
+                self._worker.predict(
+                    str(input_json),
+                    str(output_dir),
+                    # The runtime gets staged paths, never the structures themselves.
+                    {**effective_config, "templates": None, "template_staging": staged},
+                )
 
             with Timer(f"{self.DISPLAY_NAME} postprocessing") as postprocess_timer:
                 output = self._collect_outputs(output_dir, metadata, effective_config)
@@ -170,8 +182,33 @@ class ProtenixCore(FoldingAlgorithm):
         output.metadata.postprocessing_time = postprocess_timer.duration
         return output
 
+    def _stage_templates(
+        self, sequence_entry: str, buffer_path: Path, config: dict[str, Any]
+    ) -> dict[str, str] | None:
+        """Write caller-supplied template structures where Protenix reads them.
+
+        ``templates`` maps a name to mmCIF text and applies to chain
+        ``templates_chain`` only. Returns the staged paths, or ``None`` when no
+        templates were supplied, in which case nothing about the request changes.
+        """
+        templates = config.get("templates")
+        if not templates:
+            return None
+        if not self.SUPPORTS_USER_TEMPLATES:
+            raise ValueError(f"{self.DISPLAY_NAME} does not support user-supplied templates")
+        chains = sequence_entry.split(":")
+        index = config["templates_chain"]
+        if not isinstance(index, int) or isinstance(index, bool) or not 0 <= index < len(chains):
+            raise ValueError("templates_chain must be the index of one of the input chains")
+        return stage_templates(templates, chains[index], buffer_path / "templates")
+
     def _write_input_json(
-        self, sequence_entry: str, buffer_path: Path, unpaired_msa: list[str | None] | None = None
+        self,
+        sequence_entry: str,
+        buffer_path: Path,
+        unpaired_msa: list[str | None] | None = None,
+        staged_templates: dict[str, str] | None = None,
+        templates_chain: int = 0,
     ) -> Path:
         chains = sequence_entry.split(":")
         if not chains or any(not part for part in chains) or len(chains) > 26:
@@ -199,6 +236,8 @@ class ProtenixCore(FoldingAlgorithm):
                 msa_path = buffer_path / f"chain_{index}.a3m"
                 msa_path.write_text(msa_text, encoding="utf-8")
                 sequence_records[-1]["proteinChain"]["unpairedMsaPath"] = str(msa_path)
+            if staged_templates is not None and index == templates_chain:
+                sequence_records[-1]["proteinChain"]["templatesPath"] = staged_templates["templates_path"]
 
         payload = [{"name": "boileroom_target", "sequences": sequence_records, "covalent_bonds": []}]
         input_json = buffer_path / "input.json"
