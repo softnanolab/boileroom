@@ -5,9 +5,16 @@ ARG TARGETOS
 ARG BUILDPLATFORM
 ARG BASE_IMAGE=docker.io/jakublala/boileroom-base:local
 
-# libstdc++ from GCC 13: the kit's bit-exact ``exact`` kernels are linked against GLIBCXX_3.4.32.
-FROM ubuntu:24.04 AS libstdcxx
-RUN mkdir -p /out && cp -aL /usr/lib/x86_64-linux-gnu/libstdc++.so.6 /out/
+# libstdc++ from GCC 13+: the kit's bit-exact ``exact`` kernels are linked against GLIBCXX_3.4.32. It must also
+# run on the base image's glibc 2.36 (bookworm), so it comes from Ubuntu 22.04 (glibc 2.35) plus the toolchain PPA,
+# the kit's documented remedy; Ubuntu 24.04's build needs glibc 2.38 and breaks every extension that loads it.
+FROM ubuntu:22.04 AS libstdcxx
+RUN apt-get update --quiet \
+    && DEBIAN_FRONTEND=noninteractive apt-get install --no-install-recommends --yes --quiet software-properties-common \
+    && add-apt-repository --yes ppa:ubuntu-toolchain-r/test \
+    && DEBIAN_FRONTEND=noninteractive apt-get install --no-install-recommends --yes --quiet libstdc++6 \
+    && mkdir -p /out && cp -aL /usr/lib/x86_64-linux-gnu/libstdc++.so.6 /out/ \
+    && grep -aq GLIBCXX_3.4.32 /out/libstdc++.so.6
 
 FROM ${BASE_IMAGE}
 
