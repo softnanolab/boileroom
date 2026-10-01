@@ -34,8 +34,6 @@ RUN apt-get update --quiet \
     && apt-get install --no-install-recommends --yes --quiet cuda-nvcc-12-6 cuda-cudart-dev-12-6 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=libstdcxx /out/libstdc++.so.6 /opt/opendde/lib/libstdc++.so.6
-
 ARG KIT_REF=f4f62fa
 ARG OPENDDE_HOME=/opt/opendde
 ENV OPENDDE_HOME=${OPENDDE_HOME}
@@ -48,6 +46,9 @@ RUN --mount=type=cache,id=${UV_CACHE_ID}-pip,target=/root/.cache/pip \
     && "${OPENDDE_HOME}/bin/pip" install --no-deps /kit/opendde/stock/opendde-1.1.1-py3-none-any.whl \
     && "${OPENDDE_HOME}/bin/pip" install --no-deps -e /kit/common/opt_core -e /kit/opendde/opt \
     && rm /tmp/stack.txt
+
+# Copied after the venv exists: ``uv venv`` refuses to create a venv in a directory that is already present.
+COPY --from=libstdcxx /out/libstdc++.so.6 /opt/opendde/lib/libstdc++.so.6
 
 # Fail the build early if the stack, the kit or the runner cannot be imported.
 RUN "${OPENDDE_HOME}/bin/python" -c "import opendde_opt, runner.batch_inference"
