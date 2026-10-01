@@ -52,6 +52,7 @@ class ProtenixCore(FoldingAlgorithm):
         "use_seeds_in_json": False,
         "use_tfg_guidance": False,
         "unpaired_msa": None,
+        "msa": None,
         "templates": None,
         "templates_chain": 0,
         "include_fields": None,
@@ -82,6 +83,7 @@ class ProtenixCore(FoldingAlgorithm):
     DTYPES: ClassVar[frozenset[str]] = frozenset({"bf16", "fp16", "fp32"})
     #: Whether this family's runtime honours ``templates``. A family that does not must
     #: refuse them: a prediction that quietly ignored a template is mislabelled.
+    SUPPORTS_USER_MSA: ClassVar[bool] = True
     SUPPORTS_USER_TEMPLATES: ClassVar[bool] = True
 
     def __init__(self, config: dict[str, Any] | None = None) -> None:
@@ -158,7 +160,7 @@ class ProtenixCore(FoldingAlgorithm):
             with Timer(f"{self.DISPLAY_NAME} preprocessing") as preprocess_timer:
                 staged = self._stage_templates(validated_sequences[0], buffer_path, effective_config)
                 input_json = self._write_input_json(
-                    validated_sequences[0], buffer_path, effective_config.get("unpaired_msa"), staged, effective_config["templates_chain"]
+                    validated_sequences[0], buffer_path, effective_config.get("msa") or effective_config.get("unpaired_msa"), staged, effective_config["templates_chain"]
                 )
                 output_dir = buffer_path / "outputs"
                 output_dir.mkdir(parents=True, exist_ok=True)

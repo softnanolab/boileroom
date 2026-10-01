@@ -29,6 +29,7 @@ class OpenDDECore(ProtenixCore):
     }
     STATIC_CONFIG_KEYS: ClassVar[frozenset[str]] = ProtenixCore.STATIC_CONFIG_KEYS | {"opendde_python"}
     FAMILY: ClassVar[str] = "opendde"
+    SUPPORTS_USER_MSA: ClassVar[bool] = False
     SUPPORTS_USER_TEMPLATES: ClassVar[bool] = False
     DISPLAY_NAME: ClassVar[str] = "OpenDDE"
     ROOT_ENV: ClassVar[str] = "OPENDDE_ROOT_DIR"

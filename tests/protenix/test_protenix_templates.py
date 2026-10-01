@@ -93,3 +93,15 @@ def test_binder_only_input_accepts_its_own_msa(tmp_path) -> None:
     chains = json.loads(path.read_text())[0]["sequences"]
     assert len(chains) == 1
     assert Path(chains[0]["proteinChain"]["unpairedMsaPath"]).read_text() == binder
+
+
+def test_unsupporting_models_refuse_msa_and_templates():
+    from boileroom.models.esmfold2.core import ESMFold2Core
+    from boileroom.models.opendde.core import OpenDDECore
+
+    for cls in (OpenDDECore, ESMFold2Core):
+        model = cls.__new__(cls)
+        model.config = {}
+        for options in ({"msa": [">q\nAAAA\n"]}, {"templates": {"t": "data_x"}}):
+            with pytest.raises(ValueError, match="does not support"):
+                model._merge_options(options)
