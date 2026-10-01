@@ -3,12 +3,12 @@ ARG TARGETPLATFORM
 ARG TARGETARCH
 ARG TARGETOS
 ARG BUILDPLATFORM
+ARG BASE_IMAGE=docker.io/jakublala/boileroom-base:local
 
 # libstdc++ from GCC 13: the kit's bit-exact ``exact`` kernels are linked against GLIBCXX_3.4.32.
 FROM ubuntu:24.04 AS libstdcxx
 RUN mkdir -p /out && cp -aL /usr/lib/x86_64-linux-gnu/libstdc++.so.6 /out/
 
-ARG BASE_IMAGE=docker.io/jakublala/boileroom-base:local
 FROM ${BASE_IMAGE}
 
 COPY requirements.txt /tmp/requirements.txt
