@@ -18,6 +18,22 @@ Dockerfiles are the canonical image definition for all runtimes. Docker/Apptaine
 - `latest` is not published.
 - Runtime shorthands such as `backend="apptainer"` resolve through `BOILEROOM_IMAGE_TAG` when set, otherwise through the installed boileroom package version on the default `12.6` CUDA line.
 
+### Using prebuilt images when your checkout is ahead of the last release
+The default tag is the `version` in `pyproject.toml` (or the installed package version). Between releases that stable tag, for example `0.4.3`, is **not published**: `main` only publishes alpha tags such as `0.4.3-alpha.8`. A default lookup then fails to find the image, and the only way forward looks like building it locally (30–45 minutes). You do not need to build anything. Point the runtime at an existing published tag instead.
+
+Find a published tag on [Docker Hub](https://hub.docker.com/r/jakublala/boileroom-esmfold2/tags) (swap in the model's image name) and pick the newest `X.Y.Z-alpha.N` or the latest stable release. Then use any one of:
+
+```bash
+export BOILEROOM_IMAGE_TAG=0.4.3-alpha.8          # Modal and Apptainer
+uv run pytest --image-tag 0.4.3-alpha.8 ...       # pytest, both backends
+```
+
+```python
+ESMFold2(backend="apptainer:0.4.3-alpha.8")        # inline tag, wins over the env var
+```
+
+The tag must contain the model dependencies you need. Older tags contain older dependency stacks (for example, the `esm 3.4.1.post1` port of ESMFold2 is not in `0.4.1`), so prefer the newest alpha when you are on `main`. The first pull is large (the `esmfold2` image is about 4.3 GB compressed) but is cached afterwards.
+
 ### 🚀 Quick start
 Use the Python helper to build all images (base + models) with a single global worker limit.
 
