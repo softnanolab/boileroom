@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import logging
+import sys
 from collections.abc import Sequence
 from io import StringIO
 from pathlib import Path
@@ -68,6 +69,15 @@ class ProtenixCore(FoldingAlgorithm):
         }
     )
 
+    # Family hooks: AF3-style runners with Protenix's API (e.g. OpenDDE) subclass and override these.
+    FAMILY: ClassVar[str] = "protenix"
+    DISPLAY_NAME: ClassVar[str] = "Protenix"
+    ROOT_ENV: ClassVar[str] = "PROTENIX_ROOT_DIR"
+    RUNTIME_CLASS: ClassVar[str] = "ProtenixRuntime"
+    RUNTIME_PATH: ClassVar[Path] = Path(__file__).with_name("runtime.py")
+    OUTPUT_CLASS: ClassVar[type[ProtenixOutput]] = ProtenixOutput
+    DTYPES: ClassVar[frozenset[str]] = frozenset({"bf16", "fp16", "fp32"})
+
     def __init__(self, config: dict[str, Any] | None = None) -> None:
         """Create a Protenix core with one reusable model worker."""
         if config and "protenix_command" in config:
@@ -77,7 +87,7 @@ class ProtenixCore(FoldingAlgorithm):
         self.optimization: OptimizationResolution | None = None
         self._worker: ModelWorker | None = None
         self._metadata_template = self._initialize_metadata(
-            model_name="Protenix",
+            model_name=self.DISPLAY_NAME,
             model_version=str(self.config["model_name"]),
         )
 
@@ -87,20 +97,29 @@ class ProtenixCore(FoldingAlgorithm):
 
     def _load(self) -> None:
         """Validate configuration and load model weights once per core."""
-        _validate_config(self.config)
+        _validate_config(self.config, self.DTYPES)
         mode = str(self.config["optimization"])
         gpu = None if mode == "vanilla" else detect_gpu(self.config.get("device"))
-        self.optimization = resolve_optimization("protenix", mode, gpu)
+        self.optimization = resolve_optimization(self.FAMILY, mode, gpu)
         if self._worker is None:
             self._worker = ModelWorker(
                 {**self.config, "optimization_kit_config": self.optimization.kit_config},
-                _command_env(self.config, self.optimization),
-                runtime_path=Path(__file__).with_name("runtime.py"),
-                runtime_class="ProtenixRuntime",
-                label="Protenix",
+                self._worker_env(self.config, self.optimization),
+                runtime_path=self.RUNTIME_PATH,
+                runtime_class=self.RUNTIME_CLASS,
+                label=self.DISPLAY_NAME,
+                python_executable=self._worker_python(),
             )
         self._worker.start()
         self.ready = True
+
+    def _worker_python(self) -> str:
+        """Return the interpreter that runs the model runtime."""
+        return sys.executable
+
+    def _worker_env(self, config: dict[str, Any], optimization: OptimizationResolution | None) -> dict[str, str]:
+        """Return the worker environment."""
+        return _command_env(config, optimization, self.FAMILY, self.ROOT_ENV)
 
     def close(self) -> None:
         """Release the persistent worker and its model weights."""
@@ -109,16 +128,16 @@ class ProtenixCore(FoldingAlgorithm):
         self.ready = False
 
     def fold(self, sequences: str | Sequence[str], options: dict | None = None) -> ProtenixOutput:
-        """Run Protenix prediction for one sequence entry.
+        """Run Protenix-style prediction for one sequence entry.
 
         Use ``:`` inside a sequence string to define multiple protein chains.
         """
         effective_config = self._merge_options(options)
-        _validate_config(effective_config)
+        _validate_config(effective_config, self.DTYPES)
         validated_sequences = self._validate_sequences(sequences)
         if len(validated_sequences) != 1:
             raise ValueError(
-                "Protenix currently supports exactly one top-level sequence per call; use ':' to join chains."
+                f"{self.DISPLAY_NAME} currently supports exactly one top-level sequence per call; use ':' to join chains."
             )
 
         metadata = dataclasses.replace(
@@ -130,20 +149,20 @@ class ProtenixCore(FoldingAlgorithm):
 
         with TemporaryDirectory() as buffer_dir:
             buffer_path = Path(buffer_dir)
-            with Timer("Protenix preprocessing") as preprocess_timer:
+            with Timer(f"{self.DISPLAY_NAME} preprocessing") as preprocess_timer:
                 input_json = self._write_input_json(
                     validated_sequences[0], buffer_path, effective_config.get("unpaired_msa")
                 )
                 output_dir = buffer_path / "outputs"
                 output_dir.mkdir(parents=True, exist_ok=True)
 
-            with Timer("Protenix inference") as inference_timer:
+            with Timer(f"{self.DISPLAY_NAME} inference") as inference_timer:
                 if not self.ready:
                     self._load()
                 assert self._worker is not None
                 self._worker.predict(str(input_json), str(output_dir), effective_config)
 
-            with Timer("Protenix postprocessing") as postprocess_timer:
+            with Timer(f"{self.DISPLAY_NAME} postprocessing") as postprocess_timer:
                 output = self._collect_outputs(output_dir, metadata, effective_config)
 
         output.metadata.preprocessing_time = preprocess_timer.duration
@@ -156,7 +175,7 @@ class ProtenixCore(FoldingAlgorithm):
     ) -> Path:
         chains = sequence_entry.split(":")
         if not chains or any(not part for part in chains) or len(chains) > 26:
-            raise ValueError("Protenix input requires 1 to 26 nonempty protein chains")
+            raise ValueError(f"{self.DISPLAY_NAME} input requires 1 to 26 nonempty protein chains")
         if unpaired_msa is not None and len(unpaired_msa) != len(chains):
             raise ValueError("unpaired_msa must have one A3M string or None per chain")
 
@@ -192,18 +211,20 @@ class ProtenixCore(FoldingAlgorithm):
         metadata: PredictionMetadata,
         config: dict[str, Any],
     ) -> ProtenixOutput:
-        cif_paths = sorted(output_dir.glob("**/predictions/*_sample_*.cif"), key=sample_identity)
+        cif_paths = sorted(
+            output_dir.glob("**/predictions/*_sample_*.cif"), key=lambda path: sample_identity(path, self.DISPLAY_NAME)
+        )
         if not cif_paths:
-            raise RuntimeError(f"Protenix produced no sample CIF files under {output_dir}")
+            raise RuntimeError(f"{self.DISPLAY_NAME} produced no sample CIF files under {output_dir}")
 
         include_fields = config.get("include_fields")
         atom_arrays = []
         cif_strings: list[str] | None = [] if include_field(include_fields, "cif") else None
-        identities = [sample_identity(path) for path in cif_paths]
+        identities = [sample_identity(path, self.DISPLAY_NAME) for path in cif_paths]
         expected = {(seed, rank) for seed in _parse_seeds(config["seeds"]) for rank in range(config["sample"])}
         if len(set(identities)) != len(identities) or set(identities) != expected:
             raise RuntimeError(
-                f"Protenix returned incomplete or duplicate samples: expected {sorted(expected)}, got {identities}"
+                f"{self.DISPLAY_NAME} returned incomplete or duplicate samples: expected {sorted(expected)}, got {identities}"
             )
         confidence: list[dict[str, Any] | None] = []
         token_confidence: dict[str, list[Any]] = {
@@ -218,9 +239,11 @@ class ProtenixCore(FoldingAlgorithm):
                 cif_strings.append(cif_path.read_text(encoding="utf-8"))
 
             prefix, rank = cif_path.stem.rsplit("_sample_", 1)
-            confidence.append(read_json(cif_path.with_name(f"{prefix}_summary_confidence_sample_{rank}.json")))
-            full = read_json(cif_path.with_name(f"{prefix}_full_data_sample_{rank}.json"))
-            for field, value in read_token_confidence(full, atoms).items():
+            confidence.append(
+                read_json(cif_path.with_name(f"{prefix}_summary_confidence_sample_{rank}.json"), self.DISPLAY_NAME)
+            )
+            full = read_json(cif_path.with_name(f"{prefix}_full_data_sample_{rank}.json"), self.DISPLAY_NAME)
+            for field, value in read_token_confidence(full, atoms, self.DISPLAY_NAME).items():
                 token_confidence[field].append(value)
             if pdb_strings is not None:
                 pdb_file = PDBFile()
@@ -229,7 +252,7 @@ class ProtenixCore(FoldingAlgorithm):
                 pdb_file.write(buffer)
                 pdb_strings.append(buffer.getvalue())
 
-        output = ProtenixOutput(
+        output = self.OUTPUT_CLASS(
             metadata=metadata,
             atom_array=atom_arrays,
             confidence=confidence,
@@ -245,8 +268,13 @@ class ProtenixCore(FoldingAlgorithm):
         return filtered
 
 
-def _command_env(config: dict[str, Any], optimization: OptimizationResolution | None = None) -> dict[str, str]:
-    env = command_env(config, {"PROTENIX_ROOT_DIR": str(get_model_cache_dir("protenix"))})
+def _command_env(
+    config: dict[str, Any],
+    optimization: OptimizationResolution | None = None,
+    family: str = "protenix",
+    root_env: str = "PROTENIX_ROOT_DIR",
+) -> dict[str, str]:
+    env = command_env(config, {root_env: str(get_model_cache_dir(family))})
     if optimization is not None and optimization.active != "vanilla":
         env["MODEL_OPT_TARGET_GPU"] = str(optimization.kit_config).upper()
     # Protenix's MSA client speaks the ColabFold MMseqs2 API but defaults to its own
@@ -268,10 +296,10 @@ def _parse_seeds(value: str) -> list[int]:
     return seeds
 
 
-def _validate_config(config: dict[str, Any]) -> None:
+def _validate_config(config: dict[str, Any], dtypes: frozenset[str] = frozenset({"bf16", "fp16", "fp32"})) -> None:
     _parse_seeds(config["seeds"])
-    if config["dtype"] not in {"bf16", "fp16", "fp32"}:
-        raise ValueError("dtype must be bf16, fp16, or fp32")
+    if config["dtype"] not in dtypes:
+        raise ValueError(f"dtype must be {', '.join(sorted(dtypes))}")
     timeout = config["timeout_seconds"]
     if timeout is not None and (
         not isinstance(timeout, int | float) or isinstance(timeout, bool) or not 0 < timeout < float("inf")

@@ -17,6 +17,7 @@ DEFAULT_OPTIMIZATION = "vanilla"
 _KIT_CONFIG_BY_CAPABILITY: dict[str, dict[tuple[int, int], str]] = {
     "esmfold2": {(8, 0): "a100", (9, 0): "h100"},
     "protenix": {(8, 0): "a100", (9, 0): "h100"},
+    "opendde": {(8, 0): "a100", (9, 0): "h100"},
 }
 # Card names the kit config was validated on; H200 is the same Hopper (GH100) silicon Modal serves for H100 requests.
 _KIT_CARD_NAMES: dict[str, tuple[str, ...]] = {"a100": ("a100",), "h100": ("h100", "h200")}
@@ -26,6 +27,7 @@ _UNSERVED_REASON: dict[str, str] = {
         "tile table; exact: t3 and t6 (>99 KB shared memory))"
     ),
     "protenix": "the kit has no BLK2 launch cells for sm89 (blk2_block_path, blk2_chunked_*), so it refuses the mode",
+    "opendde": "the kit ships configs only for a100, h100 and h200 (no sm89 launch cells)",
 }
 
 

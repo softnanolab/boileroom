@@ -2,7 +2,7 @@
 
 import pytest
 
-from boileroom.models.registry import ESMFOLD2_SPEC, PROTENIX_SPEC, ModelSpec
+from boileroom.models.registry import ESMFOLD2_SPEC, OPENDDE_SPEC, PROTENIX_SPEC, ModelSpec
 from boileroom.optimization import (
     DEFAULT_OPTIMIZATION,
     GpuInfo,
@@ -21,7 +21,7 @@ H200 = GpuInfo("NVIDIA H200", (9, 0))
 A30 = GpuInfo("NVIDIA A30", (8, 0))
 
 
-@pytest.mark.parametrize("family", ["esmfold2", "protenix"])
+@pytest.mark.parametrize("family", ["esmfold2", "protenix", "opendde"])
 @pytest.mark.parametrize("mode", ["exact", "fast"])
 def test_same_capability_other_card_is_refused(family: str, mode: str) -> None:
     with pytest.raises(OptimizationUnavailableError, match="NVIDIA A30"):
@@ -32,7 +32,7 @@ def test_default_is_vanilla() -> None:
     assert DEFAULT_OPTIMIZATION == "vanilla"
 
 
-@pytest.mark.parametrize("spec", [ESMFOLD2_SPEC, PROTENIX_SPEC])
+@pytest.mark.parametrize("spec", [ESMFOLD2_SPEC, PROTENIX_SPEC, OPENDDE_SPEC])
 def test_optimization_is_a_static_option(spec: ModelSpec) -> None:
     assert "optimization" in spec.contract.static_config_keys
 
@@ -42,7 +42,7 @@ def test_unknown_mode_is_rejected() -> None:
         validate_optimization("turbo")
 
 
-@pytest.mark.parametrize("family", ["esmfold2", "protenix"])
+@pytest.mark.parametrize("family", ["esmfold2", "protenix", "opendde"])
 @pytest.mark.parametrize("gpu", [L4, L40S, A100, H100, None])
 def test_vanilla_resolves_on_any_gpu(family: str, gpu: GpuInfo | None) -> None:
     resolution = resolve_optimization(family, "vanilla", gpu)
@@ -50,7 +50,7 @@ def test_vanilla_resolves_on_any_gpu(family: str, gpu: GpuInfo | None) -> None:
     assert resolution.kit_config is None
 
 
-@pytest.mark.parametrize("family", ["esmfold2", "protenix"])
+@pytest.mark.parametrize("family", ["esmfold2", "protenix", "opendde"])
 @pytest.mark.parametrize("mode", ["exact", "fast"])
 @pytest.mark.parametrize("gpu", [A100, H100, H200])
 def test_kit_modes_resolve_on_a100_and_h100(family: str, mode: str, gpu: GpuInfo) -> None:
@@ -59,7 +59,7 @@ def test_kit_modes_resolve_on_a100_and_h100(family: str, mode: str, gpu: GpuInfo
     assert resolution.kit_config == ("a100" if gpu is A100 else "h100")
 
 
-@pytest.mark.parametrize("family", ["esmfold2", "protenix"])
+@pytest.mark.parametrize("family", ["esmfold2", "protenix", "opendde"])
 @pytest.mark.parametrize("mode", ["exact", "fast"])
 @pytest.mark.parametrize("gpu", [L4, L40S])
 def test_kit_modes_refused_by_name_on_sm89(family: str, mode: str, gpu: GpuInfo) -> None:
