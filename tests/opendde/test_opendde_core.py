@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+from typing import Any
 from unittest.mock import Mock
 
 import numpy as np
@@ -100,8 +101,10 @@ def test_collect_outputs_returns_opendde_output(module, sample_outputs: Path) ->
     assert type(output) is OpenDDEOutput
     assert output.seeds == [101] and output.sample_ranks == [0]
     assert output.pae is not None and output.pae[0].shape == (2, 2)
-    assert output.token_chain_ids is not None and output.token_chain_ids[0].tolist() == ["A", "B"]
-    assert output.ptm is not None and output.ptm[0][0] == pytest.approx(0.7)
+    assert output.token_chain_ids is not None
+    assert output.token_chain_ids[0] is not None and output.token_chain_ids[0].tolist() == ["A", "B"]
+    assert output.ptm is not None
+    assert output.ptm[0] is not None and output.ptm[0][0] == pytest.approx(0.7)
 
 
 def test_missing_confidence_fails_with_opendde_label(module, sample_outputs: Path) -> None:
@@ -175,8 +178,8 @@ def test_metadata_records_optimization(module, monkeypatch, tmp_path: Path) -> N
     monkeypatch.setattr(protenix_core, "ModelWorker", Mock())
     monkeypatch.setattr(protenix_core, "detect_gpu", lambda device=None: GpuInfo("NVIDIA A100-SXM4-40GB", (8, 0)))
     core = module.OpenDDECore({"optimization": "exact"})
-    seen = {}
-    core._collect_outputs = lambda output, metadata, config: seen.setdefault("m", metadata) and Mock(metadata=metadata)  # type: ignore[method-assign]
+    seen: dict[str, Any] = {}
+    core._collect_outputs = lambda output, metadata, config: seen.setdefault("m", metadata) and Mock(metadata=metadata)
     core._initialize()
     core.fold("AAAA")
     assert seen["m"].optimization["active"] == "exact" and seen["m"].optimization["kit_config"] == "a100"
