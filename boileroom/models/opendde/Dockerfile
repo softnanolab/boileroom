@@ -5,15 +5,20 @@ ARG TARGETOS
 ARG BUILDPLATFORM
 ARG BASE_IMAGE=docker.io/jakublala/boileroom-base:local
 
-# libstdc++ from GCC 13+: the kit's bit-exact ``exact`` kernels are linked against GLIBCXX_3.4.32. It must also
-# run on the base image's glibc 2.36 (bookworm), so it comes from Ubuntu 22.04 (glibc 2.35) plus the toolchain PPA,
-# the kit's documented remedy; Ubuntu 24.04's build needs glibc 2.38 and breaks every extension that loads it.
-FROM ubuntu:22.04 AS libstdcxx
+# libstdc++ from GCC 13+: the kit's bit-exact ``exact`` kernels are linked against GLIBCXX_3.4.32. The base image's
+# glibc is 2.36 (bookworm) and distro builds of GCC 13+ need newer glibc, so take the conda-forge build (glibc >= 2.17)
+# that the kit itself pins in its lock files, verified by checksum.
+FROM debian:bookworm-slim AS libstdcxx
+ARG LIBSTDCXX_URL=https://conda.anaconda.org/conda-forge/linux-64/libstdcxx-15.2.0-h934c35e_19.conda
+ARG LIBSTDCXX_SHA256=dff1058c76ec6b8759e41cefa2508162d00e4a5e6721aa68ec3fd10094e702dc
 RUN apt-get update --quiet \
-    && DEBIAN_FRONTEND=noninteractive apt-get install --no-install-recommends --yes --quiet software-properties-common \
-    && add-apt-repository --yes ppa:ubuntu-toolchain-r/test \
-    && DEBIAN_FRONTEND=noninteractive apt-get install --no-install-recommends --yes --quiet libstdc++6 \
-    && mkdir -p /out && cp -aL /usr/lib/x86_64-linux-gnu/libstdc++.so.6 /out/ \
+    && apt-get install --no-install-recommends --yes --quiet ca-certificates curl unzip zstd tar \
+    && curl -fsSL -o /tmp/libstdcxx.conda "${LIBSTDCXX_URL}" \
+    && echo "${LIBSTDCXX_SHA256}  /tmp/libstdcxx.conda" | sha256sum -c - \
+    && unzip -q /tmp/libstdcxx.conda -d /tmp/libstdcxx \
+    && mkdir -p /out \
+    && zstd -dc /tmp/libstdcxx/pkg-*.tar.zst | tar -x -C /tmp/libstdcxx lib/libstdc++.so.6.0.34 \
+    && cp /tmp/libstdcxx/lib/libstdc++.so.6.0.34 /out/libstdc++.so.6 \
     && grep -aq GLIBCXX_3.4.32 /out/libstdc++.so.6
 
 FROM ${BASE_IMAGE}
