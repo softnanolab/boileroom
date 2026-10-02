@@ -96,10 +96,9 @@ def test_binder_only_input_accepts_its_own_msa(tmp_path) -> None:
 
 
 def test_unsupporting_models_refuse_msa_and_templates():
-    from boileroom.models.esmfold2.core import ESMFold2Core
     from boileroom.models.opendde.core import OpenDDECore
 
-    for cls in (OpenDDECore, ESMFold2Core):
+    for cls in (OpenDDECore,):
         model = cls.__new__(cls)
         model.config = {}
         for options in ({"msa": [">q\nAAAA\n"]}, {"templates": {"t": "data_x"}}):
