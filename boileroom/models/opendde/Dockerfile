@@ -5,9 +5,17 @@ ARG TARGETOS
 ARG BUILDPLATFORM
 ARG BASE_IMAGE=docker.io/jakublala/boileroom-base:local
 
-# libstdc++ from GCC 13: the kit's bit-exact ``exact`` kernels are linked against GLIBCXX_3.4.32.
-FROM ubuntu:24.04 AS libstdcxx
-RUN mkdir -p /out && cp -aL /usr/lib/x86_64-linux-gnu/libstdc++.so.6 /out/
+# libstdc++ from GCC 13+: the kit's bit-exact ``exact`` kernels are linked against GLIBCXX_3.4.32. Take it from
+# conda-forge, which builds against an old glibc: Ubuntu 24.04's copy needs glibc 2.38 and cannot load on the
+# Debian bookworm (glibc 2.36) base.
+FROM debian:bookworm-slim AS libstdcxx
+RUN apt-get update --quiet \
+    && apt-get install --no-install-recommends --yes --quiet curl bzip2 ca-certificates \
+    && curl -fsSL https://micro.mamba.pm/api/micromamba/linux-64/latest | tar -xj -C /usr/local bin/micromamba \
+    && MAMBA_ROOT_PREFIX=/tmp/mamba micromamba create --yes --quiet --prefix /tmp/cf --channel conda-forge \
+        --override-channels "libstdcxx>=13" "libgcc>=13" \
+    && mkdir -p /out \
+    && cp -aL /tmp/cf/lib/libstdc++.so.6 /tmp/cf/lib/libgcc_s.so.1 /out/
 
 FROM ${BASE_IMAGE}
 
@@ -34,8 +42,6 @@ RUN apt-get update --quiet \
     && apt-get install --no-install-recommends --yes --quiet cuda-nvcc-12-6 cuda-cudart-dev-12-6 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=libstdcxx /out/libstdc++.so.6 /opt/opendde/lib/libstdc++.so.6
-
 ARG KIT_REF=f4f62fa
 ARG OPENDDE_HOME=/opt/opendde
 ENV OPENDDE_HOME=${OPENDDE_HOME}
@@ -49,12 +55,18 @@ RUN --mount=type=cache,id=${UV_CACHE_ID}-pip,target=/root/.cache/pip \
     && "${OPENDDE_HOME}/bin/pip" install --no-deps -e /kit/common/opt_core -e /kit/opendde/opt \
     && rm /tmp/stack.txt
 
+# Copied after the venv exists: ``uv venv`` refuses to create a venv in a directory that is already present.
+# Not on the image-wide LD_LIBRARY_PATH: that would load it into the system Python 3.12 too. The core adds
+# ``/opt/opendde/lib`` to the worker environment only.
+COPY --from=libstdcxx /out/ /opt/opendde/lib/
+
 # Fail the build early if the stack, the kit or the runner cannot be imported.
-RUN "${OPENDDE_HOME}/bin/python" -c "import opendde_opt, runner.batch_inference"
+RUN LD_LIBRARY_PATH="${OPENDDE_HOME}/lib" "${OPENDDE_HOME}/bin/python" -c "import opendde_opt, runner.batch_inference" \
+    && python -c "import numpy"
 
 ENV CUDA_HOME=/usr/local/cuda-12.6 \
     PATH=/usr/local/cuda-12.6/bin:${PATH} \
-    LD_LIBRARY_PATH=/opt/opendde/lib:/usr/local/nvidia/lib64:/usr/local/nvidia/lib \
+    LD_LIBRARY_PATH=/usr/local/nvidia/lib64:/usr/local/nvidia/lib \
     MODEL_OPT=/kit/opendde \
     LAYERNORM_TYPE=fast_layernorm \
     HF_HUB_ENABLE_HF_TRANSFER=1 \

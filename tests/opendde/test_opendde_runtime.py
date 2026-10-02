@@ -4,6 +4,7 @@ import copy
 import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
+from typing import Any
 from unittest.mock import Mock
 
 import pytest
@@ -81,13 +82,23 @@ def test_kit_is_enabled_before_runner_import(monkeypatch, tmp_path, mode) -> Non
     from boileroom.models.opendde.runtime import OpenDDERuntime
 
     _install_fake_runner(monkeypatch, tmp_path)
-    order = []
-    kit = ModuleType("opendde_opt")
-    kit.enable = lambda m, strict: order.append(("enable", m, strict)) or {"active": True}
+    order: list[Any] = []
+
+    def fake_enable(m: str, strict: bool) -> dict[str, bool]:
+        order.append(("enable", m, strict))
+        return {"active": True}
+
+    kit: Any = ModuleType("opendde_opt")
+    kit.enable = fake_enable
     monkeypatch.setitem(sys.modules, "opendde_opt", kit)
-    batch = sys.modules["runner.batch_inference"]
+    batch: Any = sys.modules["runner.batch_inference"]
     real = batch.get_default_runner
-    batch.get_default_runner = lambda **kw: order.append("runner") or real(**kw)
+
+    def fake_get_default_runner(**kw: Any) -> Any:
+        order.append("runner")
+        return real(**kw)
+
+    batch.get_default_runner = fake_get_default_runner
     OpenDDERuntime({**OpenDDECore.DEFAULT_CONFIG, "optimization": mode}, str(tmp_path))
     assert order == [("enable", mode, True), "runner"]
 
@@ -109,7 +120,7 @@ def test_kit_inactive_report_is_an_error(monkeypatch, tmp_path) -> None:
     from boileroom.models.opendde.runtime import OpenDDERuntime
 
     _install_fake_runner(monkeypatch, tmp_path)
-    kit = ModuleType("opendde_opt")
+    kit: Any = ModuleType("opendde_opt")
     kit.enable = lambda m, strict: {"active": False, "reason": "no gpu"}
     monkeypatch.setitem(sys.modules, "opendde_opt", kit)
     with pytest.raises(RuntimeError, match="did not activate: no gpu"):
