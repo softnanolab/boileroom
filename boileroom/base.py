@@ -11,8 +11,9 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol, cast
 
 import numpy as np
 
-from .images.metadata import format_image_reference, get_image_tag
+from .images.metadata import DEFAULT_PYTHON_VERSION, format_image_reference, get_image_tag, get_kit_image_spec
 from .models.registry import ModelSpec, resolve_object
+from .optimization import DEFAULT_OPTIMIZATION, validate_optimization
 from .utils import validate_sequence
 
 if TYPE_CHECKING:
@@ -421,20 +422,33 @@ class ModelWrapper:
             )
 
         backend_instance: Any
+        # A family with a kit image (ESMFold2, Protenix) runs "exact" and "fast" there; "vanilla" keeps the stock image.
+        kit_image_key = None
+        if model_spec.kit_image_key is not None:
+            mode = validate_optimization(resolved_config.get("optimization", DEFAULT_OPTIMIZATION))
+            if mode != DEFAULT_OPTIMIZATION:
+                kit_image_key = model_spec.kit_image_key
         if backend_type == "modal":
-            if model_spec.modal_class_path is None:
+            modal_class_path = model_spec.kit_modal_class_path if kit_image_key else model_spec.modal_class_path
+            if modal_class_path is None:
                 raise ValueError(f"Modal backend is not configured for {model_spec.public_name}")
-            modal_cls = resolve_object(model_spec.modal_class_path)
+            modal_cls = resolve_object(modal_class_path)
             backend_instance = ModalBackend(modal_cls, resolved_config, device=device)
         elif backend_type == "apptainer":
             if model_spec.apptainer_core_class_path is None or model_spec.apptainer_image_name is None:
                 raise ValueError(f"Apptainer backend is not configured for {model_spec.public_name}")
-            image_uri = f"docker://{format_image_reference(model_spec.apptainer_image_name, backend_tag)}"
+            image_name = model_spec.apptainer_image_name
+            python_version = DEFAULT_PYTHON_VERSION
+            if kit_image_key:
+                kit_spec = get_kit_image_spec(kit_image_key)
+                image_name, python_version = kit_spec.image_name, kit_spec.python_version
+            image_uri = f"docker://{format_image_reference(image_name, backend_tag)}"
             backend_instance = ApptainerBackend(
                 model_spec.apptainer_core_class_path,
                 image_uri,
                 resolved_config,
                 device=device,
+                python_version=python_version,
             )
         else:
             raise ValueError(f"Backend {backend_type} not supported")

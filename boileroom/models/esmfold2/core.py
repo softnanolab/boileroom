@@ -65,6 +65,8 @@ class _FoldRequest:
 # changed checkpoint layout under existing images. Pin the default model's snapshot.
 ESMFOLD2_HF_REPO = "biohub/ESMFold2"
 ESMFOLD2_HF_REVISION = "69869f737beffec5294845ede23db5fc0b4f509e"
+#: Under the model directory: the HF_HOME of the kit modes, which load their own pinned snapshots (not ESMFOLD2_HF_REVISION).
+KIT_HF_SUBDIR = "esmfold2/kit-hf"
 
 
 def _a3m_rows(text: object, sequence: str) -> list[str]:
@@ -213,16 +215,42 @@ class ESMFold2Core(FoldingAlgorithm):
         self.optimization = resolve_optimization("esmfold2", mode, gpu)
         if mode == "vanilla":
             return
+        # The kit reads its weights from HF_HOME, so it is set before anything imports the kit or huggingface_hub.
+        hf_home = Path(os.environ.setdefault("HF_HOME", str(Path(self.model_dir or MODAL_MODEL_DIR) / KIT_HF_SUBDIR)))
         try:
             import esmfold2_opt
         except ImportError as error:
             raise OptimizationUnavailableError(
                 f"optimization={mode!r} needs the esmfold2 kit image (esmfold2_opt is not installed here)"
             ) from error
+        self._ensure_kit_weights(hf_home)
         report = esmfold2_opt.enable(mode, variant=self._kit_variant())
         if not report.get("active"):
             raise OptimizationUnavailableError(
                 f"optimization={mode!r} did not activate on {gpu.name if gpu else 'this GPU'}: {report.get('reason')}"
+            )
+
+    def _ensure_kit_weights(self, hf_home: Path) -> None:
+        """Fetch the kit's pinned checkpoints into ``hf_home`` unless the variant's files are already there.
+
+        The kit loads frozen snapshots (not boileroom's pinned revision) and refuses to start without them; the image
+        carries none. Only the repositories the variant loads are fetched (the ESMC language model and the variant's own).
+        A present file is not fetched again, and a fetch that fails or leaves a file off its pin raises.
+        """
+        from esmfold2_opt import stack, weights
+
+        pins = stack.pins()
+        variant = self._kit_variant()
+        files = stack.pinned_weight_files(pins, variant)
+        if all((hf_home / rel).is_file() for _, rel, _ in files):
+            return
+        needed = {repo for repo, _, _ in files}
+        logger.info(f"Fetching the pinned ESMFold2 kit weights for variant {variant!r} into {hf_home}")
+        hf_home.mkdir(parents=True, exist_ok=True)
+        scoped = {**pins, "weights": {repo: files for repo, files in pins["weights"].items() if repo in needed}}
+        if weights.install_weights(str(hf_home), pins=scoped) != 0:
+            raise OptimizationUnavailableError(
+                f"could not fetch the pinned ESMFold2 kit weights into {hf_home}; the files that failed are logged above"
             )
 
     def _configure_optimization(self) -> None:
