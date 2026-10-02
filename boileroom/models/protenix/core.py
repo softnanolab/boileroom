@@ -160,7 +160,11 @@ class ProtenixCore(FoldingAlgorithm):
             with Timer(f"{self.DISPLAY_NAME} preprocessing") as preprocess_timer:
                 staged = self._stage_templates(validated_sequences[0], buffer_path, effective_config)
                 input_json = self._write_input_json(
-                    validated_sequences[0], buffer_path, effective_config.get("msa") or effective_config.get("unpaired_msa"), staged, effective_config["templates_chain"]
+                    validated_sequences[0],
+                    buffer_path,
+                    effective_config.get("msa") or effective_config.get("unpaired_msa"),
+                    staged,
+                    effective_config["templates_chain"],
                 )
                 output_dir = buffer_path / "outputs"
                 output_dir.mkdir(parents=True, exist_ok=True)
@@ -184,9 +188,7 @@ class ProtenixCore(FoldingAlgorithm):
         output.metadata.postprocessing_time = postprocess_timer.duration
         return output
 
-    def _stage_templates(
-        self, sequence_entry: str, buffer_path: Path, config: dict[str, Any]
-    ) -> dict[str, str] | None:
+    def _stage_templates(self, sequence_entry: str, buffer_path: Path, config: dict[str, Any]) -> dict[str, str] | None:
         """Write caller-supplied template structures where Protenix reads them.
 
         ``templates`` maps a name to mmCIF text and applies to chain

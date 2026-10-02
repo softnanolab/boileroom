@@ -61,6 +61,7 @@ def test_templates_path_goes_on_the_chosen_chain_only(tmp_path, cif_text) -> Non
     target = _seqres(cif_text)
     config = {**core.config, "templates": {"mine": cif_text}, "templates_chain": 0}
     staged = core._stage_templates(f"{target}:CCCCCCCCCC", tmp_path, config)
+    assert staged is not None
     path = core._write_input_json(f"{target}:CCCCCCCCCC", tmp_path, None, staged, 0)
     chains = json.loads(path.read_text())[0]["sequences"]
     assert chains[0]["proteinChain"]["templatesPath"] == staged["templates_path"]
@@ -75,7 +76,9 @@ def test_no_templates_leaves_input_unchanged(tmp_path) -> None:
 def test_templates_chain_must_exist(tmp_path, cif_text) -> None:
     core = ProtenixCore()
     with pytest.raises(ValueError, match="templates_chain"):
-        core._stage_templates("AAAA:CCCC", tmp_path, {**core.config, "templates": {"m": cif_text}, "templates_chain": 2})
+        core._stage_templates(
+            "AAAA:CCCC", tmp_path, {**core.config, "templates": {"m": cif_text}, "templates_chain": 2}
+        )
 
 
 def test_unsupporting_family_refuses_templates(tmp_path, cif_text) -> None:

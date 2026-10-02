@@ -26,7 +26,9 @@ def _template_sequence() -> str:
     return "".join(ProteinSequence.convert_letter_3to1(m) for m in block["entity_poly_seq"]["mon_id"].as_array(str))
 
 
-def test_opendde_uses_caller_supplied_msa_and_templates(backend_option: str, device_option: str | None, output_ctx) -> None:
+def test_opendde_uses_caller_supplied_msa_and_templates(
+    backend_option: str, device_option: str | None, output_ctx
+) -> None:
     """A caller MSA replaces the MSA search, and a caller template changes the prediction."""
     query = "MK" + _template_sequence()[3:-2] + "GGAA"
     options = {"include_fields": ["plddt", "cif"], "seeds": "7"}
