@@ -9,6 +9,7 @@ import modal
 from ...backend.modal import get_modal_app
 from ...base import ModelWrapper
 from ...images.volumes import model_weights
+from ...optimization import initialize_core
 from ...utils import MINUTES, MODAL_MODEL_DIR
 from ..registry import OPENDDE_SPEC
 from .image import opendde_image
@@ -35,7 +36,7 @@ class ModalOpenDDE:
         from .core import OpenDDECore
 
         self._core = OpenDDECore(json.loads(self.config.decode("utf-8")))
-        self._core._initialize()
+        self._refusal = initialize_core(self._core)
 
     @modal.exit()
     def _shutdown(self) -> None:
@@ -43,6 +44,8 @@ class ModalOpenDDE:
 
     @modal.method()
     def fold(self, sequences: str | Sequence[str], options: dict | None = None) -> "OpenDDEOutput":
+        if self._refusal is not None:
+            raise self._refusal
         return self._core.fold(sequences, options=options)
 
 

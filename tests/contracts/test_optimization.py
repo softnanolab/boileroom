@@ -7,6 +7,7 @@ from boileroom.optimization import (
     DEFAULT_OPTIMIZATION,
     GpuInfo,
     OptimizationUnavailableError,
+    initialize_core,
     resolve_optimization,
     validate_optimization,
 )
@@ -128,3 +129,44 @@ def test_protenix_core_refuses_before_starting_worker(monkeypatch: pytest.Monkey
     with pytest.raises(OptimizationUnavailableError, match="cannot run protenix on NVIDIA L40S"):
         core._load()
     assert core._worker is None
+
+
+class _FailingCore:
+    """Stand-in core whose load fails, to see how the Modal wrappers' init helper treats it."""
+
+    def __init__(self, optimization: str, error: Exception | None) -> None:
+        self.config = {"optimization": optimization}
+        self.error = error
+
+    def _initialize(self) -> None:
+        if self.error is not None:
+            raise self.error
+
+
+@pytest.mark.parametrize("mode", ["exact", "fast"])
+def test_kit_mode_init_refusal_is_returned_not_raised(mode: str) -> None:
+    """Raising in ``@modal.enter()`` makes Modal restart the container silently, so the refusal is handed back."""
+    error = OptimizationUnavailableError("needs the kit image")
+    assert initialize_core(_FailingCore(mode, error)) is error
+
+
+def test_vanilla_init_failure_still_raises() -> None:
+    with pytest.raises(RuntimeError, match="weights missing"):
+        initialize_core(_FailingCore("vanilla", RuntimeError("weights missing")))
+
+
+def test_init_success_and_unrelated_errors() -> None:
+    assert initialize_core(_FailingCore("exact", None)) is None
+    with pytest.raises(ValueError, match="bad config"):
+        initialize_core(_FailingCore("exact", ValueError("bad config")))
+
+
+@pytest.mark.parametrize("module", ["esmfold2.esmfold2", "protenix.protenix", "opendde.opendde"])
+def test_modal_wrappers_defer_the_refusal_to_the_call(module: str) -> None:
+    """Each kit-capable Modal entrypoint initializes through the helper and raises the refusal from ``fold``."""
+    import inspect
+    from importlib import import_module
+
+    source = inspect.getsource(import_module(f"boileroom.models.{module}"))
+    assert "self._refusal = initialize_core(self._core)" in source
+    assert "raise self._refusal" in source
