@@ -112,7 +112,7 @@ def _normalise_cif(text: str) -> tuple[str, str, str]:
     residues = [
         (int(num), mon)
         for ent, num, mon in zip(
-            poly["entity_id"].as_array(str), poly["num"].as_array(str), poly["mon_id"].as_array(str)
+            poly["entity_id"].as_array(str), poly["num"].as_array(str), poly["mon_id"].as_array(str), strict=False
         )
         if ent == entity
     ]

@@ -75,7 +75,9 @@ def test_no_templates_leaves_input_unchanged(tmp_path) -> None:
 def test_templates_chain_must_exist(tmp_path, cif_text) -> None:
     core = ProtenixCore()
     with pytest.raises(ValueError, match="templates_chain"):
-        core._stage_templates("AAAA:CCCC", tmp_path, {**core.config, "templates": {"m": cif_text}, "templates_chain": 2})
+        core._stage_templates(
+            "AAAA:CCCC", tmp_path, {**core.config, "templates": {"m": cif_text}, "templates_chain": 2}
+        )
 
 
 def test_opendde_refuses_templates(tmp_path, cif_text) -> None:

@@ -101,7 +101,11 @@ def test_runtime_points_featurizer_at_staged_templates(monkeypatch, tmp_path) ->
     monkeypatch.setattr(runtime_module, "_kalign_path", lambda: "/usr/bin/kalign")
     config = dict(ProtenixCore.DEFAULT_CONFIG)
     runtime = ProtenixRuntime(config, str(tmp_path))
-    staging = {"mmcif_dir": "/stage/mmcif", "release_dates_path": "/stage/d.json", "obsolete_pdbs_path": "/stage/o.json"}
+    staging = {
+        "mmcif_dir": "/stage/mmcif",
+        "release_dates_path": "/stage/d.json",
+        "obsolete_pdbs_path": "/stage/o.json",
+    }
     runtime.predict("a.json", "a", {**config, "template_staging": staging})
     runtime.predict("b.json", "b", config)
 
