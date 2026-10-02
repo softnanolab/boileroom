@@ -78,12 +78,20 @@ def test_templates_chain_must_exist(tmp_path, cif_text) -> None:
         core._stage_templates("AAAA:CCCC", tmp_path, {**core.config, "templates": {"m": cif_text}, "templates_chain": 2})
 
 
-def test_opendde_refuses_templates(tmp_path, cif_text) -> None:
+def test_unsupporting_family_refuses_templates(tmp_path, cif_text) -> None:
+    class NoTemplates(ProtenixCore):
+        SUPPORTS_USER_TEMPLATES = False
+
+    with pytest.raises(ValueError, match="does not support"):
+        NoTemplates()._stage_templates("AAAA:CCCC", tmp_path, {**NoTemplates().config, "templates": {"m": cif_text}})
+
+
+def test_opendde_stages_templates_like_protenix(tmp_path, cif_text, query) -> None:
     from boileroom.models.opendde.core import OpenDDECore
 
     core = OpenDDECore()
-    with pytest.raises(ValueError, match="does not support"):
-        core._stage_templates("AAAA:CCCC", tmp_path, {**core.config, "templates": {"m": cif_text}})
+    staged = core._stage_templates(query, tmp_path, {**core.config, "templates": {"m": cif_text}})
+    assert staged is not None and Path(staged["templates_path"]).is_file()
 
 
 def test_binder_only_input_accepts_its_own_msa(tmp_path) -> None:
@@ -96,11 +104,12 @@ def test_binder_only_input_accepts_its_own_msa(tmp_path) -> None:
 
 
 def test_unsupporting_models_refuse_msa_and_templates():
-    from boileroom.models.opendde.core import OpenDDECore
+    class Unsupporting(ProtenixCore):
+        SUPPORTS_USER_MSA = False
+        SUPPORTS_USER_TEMPLATES = False
 
-    for cls in (OpenDDECore,):
-        model = cls.__new__(cls)
-        model.config = {}
-        for options in ({"msa": [">q\nAAAA\n"]}, {"templates": {"t": "data_x"}}):
-            with pytest.raises(ValueError, match="does not support"):
-                model._merge_options(options)
+    model = Unsupporting.__new__(Unsupporting)
+    model.config = {}
+    for options in ({"msa": [">q\nAAAA\n"]}, {"templates": {"t": "data_x"}}):
+        with pytest.raises(ValueError, match="does not support"):
+            model._merge_options(options)
