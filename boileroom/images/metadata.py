@@ -16,8 +16,18 @@ from typing import Final
 DEFAULT_DOCKER_REPOSITORY: Final = "docker.io/jakublala"
 PACKAGE_NAME: Final = "boileroom"
 DEFAULT_CUDA_VERSION: Final = "12.6"
+DEFAULT_PYTHON_VERSION: Final = "3.12"
 DOCKER_REPOSITORY_ENV: Final = "BOILEROOM_DOCKER_REPOSITORY"
 IMAGE_TAG_ENV: Final = "BOILEROOM_IMAGE_TAG"
+KIT_IMAGE_SOURCE_ENV: Final = "BOILEROOM_KIT_IMAGE_SOURCE"
+KIT_IMAGE_SOURCES: Final[tuple[str, ...]] = ("build", "registry")
+DEFAULT_KIT_IMAGE_SOURCE: Final = "build"
+
+# The optimization kit behind ``optimization="exact"`` and ``"fast"``: github.com/anthropics/uplifting-biomolecular-modeling
+# (Apache-2.0). The kit Dockerfiles under ``boileroom/models/<family>/kit/`` fetch exactly this commit; their ``KIT_COMMIT``
+# build arg must stay equal to the constant below (tests/contracts/test_kit_images.py checks it).
+KIT_REPOSITORY: Final = "https://github.com/anthropics/uplifting-biomolecular-modeling.git"
+KIT_COMMIT: Final = "f4f62fa6592ae4938d49b1757bea0cfeff9f468e"
 
 SUPPORTED_CUDA_VERSIONS: Final[tuple[str, ...]] = ("11.8", "12.6")
 SUPPORTED_PLATFORMS: Final[tuple[str, ...]] = ("linux/amd64", "linux/arm64")
@@ -44,6 +54,8 @@ class RuntimeImageSpec:
     # built for them). Used when families share one runtime image, e.g. ESM-C /
     # ESM3 run on the ESMFold2 Biohub image.
     shared_family_keys: tuple[str, ...] = ()
+    # The interpreter the Apptainer service runs under, /usr/local/bin/python<version> in the image.
+    python_version: str = DEFAULT_PYTHON_VERSION
 
     @property
     def family_keys(self) -> tuple[str, ...]:
@@ -126,6 +138,30 @@ MODEL_IMAGE_SPECS: Final[tuple[RuntimeImageSpec, ...]] = (
         modal_runtime_env=(("LAYERNORM_TYPE", "fast_layernorm"),),
     ),
 )
+
+# Kit runtime images: opt-in variants that only ``optimization != "vanilla"`` uses, never part of MODEL_IMAGE_SPECS (so the
+# CI image matrix, ``scripts/images`` and the published tags are untouched). They do not declare ``supported_cuda``: the kit
+# stack is CUDA 13.0 (an NVIDIA driver 580 or newer), outside SUPPORTED_CUDA_VERSIONS, and nothing is published from them.
+KIT_IMAGE_SPECS: Final[tuple[RuntimeImageSpec, ...]] = (
+    RuntimeImageSpec(
+        key="esmfold2",
+        image_name="boileroom-esmfold2-kit",
+        dockerfile_relative_path="boileroom/models/esmfold2/kit/Dockerfile",
+        context_relative_path="boileroom/models/esmfold2/kit",
+        config_relative_path="boileroom/models/esmfold2/kit/config.yaml",
+    ),
+    RuntimeImageSpec(
+        key="protenix",
+        image_name="boileroom-protenix-kit",
+        dockerfile_relative_path="boileroom/models/protenix/kit/Dockerfile",
+        context_relative_path="boileroom/models/protenix/kit",
+        config_relative_path="boileroom/models/protenix/kit/config.yaml",
+        python_version="3.11",
+        # The kit's layernorm lever and its pinned environment need stock's fast LayerNorm (the vanilla image uses openfold).
+        modal_runtime_env=(("LAYERNORM_TYPE", "fast_layernorm"),),
+    ),
+)
+KIT_IMAGE_SPECS_BY_KEY: Final = {spec.key: spec for spec in KIT_IMAGE_SPECS}
 
 MODEL_IMAGE_SPECS_BY_KEY: Final = {family_key: spec for spec in MODEL_IMAGE_SPECS for family_key in spec.family_keys}
 MODEL_IMAGE_SPECS_BY_NAME: Final = {spec.image_name: spec for spec in MODEL_IMAGE_SPECS}
@@ -312,6 +348,24 @@ def get_model_image_spec(identifier: str) -> RuntimeImageSpec:
     if identifier in MODEL_IMAGE_SPECS_BY_NAME:
         return MODEL_IMAGE_SPECS_BY_NAME[identifier]
     raise KeyError(f"Unknown image spec: {identifier}")
+
+
+def get_kit_image_spec(identifier: str) -> RuntimeImageSpec:
+    """Return the kit image spec by family key or image name."""
+    if identifier in KIT_IMAGE_SPECS_BY_KEY:
+        return KIT_IMAGE_SPECS_BY_KEY[identifier]
+    for spec in KIT_IMAGE_SPECS:
+        if spec.image_name == identifier:
+            return spec
+    raise KeyError(f"Unknown kit image spec: {identifier}")
+
+
+def get_kit_image_source() -> str:
+    """Return where Modal gets a kit image: ``build`` (from the Dockerfile) or ``registry`` (a published image)."""
+    source = (os.environ.get(KIT_IMAGE_SOURCE_ENV) or DEFAULT_KIT_IMAGE_SOURCE).strip().lower()
+    if source not in KIT_IMAGE_SOURCES:
+        raise ValueError(f"{KIT_IMAGE_SOURCE_ENV} must be one of {list(KIT_IMAGE_SOURCES)}, got {source!r}")
+    return source
 
 
 def select_model_image_specs(identifiers: Sequence[str] | None) -> tuple[RuntimeImageSpec, ...]:
