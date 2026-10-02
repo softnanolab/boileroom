@@ -60,14 +60,17 @@ RUN --mount=type=cache,id=${UV_CACHE_ID}-pip,target=/root/.cache/pip \
     && rm /tmp/stack.txt
 
 # Copied after the venv exists: ``uv venv`` refuses to create a venv in a directory that is already present.
-COPY --from=libstdcxx /out/libstdc++.so.6 /opt/opendde/lib/libstdc++.so.6
+# Not on the image-wide LD_LIBRARY_PATH: that would load it into the system Python 3.12 too. The core adds
+# ``/opt/opendde/lib`` to the worker environment only.
+COPY --from=libstdcxx /out/ /opt/opendde/lib/
 
 # Fail the build early if the stack, the kit or the runner cannot be imported.
-RUN "${OPENDDE_HOME}/bin/python" -c "import opendde_opt, runner.batch_inference"
+RUN LD_LIBRARY_PATH="${OPENDDE_HOME}/lib" "${OPENDDE_HOME}/bin/python" -c "import opendde_opt, runner.batch_inference" \
+    && python -c "import numpy"
 
 ENV CUDA_HOME=/usr/local/cuda-12.6 \
     PATH=/usr/local/cuda-12.6/bin:${PATH} \
-    LD_LIBRARY_PATH=/opt/opendde/lib:/usr/local/nvidia/lib64:/usr/local/nvidia/lib \
+    LD_LIBRARY_PATH=/usr/local/nvidia/lib64:/usr/local/nvidia/lib \
     MODEL_OPT=/kit/opendde \
     LAYERNORM_TYPE=fast_layernorm \
     HF_HUB_ENABLE_HF_TRANSFER=1 \
