@@ -36,6 +36,8 @@ logger = logging.getLogger(__name__)
 class AlphaFold2MultimerCore(FoldingAlgorithm):
     """AlphaFold2-Multimer structure prediction backed by ColabFold."""
 
+    #: ``options["msa"]`` is an ``MSAInput`` here (not the A3M-text list the other cores take).
+    SUPPORTS_USER_MSA: ClassVar[bool] = True
     DEFAULT_CONFIG: ClassVar[dict[str, Any]] = {
         "device": None,
         "colabfold_python": "/opt/colabfold/bin/python",
