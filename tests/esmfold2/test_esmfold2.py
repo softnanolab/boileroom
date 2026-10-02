@@ -394,3 +394,104 @@ def test_esmfold2_buffered_loading_preserves_validation_and_restores_loader(
         assert load_pretrained(model, "biohub/ESMFold2", revision="fixed-sha", cache_dir="/cache") == "loaded model"
     reader.assert_called_once_with("shard.safetensors", backend="pread")
     assert hub.load_file is original
+
+
+A3M = ">q\nACD\n>h1\nAcCD\n>h2\nA-D\n"
+
+
+def test_esmfold2_declares_msa_support_and_refuses_templates() -> None:
+    """The core supports a user MSA but not templates, and refuses templates before loading."""
+    core_cls = _core_cls()
+    assert core_cls.SUPPORTS_USER_MSA is True and core_cls.SUPPORTS_USER_TEMPLATES is False
+    with pytest.raises(ValueError, match="does not support user-supplied 'templates'"):
+        core_cls(config={"device": "cpu"}).fold("ACD", options={"templates": {"t": "data_"}})
+
+
+def test_esmfold2_a3m_rows_drop_insertions_and_validate() -> None:
+    """A3M text becomes aligned rows; mismatched queries and ragged rows fail clearly."""
+    rows = pytest.importorskip("boileroom.models.esmfold2.core")._a3m_rows
+    assert rows(A3M, "ACD") == ["ACD", "ACD", "A-D"]
+    with pytest.raises(ValueError, match="first A3M row"):
+        rows(A3M, "AAA")
+    with pytest.raises(ValueError, match="aligned length"):
+        rows(">q\nACD\n>h\nAC\n", "ACD")
+    with pytest.raises(ValueError, match="A3M text"):
+        rows("ACD", "ACD")
+
+
+def test_esmfold2_attaches_user_msa_per_entry() -> None:
+    """options['msa'] lands on the matching protein entries; None entries stay MSA-free."""
+    core = _core_cls()(config={"device": "cpu"})
+    request = core._coerce_requests("ACD:EFG")[0]
+    attached = core._attach_user_msa(request, [A3M, None]).input.sequences
+    assert attached[0].msa == MSAInput(sequences=["ACD", "ACD", "A-D"])
+    assert attached[1].msa is None
+    with pytest.raises(ValueError, match="one A3M string or None per input sequence entry"):
+        core._attach_user_msa(request, [A3M])
+    ligand = _core_cls()(config={"device": "cpu"})._request_from_structure_input(
+        StructurePredictionInput(sequences=[ProteinInput(id="A", sequence="ACD"), LigandInput(id="L", ccd=["ATP"])])
+    )
+    with pytest.raises(ValueError, match="non-protein"):
+        core._attach_user_msa(ligand, [None, A3M])
+    with pytest.raises(ValueError, match="already carries an MSA"):
+        core._attach_user_msa(
+            core._request_from_structure_input(
+                StructurePredictionInput(
+                    sequences=[ProteinInput(id="A", sequence="ACD", msa=MSAInput(sequences=["ACD"]))]
+                )
+            ),
+            [A3M],
+        )
+
+
+@pytest.mark.parametrize(
+    ("config", "variant"),
+    [
+        ({}, "full_nomsa"),
+        ({"kit_msa": True}, "full_msa"),
+        ({"model_name": "biohub/ESMFold2-Fast", "kit_msa": True}, "fast"),
+    ],
+)
+def test_esmfold2_kit_variant_follows_checkpoint_and_kit_msa(config: dict, variant: str) -> None:
+    """The kit variant is fixed at construction: Fast never uses an MSA; full uses it only with kit_msa."""
+    assert _core_cls()(config={"device": "cpu", **config})._kit_variant() == variant
+
+
+@pytest.mark.parametrize("config", [{}, {"model_name": "biohub/ESMFold2-Fast", "kit_msa": True}])
+def test_esmfold2_msa_with_kit_variant_that_ignores_it_fails_before_loading(config: dict) -> None:
+    """A user MSA must never be silently dropped by a no-MSA kernel."""
+    core = _core_cls()(config={"device": "cpu", "optimization": "exact", **config})
+    with pytest.raises(ValueError, match="does not consume an MSA"):
+        core.fold("ACD", options={"msa": [A3M]})
+    assert core.model is None
+
+
+def test_esmfold2_msa_is_allowed_with_vanilla_and_full_msa_kit() -> None:
+    """Vanilla and the full_msa kit variant pass the kernel check."""
+    _core_cls()(config={"device": "cpu"})._check_kit_consumes_msa({"optimization": "vanilla"})
+    core = _core_cls()(config={"device": "cpu", "optimization": "exact", "kit_msa": True})
+    core._check_kit_consumes_msa(core.config)
+
+
+def test_esmfold2_msa_rejects_batches() -> None:
+    """A single options['msa'] cannot be shared by several inputs."""
+    core = _core_cls()(config={"device": "cpu"})
+    core.model, core.input_builder = object(), object()
+    with pytest.raises(ValueError, match="exactly one input structure"):
+        core.fold(["ACD", "EFG"], options={"msa": [A3M]})
+
+
+def test_esmfold2_wrapper_forwards_msa_option_to_the_core(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The public ESMFold2.fold() hands the unified msa key to the backend unchanged."""
+    ESMFold2 = _wrapper_cls()
+    model = ESMFold2.__new__(ESMFold2)
+    ModelWrapper.__init__(model, backend="modal", device="cuda:0", config={})
+    captured: dict[str, object] = {}
+
+    def fake_call(method_name: str, sequences: object, options: dict | None = None) -> object:
+        captured["options"] = options
+        return object()
+
+    monkeypatch.setattr(model, "_call_backend_method", fake_call)
+    model.fold("ACD", options={"msa": [A3M]})
+    assert captured["options"] == {"msa": [A3M]}
