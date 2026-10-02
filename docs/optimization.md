@@ -58,6 +58,22 @@ Same GPU, vanilla vs kit (median warm wall time per fold and cost; speedup equal
 | ESMFold2-Fast | H100 | 0.79 s, $0.00087 | 0.39 s, $0.00043 (2.0x) | 0.19 s, $0.00021 (4.2x) |
 | Protenix v2 | A100 | 14.5 s, $0.0100 | 3.6 s, $0.0025 (4.0x) | 3.5 s, $0.0024 (4.1x) |
 | Protenix v2 | H100 | 12.4 s, $0.0136 | 1.9 s, $0.0021 (6.4x) | 1.4 s, $0.0015 (9.1x) |
+| OpenDDE | A100 | 16.1 s, $0.0111 | 12.7 s, $0.0088 (1.3x) | 9.3 s, $0.0064 (1.7x) |
+| OpenDDE | H100 | 14.0 s, $0.0154 | 11.4 s, $0.0125 (1.2x) | 5.8 s, $0.0064 (2.4x) |
+
+OpenDDE rows use the same 3 complexes but boileroom's default sampler settings (10 cycles, 200 steps, 5 samples per
+seed, A100-80GB SXM4 / H100), so their absolute seconds are not comparable with the Protenix rows above, which used the
+bakeoff's lighter settings. The first fold of a process takes 61-78 s in every mode (weight load, plus Triton JIT and CUDA
+graph capture for the kit modes), and the kit modes add only 3-5 s to it, so they pay off from the second fold.
+The fused LayerNorm CUDA extension is not built in the current image (the worker logs "Fast LayerNorm CUDA extension is
+unavailable ... Ninja is required"), so all three modes use torch's `layer_norm`; installing ninja is the first thing to
+try for a further speed-up and would change these numbers.
+
+OpenDDE `exact` is not reproducible against vanilla at these settings: aligned RMSD of the same seed between vanilla and
+`exact` has a median of 0.6-2.1 A and reaches 9-13 A on the flexible ubiquitin-barnase complex. This is not a kit
+regression: two vanilla repeats of one seed already differ by up to 10 A and two `exact` repeats by up to 3.5 A,
+because boileroom does not enable the runner's deterministic mode; the kit documents bit-identity only with
+`--det 1`. Treat all modes as stochastic samplers until a `deterministic` option is added and re-measured.
 
 Vanilla on A100/H100 costs more per fold than vanilla on the eval GPUs (L4 $0.00098 / $0.00056 for ESMFold2 / ESMFold2-Fast, L40S $0.0066 for Protenix), so the kit is what makes those GPUs worth using. A100 rows mix cards (ESMFold2-Fast and Protenix vanilla/exact on SXM4, `fast` on PCIe; full ESMFold2 vanilla/fast on PCIe, `exact` on SXM4), so A100 ratios carry a few percent of hardware noise.
 

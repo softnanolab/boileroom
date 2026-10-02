@@ -63,7 +63,8 @@ class OpenDDE(ModelWrapper):
         loaded model. The backend context owns the worker's lifetime.
         Use ``:`` inside a sequence string to define multiple chains.
         Pass ``options={"unpaired_msa": [target_a3m_text, None]}`` for an
-        unpaired target alignment and a single-sequence binder. Results retain
+        unpaired target alignment and a single-sequence binder, and ``options={"templates": {name: mmcif_text}}``
+        (with ``templates_chain`` selecting the chain) to supply mmCIF templates. Results retain
         numeric seeds and within-seed confidence ranks. Request ``pae``,
         ``token_chain_ids`` and ``token_res_ids`` to compute interface scores.
         Set ``config={"optimization": "exact" | "fast"}`` at initialization to
