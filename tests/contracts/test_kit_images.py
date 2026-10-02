@@ -195,7 +195,9 @@ def test_kit_modes_run_on_the_kit_modal_class(monkeypatch: pytest.MonkeyPatch, s
 
 
 @pytest.mark.parametrize("spec", KIT_SPECS, ids=lambda spec: spec.key)
-def test_unknown_optimization_is_refused_before_a_backend_starts(monkeypatch: pytest.MonkeyPatch, spec: ModelSpec) -> None:
+def test_unknown_optimization_is_refused_before_a_backend_starts(
+    monkeypatch: pytest.MonkeyPatch, spec: ModelSpec
+) -> None:
     records = _install_fake_backends(monkeypatch)
     with pytest.raises(ValueError, match="optimization must be one of"):
         _initialize(spec, "modal", {"optimization": "turbo"})
@@ -203,7 +205,9 @@ def test_unknown_optimization_is_refused_before_a_backend_starts(monkeypatch: py
 
 
 @pytest.mark.parametrize("spec", KIT_SPECS, ids=lambda spec: spec.key)
-def test_vanilla_apptainer_keeps_the_stock_image_and_interpreter(monkeypatch: pytest.MonkeyPatch, spec: ModelSpec) -> None:
+def test_vanilla_apptainer_keeps_the_stock_image_and_interpreter(
+    monkeypatch: pytest.MonkeyPatch, spec: ModelSpec
+) -> None:
     records = _install_fake_backends(monkeypatch)
     _initialize(spec, "apptainer:dev", {"optimization": "vanilla"})
     assert spec.apptainer_image_name is not None
