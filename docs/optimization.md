@@ -20,13 +20,77 @@ weights load, and a GPU or stack the kit cannot serve fails by name with `Optimi
 
 ## Requirements
 
-The kit ships its own pinned stack, so kit modes need a kit image, not the default boileroom image:
+The kit ships its own pinned stack, so `exact` and `fast` need a kit image, not the default boileroom image:
 
 - ESMFold2: python 3.12, torch 2.13+cu130, esm 3.3.0 and the kit's transformers fork (`ESMFold2Model`),
   flash-attn / TransformerEngine built from source. Kit modes load the fork's model class and fold through
   `ESMFold2InputBuilder.fold()`, which the kit hooks; `vanilla` keeps loading esm's `EsmFold2Model`.
 - Protenix: python 3.11, torch 2.13.0+cu130, cuequivariance 0.11.1, protenix 2.0.0, driver 580+.
   The kit is enabled inside the worker before any `protenix` import (the kit refuses late activation).
+
+For ESMFold2 and Protenix the repository carries the definition of that image, and `optimization="vanilla"` never
+touches it:
+
+| Family | Dockerfile | Image name | Base |
+| --- | --- | --- | --- |
+| ESMFold2 | [`boileroom/models/esmfold2/kit/Dockerfile`](../boileroom/models/esmfold2/kit/Dockerfile) (+ `kit_wheels.sh`, `kit_finish.sh`) | `boileroom-esmfold2-kit` | `python:3.12.10-slim-bookworm` |
+| Protenix | [`boileroom/models/protenix/kit/Dockerfile`](../boileroom/models/protenix/kit/Dockerfile) | `boileroom-protenix-kit` | `nvidia/cuda:13.0.1-cudnn-devel-ubuntu24.04` |
+
+Both Dockerfiles fetch the kit at the pinned commit `f4f62fa6592ae4938d49b1757bea0cfeff9f468e` and follow the kit's own
+`<family>/environment/Dockerfile` at that commit: the same lock, versions, checksums and compile recipe. The changes are the
+kit coming from git instead of a build context, the optional `_jitcache` `COPY` removed (a glob that Modal's Dockerfile parser
+rejects), and boileroom's runtime dependencies on top (`fastapi`/`uvicorn` for the Apptainer service). These are the
+definitions the benchmark images in [Measured](#measured-5-seeds-x-3-complexes-of-170-199-tokens-no-msa-bakeoff-sampler-settings)
+were made from; the benchmark recipe itself lived outside the repository, so what is checked in is a reconstruction of it, not
+the original files.
+
+**Routing.** The wrapper picks the image from `optimization`: `vanilla` (the default) runs the stock `boileroom-esmfold2` /
+`boileroom-protenix` image and Modal class as before, and `exact` / `fast` run `ModalESMFold2Kit` / `ModalProtenixKit` (Modal)
+or the kit image (Apptainer). The kit classes live on their own Modal apps (`boileroom-esmfold2-kit`,
+`boileroom-protenix-kit`), so using vanilla never builds a kit image. A kit class asks for an A100 (ESMFold2 `A100-80GB`,
+Protenix `A100-40GB`); pass `device="H100"` (or `H200`) to run on those.
+
+**Where the image comes from.** `BOILEROOM_KIT_IMAGE_SOURCE` selects it:
+
+- `build` (default): Modal builds the image from the Dockerfile in your installed boileroom. Nothing is published, so the first
+  kit-mode use pays the build and Modal caches it afterwards. Protenix compiles its fast-LayerNorm extension, which takes
+  minutes. ESMFold2 compiles flash-attn, TransformerEngine and xformers for compute capability 8.0 and 9.0 on a 48-core,
+  192 GiB build step with a 4 h limit (the benchmarked image compiled in 1893 s on 64 cores; budget 30-45 min on Modal, more
+  on a smaller builder).
+- `registry`: Modal (or Apptainer, as `docker://`) pulls `<repository>/boileroom-<family>-kit:<tag>` for an image you built and
+  pushed. The repository comes from `BOILEROOM_DOCKER_REPOSITORY` and the tag from `BOILEROOM_IMAGE_TAG`, as for the stock
+  images. The kit images are not published to Docker Hub by this repository's CI (the ESMFold2 compile takes hours on a
+  GitHub-hosted runner), so there is no default registry image to pull.
+
+To build an image yourself on a many-core machine and use it from Modal or Apptainer:
+
+```bash
+docker build -f boileroom/models/protenix/kit/Dockerfile boileroom/models/protenix/kit -t <repository>/boileroom-protenix-kit:<tag>
+docker build -f boileroom/models/esmfold2/kit/Dockerfile boileroom/models/esmfold2/kit -t <repository>/boileroom-esmfold2-kit:<tag>
+# H100/H200 only, a smaller ESMFold2 compile: add --build-arg STACK=img_ef2_fa
+docker push <repository>/boileroom-esmfold2-kit:<tag>   # and likewise for protenix
+
+export BOILEROOM_KIT_IMAGE_SOURCE=registry BOILEROOM_DOCKER_REPOSITORY=<repository> BOILEROOM_IMAGE_TAG=<tag>
+```
+
+The Modal `build` path produces the same image through the same scripts: the Dockerfile is built with `WHEELS_FROM=defer` and
+the compile and install (`kit_wheels.sh`, `kit_finish.sh`) run as a Modal build step on the larger builder. The image
+identity is the Dockerfile plus those scripts at the pinned kit commit.
+
+**ESMFold2 weights.** The kit loads its own pinned Hugging Face snapshots (`biohub/ESMFold2`, `ESMFold2-Fast`, `ESMC-6B`, about
+27 GB), which differ from the single revision (`ESMFOLD2_HF_REVISION`) that `vanilla` loads. They are not in the image. On the
+first kit-mode call the core downloads the snapshots for the requested variant into `$MODEL_DIR/esmfold2/kit-hf` (on Modal, the
+`model_weights` volume) and reuses them afterwards; a failed download raises `OptimizationUnavailableError`. Protenix keeps
+downloading its checkpoint into `PROTENIX_ROOT_DIR`, as in vanilla.
+
+**What has and has not been exercised.** The Dockerfiles, routing, builders, the Apptainer interpreter selection and the
+weight bootstrap are covered by offline contract and unit tests (`tests/contracts/test_kit_images.py`, the kit tests in
+`tests/esmfold2/test_esmfold2.py`). The benchmark numbers below were measured on images assembled from the original recipe,
+not on images built from the Dockerfiles in this repository: building them on Modal, running `exact` / `fast` through this
+repository's routing, and the Apptainer kit path still need a run on a machine with Modal or GPU access. In particular the
+Protenix Dockerfile keeps `TORCH_CUDA_ARCH_LIST="9.0+PTX"` from the benchmarked recipe, whose configured card was the H100
+(the same image served the A100 rows); whether stock's fast-LayerNorm extension, built for compute capability 9.0, is used on an
+A100 or falls back was not checked.
 - OpenDDE: python 3.11, torch 2.7.1+cu126, cuequivariance 0.10.0, opendde 1.1.1, CUDA 12.6 `nvcc` and gcc at run time
   (fused LayerNorm and Triton JIT), libstdc++ from GCC 13 for `exact`, driver 560+. The Dockerfile installs the pinned kit
   commit; the kit is enabled in the worker before `runner` is imported.

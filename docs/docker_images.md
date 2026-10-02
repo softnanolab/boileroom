@@ -10,6 +10,8 @@
 - **protenix**: `boileroom/models/protenix/Dockerfile` → installs Protenix plus HMMER/Kalign CLI dependencies. Tag: `docker.io/jakublala/boileroom-protenix`. Platform: `linux/amd64`.
 - **esmfold2**: `boileroom/models/esmfold2/Dockerfile` → installs the MIT-licensed 2026 Chan Zuckerberg Biohub `esm` package (`esm==3.4.1.post1`, torch 2.11, CUDA 12.6 only) from `requirements.txt`. Tag: `docker.io/jakublala/boileroom-esmfold2`. **Shared by ESMFold2, ESM-C, and ESM3** — all three use the same Biohub `esm` package, so ESM-C/ESM3 run on this image instead of a separate one.
 
+- **esmfold2-kit** and **protenix-kit** (opt-in, **not published**): `boileroom/models/esmfold2/kit/Dockerfile` and `boileroom/models/protenix/kit/Dockerfile` → the stack of the Anthropic optimization kit (torch 2.13+cu130, kit commit `f4f62fa`) behind `optimization="exact"` and `"fast"`. Names: `boileroom-esmfold2-kit` and `boileroom-protenix-kit`. Used only when a kit mode is requested; `optimization="vanilla"` (the default) keeps using the stock images above. Not part of the build/smoke/publish scripts or CI: see [Kit images](#kit-images-optimization-exact-and-fast).
+
 Dockerfiles are the canonical image definition for all runtimes. Docker/Apptainer images are built from these Dockerfiles, and Modal pulls the corresponding published model image from Docker Hub instead of maintaining a separate handwritten dependency stack. CUDA variants select the PyTorch wheel index; the runtime images rely on PyTorch/NVIDIA wheels for user-space CUDA libraries and on Docker/Apptainer GPU integration for host driver libraries.
 
 ### Tag scheme
@@ -181,6 +183,24 @@ docker build \
 ```
 
 > ESM-C and ESM3 do not have their own image — they run on the `esmfold2` image above (same Biohub `esm` package).
+
+### Kit images (`optimization="exact"` and `"fast"`)
+The kit modes need a different stack from the stock images (see [optimization.md](optimization.md)), so ESMFold2 and Protenix have a second, opt-in image each, defined next to their stock Dockerfile in a `kit/` directory. They are not built by `scripts/images/`, not smoke-tested by CI and not published: the ESMFold2 image compiles flash-attn, TransformerEngine and xformers from source (about 30 minutes on a 48-64 core builder, hours on a GitHub-hosted runner).
+
+- **Modal** builds the image from the Dockerfile in your installed boileroom the first time a kit mode is used, and caches it. This is the default (`BOILEROOM_KIT_IMAGE_SOURCE=build`).
+- **Docker/Apptainer, or your own registry**: build and push the image, then point the runtime at it:
+
+```bash
+docker build -f boileroom/models/protenix/kit/Dockerfile boileroom/models/protenix/kit -t <repository>/boileroom-protenix-kit:<tag>
+docker build -f boileroom/models/esmfold2/kit/Dockerfile boileroom/models/esmfold2/kit -t <repository>/boileroom-esmfold2-kit:<tag>
+docker push <repository>/boileroom-esmfold2-kit:<tag>
+
+export BOILEROOM_KIT_IMAGE_SOURCE=registry BOILEROOM_DOCKER_REPOSITORY=<repository> BOILEROOM_IMAGE_TAG=<tag>
+```
+
+  With `backend="apptainer"` the kit image is pulled as `docker://<repository>/boileroom-<family>-kit:<tag>` (the interpreter is `/usr/local/bin/python3.11` in the Protenix kit image, `python3.12` in the ESMFold2 one).
+
+The Dockerfile pins the kit commit; `KIT_COMMIT` in `boileroom/images/metadata.py` must match it (`tests/contracts/test_kit_images.py` checks this).
 
 ### ☁️ Push local tags to Docker Hub
 Use the helper script with `--push` to push all images after building. Authenticate first:
