@@ -67,6 +67,27 @@ ESMFOLD2_HF_REPO = "biohub/ESMFold2"
 ESMFOLD2_HF_REVISION = "69869f737beffec5294845ede23db5fc0b4f509e"
 
 
+def _a3m_rows(text: object, sequence: str) -> list[str]:
+    """Parse A3M text into aligned rows (insertions dropped), checking them against the query chain."""
+    if not isinstance(text, str) or not text.lstrip().startswith(">"):
+        raise ValueError("ESMFold2 option 'msa' entries must be A3M text or None")
+    rows: list[str] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith(">"):
+            rows.append("")
+        elif rows:
+            rows[-1] += line
+    rows = ["".join(char for char in row if not char.islower() and char != ".") for row in rows]
+    if not rows or rows[0] != sequence:
+        raise ValueError("The first A3M row must match its input protein chain")
+    if any(len(row) != len(sequence) for row in rows):
+        raise ValueError("Every A3M row must have the input chain's aligned length")
+    return rows
+
+
 class ESMFold2Core(FoldingAlgorithm):
     """Biohub ESMFold2 all-atom structure prediction model."""
 
@@ -79,6 +100,7 @@ class ESMFold2Core(FoldingAlgorithm):
         "ccd_cache_dir": None,
         "dtype": None,
         "optimization": "vanilla",
+        "kit_msa": False,
         "num_loops": 3,
         "num_sampling_steps": 50,
         "num_diffusion_samples": 1,
@@ -91,10 +113,15 @@ class ESMFold2Core(FoldingAlgorithm):
         "msa_column_mask_rate": 0.1,
         "complex_id": "pred",
         "include_fields": None,
+        "msa": None,
+        "templates": None,
     }
     STATIC_CONFIG_KEYS: ClassVar[frozenset[str]] = frozenset(
-        {"device", "model_name", "revision", "cache_dir", "ccd_cache_dir", "dtype", "optimization"}
+        {"device", "model_name", "revision", "cache_dir", "ccd_cache_dir", "dtype", "optimization", "kit_msa"}
     )
+    #: ``options["msa"]`` is one A3M text (or None) per entry of the input's ``sequences``; templates are not supported.
+    SUPPORTS_USER_MSA: ClassVar[bool] = True
+    SUPPORTS_USER_TEMPLATES: ClassVar[bool] = False
 
     def __init__(self, config: dict | None = None) -> None:
         """Create an ESMFold2 core instance."""
@@ -170,8 +197,14 @@ class ESMFold2Core(FoldingAlgorithm):
         self.ready = True
 
     def _kit_variant(self) -> str:
-        """Kit variant for the loaded checkpoint; the bakeoff workload folds without an MSA."""
-        return "fast" if str(self.config["model_name"]).endswith("ESMFold2-Fast") else "full_nomsa"
+        """Kit variant for the loaded checkpoint.
+
+        The kit arms one variant per process, before any request is seen, so MSA use is chosen at construction:
+        ``kit_msa=True`` selects ``full_msa``; the default ``full_nomsa`` matches the MSA-free bakeoff workload.
+        """
+        if str(self.config["model_name"]).endswith("ESMFold2-Fast"):
+            return "fast"
+        return "full_msa" if self.config["kit_msa"] else "full_nomsa"
 
     def _activate_optimization(self) -> None:
         """Resolve ``optimization`` on this GPU and arm the kit; runs before any weights load."""
@@ -235,6 +268,12 @@ class ESMFold2Core(FoldingAlgorithm):
         effective_config = self._merge_options(options)
         self._validate_effective_config(effective_config)
         requests = self._coerce_requests(sequences)
+        user_msa = effective_config.get("msa")
+        if user_msa:
+            self._check_kit_consumes_msa(effective_config)
+            if len(requests) != 1:
+                raise ValueError("ESMFold2 option 'msa' applies to exactly one input structure, not a batch.")
+            requests = [self._attach_user_msa(requests[0], user_msa)]
 
         if self.model is None or self.input_builder is None:
             logger.warning("Model not loaded. Forcing the model to load... Next time call _load() first.")
@@ -359,11 +398,47 @@ class ESMFold2Core(FoldingAlgorithm):
             if not isinstance(value, int | float) or isinstance(value, bool) or not math.isfinite(float(value)):
                 raise ValueError(f"ESMFold2 option {key!r} must be a finite number or None.")
 
+        if config.get("templates"):
+            raise ValueError("ESMFold2 does not support user-supplied 'templates'")
+
         msa_max_depth = config.get("msa_max_depth")
         if msa_max_depth is not None and (
             not isinstance(msa_max_depth, int) or isinstance(msa_max_depth, bool) or msa_max_depth < 1
         ):
             raise ValueError("ESMFold2 option 'msa_max_depth' must be a positive integer or None.")
+
+    def _check_kit_consumes_msa(self, config: dict[str, Any]) -> None:
+        """Refuse a user MSA that the armed kit variant would silently ignore."""
+        if str(config["optimization"]) == "vanilla":
+            return
+        variant = self._kit_variant()
+        if variant != "full_msa":
+            raise ValueError(
+                f"optimization={config['optimization']!r} runs the kit's {variant!r} variant, which does not consume an "
+                "MSA. Use a full-model checkpoint with config={'kit_msa': True}, or optimization='vanilla'."
+            )
+
+    def _attach_user_msa(self, request: _FoldRequest, msa: object) -> _FoldRequest:
+        """Attach ``options['msa']`` (one A3M text or None per input entry) to the protein entries."""
+        items = request.input.sequences
+        if not isinstance(msa, list | tuple) or len(msa) != len(items):
+            raise ValueError("ESMFold2 option 'msa' must have one A3M string or None per input sequence entry.")
+        attached: list[SequenceInput] = []
+        for index, (item, text) in enumerate(zip(items, msa, strict=True)):
+            if text is None:
+                attached.append(item)
+                continue
+            if not isinstance(item, ProteinInput):
+                raise ValueError(f"ESMFold2 option 'msa' entry {index} targets a non-protein input; use None.")
+            if item.msa is not None:
+                raise ValueError(
+                    f"ESMFold2 input entry {index} already carries an MSA; do not also pass options['msa']."
+                )
+            if ":" in item.sequence or "|" in item.sequence:
+                raise ValueError(f"ESMFold2 option 'msa' entry {index} needs a single-chain input entry.")
+            rows = _a3m_rows(text, item.sequence)
+            attached.append(dataclasses.replace(item, msa=MSAInput(sequences=rows)))
+        return dataclasses.replace(request, input=dataclasses.replace(request.input, sequences=attached))
 
     @staticmethod
     def _sampler_kwargs(config: dict[str, Any]) -> dict[str, Any]:
