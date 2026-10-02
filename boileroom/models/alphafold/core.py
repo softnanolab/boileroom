@@ -36,6 +36,10 @@ logger = logging.getLogger(__name__)
 class AlphaFold2MultimerCore(FoldingAlgorithm):
     """AlphaFold2-Multimer structure prediction backed by ColabFold."""
 
+    #: ``options["msa"]`` takes an ``MSAInput`` here (materialised to an A3M),
+    #: not the per-chain A3M list Protenix reads. There is no template input.
+    SUPPORTS_USER_MSA: ClassVar[bool] = True
+
     DEFAULT_CONFIG: ClassVar[dict[str, Any]] = {
         "device": None,
         "colabfold_python": "/opt/colabfold/bin/python",
