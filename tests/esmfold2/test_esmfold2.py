@@ -1,5 +1,6 @@
 """Fast ESMFold2 unit tests that do not import Biohub runtime dependencies."""
 
+import os
 import sys
 from contextlib import nullcontext
 from pathlib import Path
@@ -495,3 +496,164 @@ def test_esmfold2_wrapper_forwards_msa_option_to_the_core(monkeypatch: pytest.Mo
     monkeypatch.setattr(model, "_call_backend_method", fake_call)
     model.fold("ACD", options={"msa": [A3M]})
     assert captured["options"] == {"msa": [A3M]}
+
+
+A100_GPU = SimpleNamespace(name="NVIDIA A100-SXM4-80GB", capability=(8, 0))
+
+
+def _fake_kit(
+    monkeypatch: pytest.MonkeyPatch,
+    files: dict[str, list[str]],
+    install_rc: int = 0,
+    enable_report: dict | None = None,
+) -> SimpleNamespace:
+    """Install a stand-in ``esmfold2_opt`` whose pins name ``files`` (repo -> file names); returns its call log."""
+    log = SimpleNamespace(installs=[], enables=[])
+    pins = {
+        "weights": {
+            repo: {"snapshot_commit": "c" * 40, "files": dict.fromkeys(names, {})} for repo, names in files.items()
+        }
+    }
+
+    def pinned_weight_files(pins_: dict, variant: str | None) -> list[tuple[str, str, int]]:
+        repos = {"biohub/ESMC-6B", "biohub/ESMFold2-Fast" if variant == "fast" else "biohub/ESMFold2"}
+        return [
+            (repo, f"hub/models--{repo.replace('/', '--')}/snapshots/{'c' * 40}/{name}", 1)
+            for repo in sorted(repos & set(pins_["weights"]))
+            for name in pins_["weights"][repo]["files"]
+        ]
+
+    def install_weights(hf_home: str, pins: dict | None = None) -> int:
+        log.installs.append((hf_home, pins))
+        return install_rc
+
+    def enable(mode: str, variant: str | None = None) -> dict:
+        log.enables.append((mode, variant))
+        return enable_report or {"active": True}
+
+    kit = SimpleNamespace(
+        stack=SimpleNamespace(pins=lambda: pins, pinned_weight_files=pinned_weight_files),
+        weights=SimpleNamespace(install_weights=install_weights),
+        enable=enable,
+    )
+    monkeypatch.setitem(sys.modules, "esmfold2_opt", kit)
+    return log
+
+
+FILES = {
+    "biohub/ESMC-6B": ["model.safetensors"],
+    "biohub/ESMFold2": ["model.safetensors", "ccd.pkl"],
+    "biohub/ESMFold2-Fast": ["model.safetensors"],
+}
+
+
+def test_esmfold2_kit_weights_are_fetched_for_the_variant_only(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A fresh model directory gets the pinned snapshots of the variant's repos and the language model, nothing else."""
+    log = _fake_kit(monkeypatch, FILES)
+    core = _core_cls()(config={"device": "cpu", "optimization": "exact"})
+
+    core._ensure_kit_weights(tmp_path)
+
+    assert len(log.installs) == 1
+    hf_home, pins = log.installs[0]
+    assert hf_home == str(tmp_path)
+    assert set(pins["weights"]) == {"biohub/ESMC-6B", "biohub/ESMFold2"}
+
+
+def test_esmfold2_kit_weights_for_the_fast_checkpoint_skip_the_full_model(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    log = _fake_kit(monkeypatch, FILES)
+    core = _core_cls()(config={"device": "cpu", "optimization": "fast", "model_name": "biohub/ESMFold2-Fast"})
+
+    core._ensure_kit_weights(tmp_path)
+
+    assert set(log.installs[0][1]["weights"]) == {"biohub/ESMC-6B", "biohub/ESMFold2-Fast"}
+
+
+def test_esmfold2_kit_weights_already_in_place_are_not_fetched_again(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    log = _fake_kit(monkeypatch, FILES)
+    core = _core_cls()(config={"device": "cpu", "optimization": "exact"})
+    for repo in ("biohub/ESMC-6B", "biohub/ESMFold2"):
+        for name in FILES[repo]:
+            path = tmp_path / "hub" / f"models--{repo.replace('/', '--')}" / "snapshots" / ("c" * 40) / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"")
+
+    core._ensure_kit_weights(tmp_path)
+
+    assert log.installs == []
+
+
+def test_esmfold2_kit_weights_that_fail_to_install_refuse_the_mode(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from boileroom.optimization import OptimizationUnavailableError
+
+    _fake_kit(monkeypatch, FILES, install_rc=1)
+    core = _core_cls()(config={"device": "cpu", "optimization": "exact"})
+
+    with pytest.raises(OptimizationUnavailableError, match="pinned ESMFold2 kit weights"):
+        core._ensure_kit_weights(tmp_path)
+
+
+def test_esmfold2_kit_home_defaults_to_the_model_directory(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """The kit's HF_HOME is set before the kit is imported, under the model volume so the weights persist."""
+    core_module = pytest.importorskip("boileroom.models.esmfold2.core")
+    log = _fake_kit(monkeypatch, FILES)
+    monkeypatch.setenv("HF_HOME", "placeholder")
+    monkeypatch.delenv("HF_HOME")
+    monkeypatch.setattr(core_module, "detect_gpu", lambda device: A100_GPU)
+    core = core_module.ESMFold2Core(config={"device": "cpu", "optimization": "exact"})
+    core.model_dir = str(tmp_path)
+    monkeypatch.setattr(core, "_ensure_kit_weights", lambda hf_home: log.installs.append(hf_home))
+
+    core._activate_optimization()
+
+    expected = tmp_path / core_module.KIT_HF_SUBDIR
+    assert log.installs == [expected]
+    assert log.enables == [("exact", "full_nomsa")]
+    assert core.optimization is not None and core.optimization.active == "exact"
+    assert os.environ["HF_HOME"] == str(expected)
+
+
+def test_esmfold2_kit_home_respects_a_configured_hf_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    core_module = pytest.importorskip("boileroom.models.esmfold2.core")
+    log = _fake_kit(monkeypatch, FILES)
+    monkeypatch.setenv("HF_HOME", str(tmp_path / "mine"))
+    monkeypatch.setattr(core_module, "detect_gpu", lambda device: A100_GPU)
+    core = core_module.ESMFold2Core(config={"device": "cpu", "optimization": "exact"})
+    core.model_dir = str(tmp_path)
+    monkeypatch.setattr(core, "_ensure_kit_weights", lambda hf_home: log.installs.append(hf_home))
+
+    core._activate_optimization()
+
+    assert log.installs == [tmp_path / "mine"]
+
+
+def test_esmfold2_vanilla_never_touches_the_kit_or_hf_home(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HF_HOME", "placeholder")
+    monkeypatch.delenv("HF_HOME")
+    monkeypatch.delitem(sys.modules, "esmfold2_opt", raising=False)
+    core = _core_cls()(config={"device": "cpu"})
+
+    core._activate_optimization()
+
+    assert "HF_HOME" not in os.environ
+    assert "esmfold2_opt" not in sys.modules
+
+
+def test_esmfold2_kit_that_does_not_activate_is_refused(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from boileroom.optimization import OptimizationUnavailableError
+
+    core_module = pytest.importorskip("boileroom.models.esmfold2.core")
+    _fake_kit(monkeypatch, FILES, enable_report={"active": False, "reason": "no flash-attn"})
+    monkeypatch.setenv("HF_HOME", str(tmp_path))
+    monkeypatch.setattr(core_module, "detect_gpu", lambda device: A100_GPU)
+    core = core_module.ESMFold2Core(config={"device": "cpu", "optimization": "exact"})
+    monkeypatch.setattr(core, "_ensure_kit_weights", lambda hf_home: None)
+
+    with pytest.raises(OptimizationUnavailableError, match="no flash-attn"):
+        core._activate_optimization()
