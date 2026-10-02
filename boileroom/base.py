@@ -74,6 +74,13 @@ class Algorithm(ABC):
     # Static config keys that can only be set at initialization and cannot be overridden per-call
     STATIC_CONFIG_KEYS: ClassVar[frozenset[str]] = frozenset()
 
+    #: Capability flags for the shared optional folding inputs. ``msa`` is A3M
+    #: text per chain; ``templates`` maps a name to mmCIF text. A wrapper that
+    #: sets a flag must translate the input to its model's native form; one
+    #: that does not is refused by ``_merge_options`` rather than ignored.
+    SUPPORTS_USER_MSA: ClassVar[bool] = False
+    SUPPORTS_USER_TEMPLATES: ClassVar[bool] = False
+
     def __init__(self, config: dict | None = None) -> None:
         """Initialize the algorithm instance and set its default runtime attributes.
 
@@ -170,6 +177,11 @@ class Algorithm(ABC):
             raise ValueError(
                 f"The following config keys can only be set at initialization and cannot be overridden per-call: {sorted(conflicting_keys)}"
             )
+
+        for key, flag in (("msa", "SUPPORTS_USER_MSA"), ("templates", "SUPPORTS_USER_TEMPLATES")):
+            if options.get(key) and not getattr(self, flag, False):
+                name = getattr(self, "DISPLAY_NAME", type(self).__name__)
+                raise ValueError(f"{name} does not support user-supplied {key!r}")
 
         # Merge: static config (from self.config) + dynamic options
         return {**self.config, **options}

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, ClassVar, cast
@@ -29,6 +30,8 @@ class OpenDDECore(ProtenixCore):
     }
     STATIC_CONFIG_KEYS: ClassVar[frozenset[str]] = ProtenixCore.STATIC_CONFIG_KEYS | {"opendde_python"}
     FAMILY: ClassVar[str] = "opendde"
+    SUPPORTS_USER_MSA: ClassVar[bool] = False
+    SUPPORTS_USER_TEMPLATES: ClassVar[bool] = False
     DISPLAY_NAME: ClassVar[str] = "OpenDDE"
     ROOT_ENV: ClassVar[str] = "OPENDDE_ROOT_DIR"
     RUNTIME_CLASS: ClassVar[str] = "OpenDDERuntime"
@@ -60,4 +63,8 @@ def _command_env(config: dict[str, Any], optimization: OptimizationResolution | 
     # The kit's exact/fast levers assume upstream's fused LayerNorm extension (built once with nvcc);
     # it is also the faster vanilla path, so every mode uses it.
     env.setdefault("LAYERNORM_TYPE", "fast_layernorm")
+    # The kit's ``exact`` kernels need GLIBCXX_3.4.32 (GCC 13). That libstdc++ lives in the venv's ``lib`` and is
+    # visible to this worker only: a global LD_LIBRARY_PATH entry would also load it into the system Python 3.12.
+    venv_lib = Path(str(config["opendde_python"])).parent.parent / "lib"
+    env["LD_LIBRARY_PATH"] = os.pathsep.join(filter(None, [str(venv_lib), env.get("LD_LIBRARY_PATH", "")]))
     return env

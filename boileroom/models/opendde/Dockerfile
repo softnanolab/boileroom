@@ -5,21 +5,17 @@ ARG TARGETOS
 ARG BUILDPLATFORM
 ARG BASE_IMAGE=docker.io/jakublala/boileroom-base:local
 
-# libstdc++ from GCC 13+: the kit's bit-exact ``exact`` kernels are linked against GLIBCXX_3.4.32. The base image's
-# glibc is 2.36 (bookworm) and distro builds of GCC 13+ need newer glibc, so take the conda-forge build (glibc >= 2.17)
-# that the kit itself pins in its lock files, verified by checksum.
+# libstdc++ from GCC 13+: the kit's bit-exact ``exact`` kernels are linked against GLIBCXX_3.4.32. Take it from
+# conda-forge, which builds against an old glibc: Ubuntu 24.04's copy needs glibc 2.38 and cannot load on the
+# Debian bookworm (glibc 2.36) base.
 FROM debian:bookworm-slim AS libstdcxx
-ARG LIBSTDCXX_URL=https://conda.anaconda.org/conda-forge/linux-64/libstdcxx-15.2.0-h934c35e_19.conda
-ARG LIBSTDCXX_SHA256=dff1058c76ec6b8759e41cefa2508162d00e4a5e6721aa68ec3fd10094e702dc
 RUN apt-get update --quiet \
-    && apt-get install --no-install-recommends --yes --quiet ca-certificates curl unzip zstd tar \
-    && curl -fsSL -o /tmp/libstdcxx.conda "${LIBSTDCXX_URL}" \
-    && echo "${LIBSTDCXX_SHA256}  /tmp/libstdcxx.conda" | sha256sum -c - \
-    && unzip -q /tmp/libstdcxx.conda -d /tmp/libstdcxx \
+    && apt-get install --no-install-recommends --yes --quiet curl bzip2 ca-certificates \
+    && curl -fsSL https://micro.mamba.pm/api/micromamba/linux-64/latest | tar -xj -C /usr/local bin/micromamba \
+    && MAMBA_ROOT_PREFIX=/tmp/mamba micromamba create --yes --quiet --prefix /tmp/cf --channel conda-forge \
+        --override-channels "libstdcxx>=13" "libgcc>=13" \
     && mkdir -p /out \
-    && zstd -dc /tmp/libstdcxx/pkg-*.tar.zst | tar -x -C /tmp/libstdcxx lib/libstdc++.so.6.0.34 \
-    && cp /tmp/libstdcxx/lib/libstdc++.so.6.0.34 /out/libstdc++.so.6 \
-    && grep -aq GLIBCXX_3.4.32 /out/libstdc++.so.6
+    && cp -aL /tmp/cf/lib/libstdc++.so.6 /tmp/cf/lib/libgcc_s.so.1 /out/
 
 FROM ${BASE_IMAGE}
 
@@ -60,14 +56,17 @@ RUN --mount=type=cache,id=${UV_CACHE_ID}-pip,target=/root/.cache/pip \
     && rm /tmp/stack.txt
 
 # Copied after the venv exists: ``uv venv`` refuses to create a venv in a directory that is already present.
-COPY --from=libstdcxx /out/libstdc++.so.6 /opt/opendde/lib/libstdc++.so.6
+# Not on the image-wide LD_LIBRARY_PATH: that would load it into the system Python 3.12 too. The core adds
+# ``/opt/opendde/lib`` to the worker environment only.
+COPY --from=libstdcxx /out/ /opt/opendde/lib/
 
 # Fail the build early if the stack, the kit or the runner cannot be imported.
-RUN "${OPENDDE_HOME}/bin/python" -c "import opendde_opt, runner.batch_inference"
+RUN LD_LIBRARY_PATH="${OPENDDE_HOME}/lib" "${OPENDDE_HOME}/bin/python" -c "import opendde_opt, runner.batch_inference" \
+    && python -c "import numpy"
 
 ENV CUDA_HOME=/usr/local/cuda-12.6 \
     PATH=/usr/local/cuda-12.6/bin:${PATH} \
-    LD_LIBRARY_PATH=/opt/opendde/lib:/usr/local/nvidia/lib64:/usr/local/nvidia/lib \
+    LD_LIBRARY_PATH=/usr/local/nvidia/lib64:/usr/local/nvidia/lib \
     MODEL_OPT=/kit/opendde \
     LAYERNORM_TYPE=fast_layernorm \
     HF_HUB_ENABLE_HF_TRANSFER=1 \

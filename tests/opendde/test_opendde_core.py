@@ -129,6 +129,25 @@ def test_command_env(module, monkeypatch, tmp_path: Path) -> None:
     assert "MODEL_OPT_TARGET_GPU" not in env
 
 
+def test_worker_env_scopes_gcc13_libstdcxx_to_the_venv(module, monkeypatch, tmp_path: Path) -> None:
+    """The venv's libstdc++ directory leads the worker's library path, ahead of any inherited entries."""
+    monkeypatch.setenv("MODEL_DIR", str(tmp_path))
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/usr/local/nvidia/lib64")
+    config = {**module.OpenDDECore().config, "opendde_python": "/opt/opendde/bin/python"}
+    assert module._command_env(config)["LD_LIBRARY_PATH"] == "/opt/opendde/lib:/usr/local/nvidia/lib64"
+    monkeypatch.delenv("LD_LIBRARY_PATH")
+    assert module._command_env(config)["LD_LIBRARY_PATH"] == "/opt/opendde/lib"
+
+
+def test_dockerfile_keeps_libstdcxx_off_the_global_library_path() -> None:
+    """Ubuntu's libstdc++ on the image-wide path broke the system Python (glibc 2.38 vs 2.36)."""
+    dockerfile = (Path(__file__).parents[2] / "boileroom/models/opendde/Dockerfile").read_text()
+    env_lines = [line for line in dockerfile.splitlines() if "LD_LIBRARY_PATH=" in line and "RUN" not in line]
+    assert env_lines
+    assert all("/opt/opendde/lib" not in line for line in env_lines)
+    assert "ubuntu:24.04" not in dockerfile
+
+
 def test_kit_env_names_the_resolved_gpu(module, monkeypatch, tmp_path: Path) -> None:
     """Kit modes pass the resolved kit config to the worker."""
     from boileroom.optimization import GpuInfo, resolve_optimization
