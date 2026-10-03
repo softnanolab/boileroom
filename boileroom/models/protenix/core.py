@@ -152,7 +152,6 @@ class ProtenixCore(FoldingAlgorithm):
             self._metadata_template,
             model_version=str(effective_config["model_name"]),
             sequence_lengths=self._compute_sequence_lengths(validated_sequences),
-            optimization=self.optimization.to_dict() if self.optimization else None,
         )
 
         with TemporaryDirectory() as buffer_dir:
@@ -180,6 +179,8 @@ class ProtenixCore(FoldingAlgorithm):
                     {**effective_config, "templates": None, "template_staging": staged},
                 )
 
+            # Resolved by the first load, so it is only known once inference has started the worker.
+            metadata.optimization = self.optimization.to_dict() if self.optimization else None
             with Timer(f"{self.DISPLAY_NAME} postprocessing") as postprocess_timer:
                 output = self._collect_outputs(output_dir, metadata, effective_config)
 

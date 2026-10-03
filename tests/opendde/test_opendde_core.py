@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 from unittest.mock import Mock
 
@@ -129,7 +130,9 @@ def test_command_env(module, monkeypatch, tmp_path: Path) -> None:
     assert "MODEL_OPT_TARGET_GPU" not in env
 
 
-def test_worker_env_scopes_gcc13_libstdcxx_to_the_venv(module, monkeypatch, tmp_path: Path) -> None:
+def test_worker_env_scopes_gcc13_libstdcxx_to_the_venv(
+    module: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     """The venv's libstdc++ directory leads the worker's library path, ahead of any inherited entries."""
     monkeypatch.setenv("MODEL_DIR", str(tmp_path))
     monkeypatch.setenv("LD_LIBRARY_PATH", "/usr/local/nvidia/lib64")
@@ -199,6 +202,5 @@ def test_metadata_records_optimization(module, monkeypatch, tmp_path: Path) -> N
     core = module.OpenDDECore({"optimization": "exact"})
     seen: dict[str, Any] = {}
     core._collect_outputs = lambda output, metadata, config: seen.setdefault("m", metadata) and Mock(metadata=metadata)
-    core._initialize()
-    core.fold("AAAA")
+    core.fold("AAAA")  # first fold: the optimization is resolved by this call's own load
     assert seen["m"].optimization["active"] == "exact" and seen["m"].optimization["kit_config"] == "a100"

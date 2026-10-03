@@ -84,6 +84,8 @@ def validate_optimization(mode: object) -> str:
 
 def detect_gpu(device: str | None = None) -> GpuInfo:
     """Read name and compute capability of the CUDA device the model will run on."""
+    if device is not None and not device.startswith("cuda"):
+        raise OptimizationUnavailableError(f"optimization exact/fast runs on a CUDA GPU, not on device={device!r}")
     index = int(device.split(":")[1]) if device and device.startswith("cuda:") else 0
     try:
         import torch

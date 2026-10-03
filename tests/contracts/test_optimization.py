@@ -68,6 +68,13 @@ def test_kit_modes_refused_by_name_on_sm89(family: str, mode: str, gpu: GpuInfo)
         resolve_optimization(family, mode, gpu)
 
 
+def test_kit_mode_rejects_cpu_device() -> None:
+    from boileroom.optimization import detect_gpu
+
+    with pytest.raises(OptimizationUnavailableError, match="not on device='cpu'"):
+        detect_gpu("cpu")
+
+
 def test_kit_mode_needs_a_gpu() -> None:
     with pytest.raises(OptimizationUnavailableError, match="needs a GPU"):
         resolve_optimization("protenix", "exact", None)
