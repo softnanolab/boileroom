@@ -162,10 +162,19 @@ def test_vanilla_init_failure_still_raises() -> None:
         initialize_core(_FailingCore("vanilla", RuntimeError("weights missing")))
 
 
-def test_init_success_and_unrelated_errors() -> None:
+def test_init_success_returns_none() -> None:
     assert initialize_core(_FailingCore("exact", None)) is None
-    with pytest.raises(ValueError, match="bad config"):
-        initialize_core(_FailingCore("exact", ValueError("bad config")))
+
+
+@pytest.mark.parametrize("error", [ValueError("bad config"), TypeError("unexpected keyword argument")])
+def test_kit_mode_any_init_failure_is_returned(error: Exception) -> None:
+    """A load error of any type would otherwise restart-loop the Modal container."""
+    assert initialize_core(_FailingCore("fast", error)) is error
+
+
+def test_vanilla_init_failure_of_any_type_raises() -> None:
+    with pytest.raises(TypeError, match="boom"):
+        initialize_core(_FailingCore("vanilla", TypeError("boom")))
 
 
 @pytest.mark.parametrize("module", ["esmfold2.esmfold2", "protenix.protenix", "opendde.opendde"])

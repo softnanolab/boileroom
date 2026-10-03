@@ -498,6 +498,15 @@ def test_esmfold2_wrapper_forwards_msa_option_to_the_core(monkeypatch: pytest.Mo
     assert captured["options"] == {"msa": [A3M]}
 
 
+@pytest.fixture
+def offline_calls(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Count ``_go_offline`` calls without flipping the real Hugging Face switches for the rest of the session."""
+    calls: list[int] = []
+    core_module = pytest.importorskip("boileroom.models.esmfold2.core")
+    monkeypatch.setattr(core_module.ESMFold2Core, "_go_offline", staticmethod(lambda: calls.append(1)))
+    return calls
+
+
 A100_GPU = SimpleNamespace(name="NVIDIA A100-SXM4-80GB", capability=(8, 0))
 
 
@@ -510,9 +519,10 @@ def _fake_kit(
     """Install a stand-in ``esmfold2_opt`` whose pins name ``files`` (repo -> file names); returns its call log."""
     log = SimpleNamespace(installs=[], enables=[])
     pins = {
+        "ccd": {"repo": "biohub/ESMFold2", "file": "ccd.pkl"},
         "weights": {
             repo: {"snapshot_commit": "c" * 40, "files": dict.fromkeys(names, {})} for repo, names in files.items()
-        }
+        },
     }
 
     def pinned_weight_files(pins_: dict, variant: str | None) -> list[tuple[str, str, int]]:
@@ -558,6 +568,7 @@ def test_esmfold2_kit_weights_are_fetched_for_the_variant_only(monkeypatch: pyte
     hf_home, pins = log.installs[0]
     assert hf_home == str(tmp_path)
     assert set(pins["weights"]) == {"biohub/ESMC-6B", "biohub/ESMFold2"}
+    assert set(pins["weights"]["biohub/ESMFold2"]["files"]) == {"model.safetensors", "ccd.pkl"}
 
 
 def test_esmfold2_kit_weights_for_the_fast_checkpoint_skip_the_full_model(
@@ -568,7 +579,11 @@ def test_esmfold2_kit_weights_for_the_fast_checkpoint_skip_the_full_model(
 
     core._ensure_kit_weights(tmp_path)
 
-    assert set(log.installs[0][1]["weights"]) == {"biohub/ESMC-6B", "biohub/ESMFold2-Fast"}
+    weights = log.installs[0][1]["weights"]
+    assert set(weights) == {"biohub/ESMC-6B", "biohub/ESMFold2-Fast", "biohub/ESMFold2"}
+    # The Fast repository ships no ccd.pkl, so the full repository contributes that file alone.
+    assert set(weights["biohub/ESMFold2"]["files"]) == {"ccd.pkl"}
+    assert set(weights["biohub/ESMFold2-Fast"]["files"]) == {"model.safetensors"}
 
 
 def test_esmfold2_kit_weights_already_in_place_are_not_fetched_again(
@@ -599,7 +614,9 @@ def test_esmfold2_kit_weights_that_fail_to_install_refuse_the_mode(
         core._ensure_kit_weights(tmp_path)
 
 
-def test_esmfold2_kit_home_defaults_to_the_model_directory(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_esmfold2_kit_home_defaults_to_the_model_directory(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, offline_calls: list[int]
+) -> None:
     """The kit's HF_HOME is set before the kit is imported, under the model volume so the weights persist."""
     core_module = pytest.importorskip("boileroom.models.esmfold2.core")
     log = _fake_kit(monkeypatch, FILES)
@@ -617,9 +634,12 @@ def test_esmfold2_kit_home_defaults_to_the_model_directory(monkeypatch: pytest.M
     assert log.enables == [("exact", "full_nomsa")]
     assert core.optimization is not None and core.optimization.active == "exact"
     assert os.environ["HF_HOME"] == str(expected)
+    assert offline_calls == [1]  # the kit's snapshots are served from disk once they are fetched
 
 
-def test_esmfold2_kit_home_respects_a_configured_hf_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_esmfold2_kit_home_respects_a_configured_hf_home(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, offline_calls: list[int]
+) -> None:
     core_module = pytest.importorskip("boileroom.models.esmfold2.core")
     log = _fake_kit(monkeypatch, FILES)
     monkeypatch.setenv("HF_HOME", str(tmp_path / "mine"))
@@ -645,7 +665,9 @@ def test_esmfold2_vanilla_never_touches_the_kit_or_hf_home(monkeypatch: pytest.M
     assert "esmfold2_opt" not in sys.modules
 
 
-def test_esmfold2_kit_that_does_not_activate_is_refused(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_esmfold2_kit_that_does_not_activate_is_refused(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, offline_calls: list[int]
+) -> None:
     from boileroom.optimization import OptimizationUnavailableError
 
     core_module = pytest.importorskip("boileroom.models.esmfold2.core")
@@ -657,3 +679,33 @@ def test_esmfold2_kit_that_does_not_activate_is_refused(monkeypatch: pytest.Monk
 
     with pytest.raises(OptimizationUnavailableError, match="no flash-attn"):
         core._activate_optimization()
+
+
+def test_esmfold2_go_offline_flips_already_imported_hub_modules(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The weight fetch imports huggingface_hub online, so setting the env vars alone would come too late."""
+    core_module = pytest.importorskip("boileroom.models.esmfold2.core")
+    constants = SimpleNamespace(HF_HUB_OFFLINE=False)
+    hub = SimpleNamespace(_is_offline_mode=False)
+    monkeypatch.setitem(sys.modules, "huggingface_hub.constants", constants)
+    monkeypatch.setitem(sys.modules, "transformers.utils.hub", hub)
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising=False)
+
+    core_module.ESMFold2Core._go_offline()
+
+    assert os.environ["HF_HUB_OFFLINE"] == os.environ["TRANSFORMERS_OFFLINE"] == "1"
+    assert constants.HF_HUB_OFFLINE is True and hub._is_offline_mode is True
+    monkeypatch.delenv("HF_HUB_OFFLINE")
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE")
+
+
+@pytest.mark.parametrize("model_name", ["biohub/ESMFold2", "biohub/ESMFold2-Fast"])
+def test_esmfold2_kit_ccd_comes_from_the_pinned_snapshot(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, model_name: str
+) -> None:
+    """Kit mode reads ccd.pkl beside the kit weights, never fetching from the hub (it is offline by then)."""
+    _fake_kit(monkeypatch, FILES)
+    monkeypatch.setenv("HF_HOME", str(tmp_path))
+    core = _core_cls()(config={"device": "cpu", "optimization": "fast", "model_name": model_name})
+
+    assert core._kit_ccd_dir() == tmp_path / "hub" / "models--biohub--ESMFold2" / "snapshots" / ("c" * 40)

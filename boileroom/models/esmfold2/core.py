@@ -6,6 +6,7 @@ import dataclasses
 import logging
 import math
 import os
+import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from functools import partial
@@ -193,7 +194,7 @@ class ESMFold2Core(FoldingAlgorithm):
         self._device = self._resolve_device()
         self.model = self.model.to(self._device)
         self.model.eval()
-        ccd_cache_dir = self._ensure_ccd_cache(ccd_cache_dir)
+        ccd_cache_dir = self._kit_ccd_dir() if kit else self._ensure_ccd_cache(ccd_cache_dir)
         self.input_builder = ESMFold2InputBuilder(ccd_cache=ccd_cache_dir)
         self._configure_optimization()
         self.ready = True
@@ -224,30 +225,74 @@ class ESMFold2Core(FoldingAlgorithm):
                 f"optimization={mode!r} needs the esmfold2 kit image (esmfold2_opt is not installed here)"
             ) from error
         self._ensure_kit_weights(hf_home)
+        self._go_offline()
         report = esmfold2_opt.enable(mode, variant=self._kit_variant())
         if not report.get("active"):
             raise OptimizationUnavailableError(
                 f"optimization={mode!r} did not activate on {gpu.name if gpu else 'this GPU'}: {report.get('reason')}"
             )
 
+    @staticmethod
+    def _go_offline() -> None:
+        """Serve the kit's frozen snapshots from disk only, as the kit's own launcher does.
+
+        ``from_pretrained("biohub/ESMFold2")`` asks for ``main``; online it resolves upstream's newest commit, downloads
+        it and repoints ``refs/main`` at it, which this kit's transformers fork cannot parse. ``huggingface_hub`` and
+        ``transformers`` read the switches when they are imported, and the weight fetch above has imported them with the
+        switches lifted, so the already-imported modules are flipped as well.
+        """
+        for var in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"):
+            os.environ[var] = "1"
+        for module, attribute in (
+            ("huggingface_hub.constants", "HF_HUB_OFFLINE"),
+            ("transformers.utils.hub", "_is_offline_mode"),
+        ):
+            if module in sys.modules and hasattr(sys.modules[module], attribute):
+                setattr(sys.modules[module], attribute, True)
+
+    def _kit_ccd_dir(self) -> Path:
+        """Directory holding the kit's pinned ``ccd.pkl`` (fetched with the kit weights)."""
+        from esmfold2_opt import stack
+
+        return (Path(os.environ["HF_HOME"]) / self._kit_ccd(stack.pins())[1]).parent
+
+    @staticmethod
+    def _kit_ccd(pins: dict[str, Any]) -> tuple[str, str]:
+        """(repo, path under ``HF_HOME``) of the kit's pinned ``ccd.pkl``, which the Fast variant's own repo lacks."""
+        repo, name = pins["ccd"]["repo"], pins["ccd"]["file"]
+        snapshot = pins["weights"][repo]["snapshot_commit"]
+        return repo, str(Path("hub") / f"models--{repo.replace('/', '--')}" / "snapshots" / snapshot / name)
+
     def _ensure_kit_weights(self, hf_home: Path) -> None:
         """Fetch the kit's pinned checkpoints into ``hf_home`` unless the variant's files are already there.
 
         The kit loads frozen snapshots (not boileroom's pinned revision) and refuses to start without them; the image
-        carries none. Only the repositories the variant loads are fetched (the ESMC language model and the variant's own).
-        A present file is not fetched again, and a fetch that fails or leaves a file off its pin raises.
+        carries none. Only what the variant loads is fetched: the ESMC language model, the variant's own repository and
+        the pinned ``ccd.pkl``. A present file is not fetched again, and a fetch that fails or leaves a file off its pin
+        raises.
         """
         from esmfold2_opt import stack, weights
 
         pins = stack.pins()
         variant = self._kit_variant()
-        files = stack.pinned_weight_files(pins, variant)
-        if all((hf_home / rel).is_file() for _, rel, _ in files):
+        paths = {(repo, rel) for repo, rel, _ in stack.pinned_weight_files(pins, variant)} | {self._kit_ccd(pins)}
+        if all((hf_home / rel).is_file() for _, rel in paths):
             return
-        needed = {repo for repo, _, _ in files}
+        wanted: dict[str, set[str]] = {}
+        for repo, rel in paths:
+            wanted.setdefault(repo, set()).add(Path(rel).name)
         logger.info(f"Fetching the pinned ESMFold2 kit weights for variant {variant!r} into {hf_home}")
         hf_home.mkdir(parents=True, exist_ok=True)
-        scoped = {**pins, "weights": {repo: files for repo, files in pins["weights"].items() if repo in needed}}
+        scoped = {
+            **pins,
+            "weights": {
+                repo: {
+                    **pins["weights"][repo],
+                    "files": {n: d for n, d in pins["weights"][repo]["files"].items() if n in names},
+                }
+                for repo, names in wanted.items()
+            },
+        }
         if weights.install_weights(str(hf_home), pins=scoped) != 0:
             raise OptimizationUnavailableError(
                 f"could not fetch the pinned ESMFold2 kit weights into {hf_home}; the files that failed are logged above"

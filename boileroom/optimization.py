@@ -35,17 +35,17 @@ class OptimizationUnavailableError(RuntimeError):
     """The requested optimization mode cannot run on this GPU or stack."""
 
 
-def initialize_core(core: Any) -> RuntimeError | None:
+def initialize_core(core: Any) -> Exception | None:
     """Run ``core._initialize()``; in a kit mode, return a refusal instead of raising it.
 
     A Modal wrapper calls this from ``@modal.enter()``. An exception raised there crashes the container and Modal
-    restarts it until the call times out, so the caller never sees why a kit mode was refused (wrong GPU, no kit in
-    the image, kit inactive). The wrapper raises the returned error from ``fold()`` instead. Vanilla failures raise
-    as before.
+    restarts it until the call times out, so the caller never sees why a kit mode failed (wrong GPU, no kit in the
+    image, kit inactive, weights that do not load). The wrapper raises the returned error from ``fold()`` instead,
+    whatever its type. Vanilla failures raise as before.
     """
     try:
         core._initialize()
-    except RuntimeError as error:
+    except Exception as error:
         if core.config.get("optimization", DEFAULT_OPTIMIZATION) == DEFAULT_OPTIMIZATION:
             raise
         return error
