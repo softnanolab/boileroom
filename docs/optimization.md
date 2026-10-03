@@ -62,8 +62,9 @@ Protenix `A100-40GB`); pass `device="H100"` (or `H200`) to run on those.
   on a smaller builder).
 - `registry`: Modal (or Apptainer, as `docker://`) pulls `<repository>/boileroom-<family>-kit:<tag>` for an image you built and
   pushed. The repository comes from `BOILEROOM_DOCKER_REPOSITORY` and the tag from `BOILEROOM_IMAGE_TAG`, as for the stock
-  images. The kit images are not published to Docker Hub by this repository's CI (the ESMFold2 compile takes hours on a
-  GitHub-hosted runner), so there is no default registry image to pull.
+  images. This repository's CI does not build the kit images (the ESMFold2 compile takes hours on a GitHub-hosted
+  runner); they are built locally and pushed by hand. Both are on `docker.io/jakublala` as `boileroom-esmfold2-kit` and
+  `boileroom-protenix-kit` under the temporary tag `sha-dc652b0`, to be retagged to the release version after merge.
 
 Apptainer only pulls from a registry, so a kit mode on the Apptainer backend needs a published image: set
 `BOILEROOM_KIT_IMAGE_SOURCE=registry` or pass `backend="apptainer:<tag>"`. Without either, boileroom refuses the call up
