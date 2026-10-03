@@ -27,8 +27,11 @@ The kit ships its own pinned stack, so `exact` and `fast` need a kit image, not 
   `ESMFold2InputBuilder.fold()`, which the kit hooks; `vanilla` keeps loading esm's `EsmFold2Model`.
 - Protenix: python 3.11, torch 2.13.0+cu130, cuequivariance 0.11.1, protenix 2.0.0, driver 580+.
   The kit is enabled inside the worker before any `protenix` import (the kit refuses late activation).
+- OpenDDE: python 3.11, torch 2.7.1+cu126, cuequivariance 0.10.0, opendde 1.1.1, CUDA 12.6 `nvcc` and gcc at run time
+  (Triton JIT), libstdc++ from GCC 13 for `exact`, driver 560+. Unlike the other two families it has no separate kit image: the
+  stock `boileroom-opendde` image installs the pinned kit commit, and the kit is enabled in the worker before `runner` is imported.
 
-For ESMFold2 and Protenix the repository carries the definition of that image, and `optimization="vanilla"` never
+For ESMFold2 and Protenix the repository carries the definition of that separate kit image, and `optimization="vanilla"` never
 touches it:
 
 | Family | Dockerfile | Image name | Base |
@@ -61,6 +64,10 @@ Protenix `A100-40GB`); pass `device="H100"` (or `H200`) to run on those.
   pushed. The repository comes from `BOILEROOM_DOCKER_REPOSITORY` and the tag from `BOILEROOM_IMAGE_TAG`, as for the stock
   images. The kit images are not published to Docker Hub by this repository's CI (the ESMFold2 compile takes hours on a
   GitHub-hosted runner), so there is no default registry image to pull.
+
+Apptainer only pulls from a registry, so a kit mode on the Apptainer backend needs a published image: set
+`BOILEROOM_KIT_IMAGE_SOURCE=registry` or pass `backend="apptainer:<tag>"`. Without either, boileroom refuses the call up
+front instead of failing on a pull that cannot succeed.
 
 To build an image yourself on a many-core machine and use it from Modal or Apptainer:
 
@@ -110,11 +117,6 @@ not checked.
 own launcher does. Online, `from_pretrained("biohub/ESMFold2")` would resolve upstream's newest commit, which this kit's
 transformers fork cannot parse, and repoint the volume's `refs/main` at it. The kit's pinned `ccd.pkl` is read from the same
 snapshot directory.
-- OpenDDE: python 3.11, torch 2.7.1+cu126, cuequivariance 0.10.0, opendde 1.1.1, CUDA 12.6 `nvcc` and gcc at run time
-  (fused LayerNorm and Triton JIT), libstdc++ from GCC 13 for `exact`, driver 560+. The Dockerfile installs the pinned kit
-  commit; the kit is enabled in the worker before `runner` is imported.
-- ESM-C must be the 2026-06-03 snapshot (`45b0fa5d7fb0`); the 2026-09-14 re-upload renames every weight and
-  loads as uninitialised memory (NaN structures).
 
 `PredictionMetadata.optimization` records the requested and resolved mode, kit config and GPU.
 
@@ -148,9 +150,10 @@ OpenDDE rows use the same 3 complexes but boileroom's default sampler settings (
 seed, A100-80GB SXM4 / H100), so their absolute seconds are not comparable with the Protenix rows above, which used the
 bakeoff's lighter settings. The first fold of a process takes 61-78 s in every mode (weight load, plus Triton JIT and CUDA
 graph capture for the kit modes), and the kit modes add only 3-5 s to it, so they pay off from the second fold.
-The fused LayerNorm CUDA extension is not built in the current image (the worker logs "Fast LayerNorm CUDA extension is
-unavailable ... Ninja is required"), so all three modes use torch's `layer_norm`; installing ninja is the first thing to
-try for a further speed-up and would change these numbers.
+The OpenDDE image sets `LAYERNORM_TYPE=fast_layernorm` but does not install `ninja`, so upstream's fused LayerNorm CUDA
+extension cannot be built (the worker logs "Fast LayerNorm CUDA extension is unavailable ... Ninja is required") and all
+three modes use torch's `layer_norm`; installing ninja is the first thing to try for a further speed-up and would change
+these numbers.
 
 OpenDDE `exact` is not reproducible against vanilla at these settings: aligned RMSD of the same seed between vanilla and
 `exact` has a median of 0.6-2.1 A and reaches 9-13 A on the flexible ubiquitin-barnase complex. This is not a kit

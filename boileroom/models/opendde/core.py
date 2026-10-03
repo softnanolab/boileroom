@@ -58,8 +58,8 @@ def _command_env(config: dict[str, Any], optimization: OptimizationResolution | 
     env.setdefault("TRITON_CACHE_DIR", str(cache / "triton"))
     env.setdefault("TORCH_EXTENSIONS_DIR", str(cache / "torch_ext"))
     env.setdefault("MODEL_OPT_WEIGHTS_DIGEST_DIR", str(cache / "weights"))
-    # The kit's exact/fast levers assume upstream's fused LayerNorm extension (built once with nvcc);
-    # it is also the faster vanilla path, so every mode uses it.
+    # Request upstream's fused LayerNorm extension in every mode. The image has no ninja, so the extension cannot
+    # build and torch's layer_norm runs (docs/optimization.md); the measured speedups are without it.
     env.setdefault("LAYERNORM_TYPE", "fast_layernorm")
     # The kit's ``exact`` kernels need GLIBCXX_3.4.32 (GCC 13). That libstdc++ lives in the venv's ``lib`` and is
     # visible to this worker only: a global LD_LIBRARY_PATH entry would also load it into the system Python 3.12.
