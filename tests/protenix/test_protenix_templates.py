@@ -47,6 +47,52 @@ def test_stage_writes_hit_file_cif_and_release_dates(tmp_path, cif_text, query) 
     assert staged_cif["pdbx_audit_revision_history"]["revision_date"].as_array(str)[0] == TEMPLATE_RELEASE_DATE
 
 
+def _with_water(text: str) -> str:
+    """Append a water (its own entity and label_asym_id, as in any RCSB entry) to the template."""
+    from biotite.structure.io.pdbx import CIFCategory
+
+    cif = CIFFile.read(io.StringIO(text))
+    block = cif.block
+    atoms = block["atom_site"]
+    columns = {name: list(atoms[name].as_array(str)) for name in atoms}
+    for values in columns.values():
+        values.append(values[-1])
+    columns["label_asym_id"][-1] = "Z"
+    columns["auth_asym_id"][-1] = "Z"
+    columns["label_comp_id"][-1] = "HOH"
+    block["atom_site"] = CIFCategory(columns)
+    asyms = block["struct_asym"]
+    rows = {name: list(asyms[name].as_array(str)) for name in asyms}
+    for values in rows.values():
+        values.append(values[-1])
+    rows["id"][-1] = "Z"
+    rows["entity_id"][-1] = "99"
+    block["struct_asym"] = CIFCategory(rows)
+    out = io.StringIO()
+    cif.write(out)
+    return out.getvalue()
+
+
+def test_stage_ignores_waters_and_ligands_and_strips_them(tmp_path, cif_text, query) -> None:
+    staged = stage_templates({"holo": _with_water(cif_text)}, query, tmp_path)
+
+    staged_cif = CIFFile.read(Path(staged["mmcif_dir"]) / f"{template_id(0)}.cif").block
+    assert set(staged_cif["atom_site"]["label_asym_id"].as_array(str)) == {"A"}
+
+
+def test_two_polymer_chains_are_still_rejected(tmp_path, cif_text, query) -> None:
+    two = _with_water(cif_text).replace(" HOH ", " ALA ")
+    cif = CIFFile.read(io.StringIO(two))
+    block = cif.block
+    block["struct_asym"]["entity_id"] = block["struct_asym"]["entity_id"].as_array(str).tolist()[:-1] + [
+        block["struct_asym"]["entity_id"].as_array(str)[0]
+    ]
+    out = io.StringIO()
+    cif.write(out)
+    with pytest.raises(ValueError, match="exactly one polymer chain"):
+        stage_templates({"two": out.getvalue()}, query, tmp_path)
+
+
 def test_stage_rejects_unusable_templates(tmp_path, cif_text, query) -> None:
     with pytest.raises(ValueError, match="at most"):
         stage_templates({str(i): cif_text for i in range(5)}, query, tmp_path)
@@ -116,3 +162,26 @@ def test_unsupporting_models_refuse_msa_and_templates():
     for options in ({"msa": [">q\nAAAA\n"]}, {"templates": {"t": "data_x"}}):
         with pytest.raises(ValueError, match="does not support"):
             model._merge_options(options)
+
+
+def test_msa_aliases_are_one_option() -> None:
+    core = ProtenixCore()
+    a3m = [">q\nAAAA\n"]
+    assert core._resolve_msa({**core.config, "msa": a3m}) == a3m
+    assert core._resolve_msa({**core.config, "unpaired_msa": a3m}) == a3m
+    assert core._resolve_msa(core.config) is None
+    with pytest.raises(ValueError, match="not both"):
+        core._resolve_msa({**core.config, "msa": a3m, "unpaired_msa": a3m})
+
+
+def test_supplied_msa_is_refused_when_the_run_would_ignore_it() -> None:
+    core = ProtenixCore()
+    with pytest.raises(ValueError, match="needs use_msa=True"):
+        core._resolve_msa({**core.config, "use_msa": False, "msa": [">q\nAAAA\n"]})
+
+
+def test_msa_with_repeated_headers_is_validated_row_by_row(tmp_path) -> None:
+    """Search tools repeat headers; a dict-backed parser would drop rows and miss a ragged one."""
+    ragged = ">q\nAAAA\n>101\nAAAA\n>101\nAA\n"
+    with pytest.raises(ValueError, match="aligned length"):
+        ProtenixCore()._write_input_json("AAAA", tmp_path, [ragged])

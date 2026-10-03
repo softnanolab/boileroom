@@ -100,15 +100,27 @@ def _normalise_cif(text: str) -> tuple[str, str, str]:
             raise ValueError(f"mmCIF has no _{category} loop, which Protenix needs to read a template")
 
     atoms = block["atom_site"]
-    label_chains = _ordered_unique(atoms["label_asym_id"].as_array(str))
+    asyms = block["struct_asym"]
+    poly = block["entity_poly_seq"]
+    entity_of = dict(zip(asyms["id"].as_array(str), asyms["entity_id"].as_array(str), strict=False))
+    polymer_entities = set(poly["entity_id"].as_array(str))
+    # Ligands, ions and waters each carry their own label_asym_id; only polymer entities count as chains.
+    label_chains = [
+        chain
+        for chain in _ordered_unique(atoms["label_asym_id"].as_array(str))
+        if entity_of.get(chain) in polymer_entities
+    ]
     if len(label_chains) != 1:
         raise ValueError(f"expected exactly one polymer chain, found {sorted(label_chains)}")
     label_chain = label_chains[0]
+    on_chain = atoms["label_asym_id"].as_array(str) == label_chain
+    if not on_chain.all():
+        # Keep the staged structure to the template chain alone.
+        block["atom_site"] = CIFCategory({name: atoms[name].as_array(str)[on_chain] for name in atoms})
+        atoms = block["atom_site"]
     auth_chain = str(atoms["auth_asym_id"].as_array(str)[0]) if "auth_asym_id" in atoms else label_chain
 
-    asyms = block["struct_asym"]
-    entity = str(asyms["entity_id"].as_array(str)[list(asyms["id"].as_array(str)).index(label_chain)])
-    poly = block["entity_poly_seq"]
+    entity = entity_of[label_chain]
     residues = [
         (int(num), mon)
         for ent, num, mon in zip(
