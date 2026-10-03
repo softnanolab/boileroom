@@ -83,14 +83,33 @@ first kit-mode call the core downloads the snapshots for the requested variant i
 `model_weights` volume) and reuses them afterwards; a failed download raises `OptimizationUnavailableError`. Protenix keeps
 downloading its checkpoint into `PROTENIX_ROOT_DIR`, as in vanilla.
 
-**What has and has not been exercised.** The Dockerfiles, routing, builders, the Apptainer interpreter selection and the
-weight bootstrap are covered by offline contract and unit tests (`tests/contracts/test_kit_images.py`, the kit tests in
-`tests/esmfold2/test_esmfold2.py`). The benchmark numbers below were measured on images assembled from the original recipe,
-not on images built from the Dockerfiles in this repository: building them on Modal, running `exact` / `fast` through this
-repository's routing, and the Apptainer kit path still need a run on a machine with Modal or GPU access. In particular the
-Protenix Dockerfile keeps `TORCH_CUDA_ARCH_LIST="9.0+PTX"` from the benchmarked recipe, whose configured card was the H100
-(the same image served the A100 rows); whether stock's fast-LayerNorm extension, built for compute capability 9.0, is used on an
-A100 or falls back was not checked.
+**What has been exercised.** The Dockerfiles, routing, builders, the Apptainer interpreter selection and the weight bootstrap
+are covered by offline contract and unit tests (`tests/contracts/test_kit_images.py`, the kit tests in
+`tests/esmfold2/test_esmfold2.py`). On Modal, through this repository's routing and images built from the Dockerfiles here
+(2026-10-03; `PredictionMetadata.optimization` reported the requested and resolved mode, kit config and card each time):
+
+| Model | Mode and card | Cold first fold | Warm fold |
+| --- | --- | --- | --- |
+| ESMFold2 | `fast` A100, `exact` A100, `fast` H100 | 98 s, 74 s, 166 s | 0.4 s, 0.5 s, 0.4 s (vanilla A100: 1.9 s) |
+| Protenix | `fast` A100 and H100, `exact` A100 and H100, `fast` with a template (A100) | 65-208 s | `fast` 4.9 s A100 / 4.3 s H100, `exact` 3.1 s A100 / 2.3 s H100 (vanilla A100: 5.5 s) |
+| OpenDDE | `exact` and `fast` A100 | 45 s, 62 s | 4.5 s, 4.3 s (vanilla: 7.0 s, 15 folds) |
+
+The cold fold includes the model load (plus the one-off weight download the first time on a volume). ESMFold2 `fast` on A100
+gave ptm 0.173 against vanilla's 0.176 for the same sequence. OpenDDE `exact` and `fast` differ from vanilla by up to several
+angstroms of C-alpha RMSD at the same seed on two-chain complexes, but two same-seed runs of vanilla differ by 0.8-2.3 A, so
+this is the sampler's run-to-run variation, not evidence the kit is wrong; `exact` is the more repeatable (0.5 A between runs).
+Do not rely on bit-identical output to vanilla for OpenDDE.
+
+Not exercised: the Apptainer kit path, `kit_msa` for ESMFold2, a Protenix or OpenDDE kit fold with a caller-supplied MSA, and
+OpenDDE on H100. The benchmark numbers below were measured on images assembled from the original recipe. The Protenix
+Dockerfile keeps `TORCH_CUDA_ARCH_LIST="9.0+PTX"` from that recipe, whose configured card was the H100; the A100 runs above
+completed, but whether stock's fast-LayerNorm extension (built for compute capability 9.0) is used on an A100 or falls back was
+not checked.
+
+**ESMFold2 loads offline.** After the weight bootstrap the core sets `HF_HUB_OFFLINE` / `TRANSFORMERS_OFFLINE`, as the kit's
+own launcher does. Online, `from_pretrained("biohub/ESMFold2")` would resolve upstream's newest commit, which this kit's
+transformers fork cannot parse, and repoint the volume's `refs/main` at it. The kit's pinned `ccd.pkl` is read from the same
+snapshot directory.
 - OpenDDE: python 3.11, torch 2.7.1+cu126, cuequivariance 0.10.0, opendde 1.1.1, CUDA 12.6 `nvcc` and gcc at run time
   (fused LayerNorm and Triton JIT), libstdc++ from GCC 13 for `exact`, driver 560+. The Dockerfile installs the pinned kit
   commit; the kit is enabled in the worker before `runner` is imported.
