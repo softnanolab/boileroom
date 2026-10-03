@@ -36,20 +36,29 @@ class OptimizationUnavailableError(RuntimeError):
 
 
 def initialize_core(core: Any) -> Exception | None:
-    """Run ``core._initialize()``; in a kit mode, return a refusal instead of raising it.
+    """Run ``core._initialize()`` and return the failure instead of raising it.
 
     A Modal wrapper calls this from ``@modal.enter()``. An exception raised there crashes the container and Modal
-    restarts it until the call times out, so the caller never sees why a kit mode failed (wrong GPU, no kit in the
-    image, kit inactive, weights that do not load). The wrapper raises the returned error from ``fold()`` instead,
-    whatever its type. Vanilla failures raise as before.
+    restarts it until the call times out, so the caller never sees why a load failed (wrong GPU, no kit in the image,
+    kit inactive, weights that do not load). The wrapper keeps the returned error and raises it from ``fold()``
+    instead; see :func:`retry_initialize`.
     """
     try:
         core._initialize()
     except Exception as error:
-        if core.config.get("optimization", DEFAULT_OPTIMIZATION) == DEFAULT_OPTIMIZATION:
-            raise
         return error
     return None
+
+
+def retry_initialize(core: Any, failure: Exception | None) -> Exception | None:
+    """Return the standing load failure of ``core``, trying the load again unless the failure is a permanent one.
+
+    A refusal (:class:`OptimizationUnavailableError`) or a bad config (``ValueError``) cannot change within a container,
+    so it stands. Anything else (a download that dropped, a full disk) gets another attempt on the next call.
+    """
+    if failure is None or isinstance(failure, OptimizationUnavailableError | ValueError):
+        return failure
+    return initialize_core(core)
 
 
 @dataclass(frozen=True)

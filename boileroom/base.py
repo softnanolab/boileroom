@@ -11,7 +11,13 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol, cast
 
 import numpy as np
 
-from .images.metadata import DEFAULT_PYTHON_VERSION, format_image_reference, get_image_tag, get_kit_image_spec
+from .images.metadata import (
+    DEFAULT_PYTHON_VERSION,
+    format_image_reference,
+    get_image_tag,
+    get_kit_image_source,
+    get_kit_image_spec,
+)
 from .models.registry import ModelSpec, resolve_object
 from .optimization import DEFAULT_OPTIMIZATION, validate_optimization
 from .utils import validate_sequence
@@ -75,8 +81,9 @@ class Algorithm(ABC):
     # Static config keys that can only be set at initialization and cannot be overridden per-call
     STATIC_CONFIG_KEYS: ClassVar[frozenset[str]] = frozenset()
 
-    #: Capability flags for the shared optional folding inputs. ``msa`` is A3M
-    #: text per chain; ``templates`` maps a name to mmCIF text. A wrapper that
+    #: Capability flags for the shared optional folding inputs. ``msa`` is one A3M
+    #: text (or ``None``) per chain, or an ``MSAInput`` where a family documents
+    #: it (AlphaFold2-Multimer takes both); ``templates`` maps a name to mmCIF text. A wrapper that
     #: sets a flag must translate the input to its model's native form; one
     #: that does not is refused by ``_merge_options`` rather than ignored.
     SUPPORTS_USER_MSA: ClassVar[bool] = False
@@ -424,9 +431,10 @@ class ModelWrapper:
         backend_instance: Any
         # A family with a kit image (ESMFold2, Protenix) runs "exact" and "fast" there; "vanilla" keeps the stock image.
         kit_image_key = None
-        if model_spec.kit_image_key is not None:
+        if "optimization" in model_spec.contract.static_config_keys:
+            # Checked here so a bad mode fails in the caller, not in a Modal container that would restart silently.
             mode = validate_optimization(resolved_config.get("optimization", DEFAULT_OPTIMIZATION))
-            if mode != DEFAULT_OPTIMIZATION:
+            if mode != DEFAULT_OPTIMIZATION and model_spec.kit_image_key is not None:
                 kit_image_key = model_spec.kit_image_key
         if backend_type == "modal":
             modal_class_path = model_spec.kit_modal_class_path if kit_image_key else model_spec.modal_class_path
@@ -440,6 +448,12 @@ class ModelWrapper:
             image_name = model_spec.apptainer_image_name
             python_version = DEFAULT_PYTHON_VERSION
             if kit_image_key:
+                if get_kit_image_source() != "registry" and ":" not in resolved_backend:
+                    raise ValueError(
+                        f"Apptainer pulls the {model_spec.public_name} kit image from a registry, and none is published. "
+                        "Build and push it (see docs/optimization.md), then set BOILEROOM_KIT_IMAGE_SOURCE=registry "
+                        'with BOILEROOM_DOCKER_REPOSITORY and BOILEROOM_IMAGE_TAG (or pass backend="apptainer:<tag>").'
+                    )
                 kit_spec = get_kit_image_spec(kit_image_key)
                 image_name, python_version = kit_spec.image_name, kit_spec.python_version
             image_uri = f"docker://{format_image_reference(image_name, backend_tag)}"

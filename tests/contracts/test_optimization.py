@@ -9,6 +9,7 @@ from boileroom.optimization import (
     OptimizationUnavailableError,
     initialize_core,
     resolve_optimization,
+    retry_initialize,
     validate_optimization,
 )
 
@@ -121,6 +122,26 @@ def test_esmfold2_kit_variant_follows_checkpoint() -> None:
     assert ESMFold2Core({})._kit_variant() == "full_nomsa"
 
 
+@pytest.mark.parametrize(
+    "config",
+    [{"revision": "abc"}, {"cache_dir": "/tmp/x"}, {"ccd_cache_dir": "/tmp/x"}, {"model_name": "someone/else"}],
+)
+def test_esmfold2_kit_mode_refuses_config_it_would_ignore(config: dict) -> None:
+    from boileroom.models.esmfold2.core import ESMFold2Core
+
+    core = ESMFold2Core({"optimization": "exact", **config})
+    with pytest.raises(ValueError, match="optimization='exact'/'fast'"):
+        core._activate_optimization()
+
+
+def test_esmfold2_vanilla_keeps_revision_and_cache_dirs() -> None:
+    from boileroom.models.esmfold2.core import ESMFold2Core
+
+    core = ESMFold2Core({"revision": "abc", "cache_dir": "/tmp/x"})
+    core._activate_optimization()
+    assert core.optimization is not None and core.optimization.active == "vanilla"
+
+
 def test_protenix_core_rejects_unknown_mode() -> None:
     from boileroom.models.protenix.core import ProtenixCore
 
@@ -144,40 +165,48 @@ class _FailingCore:
     def __init__(self, optimization: str, error: Exception | None) -> None:
         self.config = {"optimization": optimization}
         self.error = error
+        self.calls = 0
 
     def _initialize(self) -> None:
+        self.calls += 1
         if self.error is not None:
             raise self.error
 
 
-@pytest.mark.parametrize("mode", ["exact", "fast"])
-def test_kit_mode_init_refusal_is_returned_not_raised(mode: str) -> None:
-    """Raising in ``@modal.enter()`` makes Modal restart the container silently, so the refusal is handed back."""
-    error = OptimizationUnavailableError("needs the kit image")
+@pytest.mark.parametrize("mode", ["vanilla", "exact", "fast"])
+@pytest.mark.parametrize(
+    "error", [OptimizationUnavailableError("needs the kit image"), ValueError("bad config"), TypeError("boom")]
+)
+def test_init_failure_is_returned_not_raised(mode: str, error: Exception) -> None:
+    """Raising in ``@modal.enter()`` makes Modal restart the container silently, so the failure is handed back."""
     assert initialize_core(_FailingCore(mode, error)) is error
-
-
-def test_vanilla_init_failure_still_raises() -> None:
-    with pytest.raises(RuntimeError, match="weights missing"):
-        initialize_core(_FailingCore("vanilla", RuntimeError("weights missing")))
 
 
 def test_init_success_returns_none() -> None:
     assert initialize_core(_FailingCore("exact", None)) is None
 
 
-@pytest.mark.parametrize("error", [ValueError("bad config"), TypeError("unexpected keyword argument")])
-def test_kit_mode_any_init_failure_is_returned(error: Exception) -> None:
-    """A load error of any type would otherwise restart-loop the Modal container."""
-    assert initialize_core(_FailingCore("fast", error)) is error
+@pytest.mark.parametrize("error", [OptimizationUnavailableError("wrong GPU"), ValueError("bad config")])
+def test_permanent_failures_stand_without_a_retry(error: Exception) -> None:
+    core = _FailingCore("exact", None)
+    core.calls = 0
+    assert retry_initialize(core, error) is error
+    assert core.calls == 0
 
 
-def test_vanilla_init_failure_of_any_type_raises() -> None:
-    with pytest.raises(TypeError, match="boom"):
-        initialize_core(_FailingCore("vanilla", TypeError("boom")))
+def test_transient_failure_gets_another_load_attempt() -> None:
+    """A dropped download must not poison the container for the rest of its life."""
+    core = _FailingCore("exact", None)
+    assert retry_initialize(core, OSError("connection reset")) is None
+    core.error = OSError("still down")
+    assert isinstance(retry_initialize(core, OSError("connection reset")), OSError)
+    assert retry_initialize(core, None) is None
 
 
-@pytest.mark.parametrize("module", ["esmfold2.esmfold2", "protenix.protenix", "opendde.opendde"])
+@pytest.mark.parametrize(
+    "module",
+    ["esmfold2.esmfold2", "esmfold2.modal_kit", "protenix.protenix", "protenix.modal_kit", "opendde.opendde"],
+)
 def test_modal_wrappers_defer_the_refusal_to_the_call(module: str) -> None:
     """Each kit-capable Modal entrypoint initializes through the helper and raises the refusal from ``fold``."""
     import inspect
@@ -185,4 +214,5 @@ def test_modal_wrappers_defer_the_refusal_to_the_call(module: str) -> None:
 
     source = inspect.getsource(import_module(f"boileroom.models.{module}"))
     assert "self._refusal = initialize_core(self._core)" in source
+    assert "self._refusal = retry_initialize(self._core, self._refusal)" in source
     assert "raise self._refusal" in source

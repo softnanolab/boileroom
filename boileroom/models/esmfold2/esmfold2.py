@@ -10,7 +10,7 @@ import modal
 from ...backend.modal import get_modal_app
 from ...base import ModelWrapper
 from ...images.volumes import model_weights
-from ...optimization import initialize_core
+from ...optimization import initialize_core, retry_initialize
 from ...utils import MINUTES, MODAL_MODEL_DIR
 from ..registry import ESMFOLD2_SPEC
 from .image import esmfold2_image
@@ -57,6 +57,7 @@ class ModalESMFold2:
     @modal.method()
     def fold(self, sequences: ESMFold2FoldInput, options: dict | None = None) -> "ESMFold2Output":
         """Run ESMFold2 structure prediction."""
+        self._refusal = retry_initialize(self._core, self._refusal)
         if self._refusal is not None:
             raise self._refusal
         return self._core.fold(sequences, options=options)

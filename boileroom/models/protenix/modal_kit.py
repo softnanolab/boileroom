@@ -9,7 +9,7 @@ import modal
 from ...backend.modal import get_modal_app
 from ...images.modal import get_modal_kit_image
 from ...images.volumes import model_weights
-from ...optimization import initialize_core
+from ...optimization import initialize_core, retry_initialize
 from ...utils import HOURS, MINUTES, MODAL_MODEL_DIR
 
 if TYPE_CHECKING:
@@ -47,6 +47,7 @@ class ModalProtenixKit:
 
     @modal.method()
     def fold(self, sequences: str | Sequence[str], options: dict | None = None) -> "ProtenixOutput":
+        self._refusal = retry_initialize(self._core, self._refusal)
         if self._refusal is not None:
             raise self._refusal
         return self._core.fold(sequences, options=options)
