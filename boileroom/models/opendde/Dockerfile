@@ -13,7 +13,7 @@ RUN apt-get update --quiet \
     && apt-get install --no-install-recommends --yes --quiet curl bzip2 ca-certificates \
     && curl -fsSL https://micro.mamba.pm/api/micromamba/linux-64/latest | tar -xj -C /usr/local bin/micromamba \
     && MAMBA_ROOT_PREFIX=/tmp/mamba micromamba create --yes --quiet --prefix /tmp/cf --channel conda-forge \
-        --override-channels "libstdcxx>=13" "libgcc>=13" \
+        --override-channels "libstdcxx>=13,<14" "libgcc>=13,<14" \
     && mkdir -p /out \
     && cp -aL /tmp/cf/lib/libstdc++.so.6 /tmp/cf/lib/libgcc_s.so.1 /out/
 
@@ -42,12 +42,13 @@ RUN apt-get update --quiet \
     && apt-get install --no-install-recommends --yes --quiet cuda-nvcc-12-6 cuda-cudart-dev-12-6 \
     && rm -rf /var/lib/apt/lists/*
 
-ARG KIT_REF=f4f62fa
+ARG KIT_COMMIT=f4f62fa6592ae4938d49b1757bea0cfeff9f468e
 ARG OPENDDE_HOME=/opt/opendde
 ENV OPENDDE_HOME=${OPENDDE_HOME}
 RUN --mount=type=cache,id=${UV_CACHE_ID}-pip,target=/root/.cache/pip \
     git clone --quiet https://github.com/anthropics/uplifting-biomolecular-modeling /kit \
-    && git -C /kit checkout --quiet ${KIT_REF} \
+    && git -C /kit checkout --quiet ${KIT_COMMIT} \
+    && test "$(git -C /kit rev-parse HEAD)" = "${KIT_COMMIT}" \
     && UV_SYSTEM_PYTHON=0 uv venv --python 3.11 --seed ${OPENDDE_HOME} \
     && grep -v -E '^(#|opendde==)' /kit/opendde/environment/requirements.lock > /tmp/stack.txt \
     && "${OPENDDE_HOME}/bin/pip" install --no-deps -r /tmp/stack.txt \

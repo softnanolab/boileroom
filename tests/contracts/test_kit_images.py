@@ -97,6 +97,13 @@ def test_kit_dockerfile_pins_the_commit_of_the_metadata(spec: Any) -> None:
     assert re.fullmatch(r"[0-9a-f]{40}", KIT_COMMIT)
 
 
+def test_opendde_dockerfile_pins_the_same_kit_commit_and_verifies_it() -> None:
+    """OpenDDE bakes the kit into its own image, so its Dockerfile is held to the same pin."""
+    text = (REPO_ROOT / "boileroom/models/opendde/Dockerfile").read_text()
+    assert re.search(rf"^ARG KIT_COMMIT={KIT_COMMIT}$", text, flags=re.MULTILINE)
+    assert 'rev-parse HEAD)" = "${KIT_COMMIT}"' in text
+
+
 @pytest.mark.parametrize("spec", KIT_IMAGE_SPECS, ids=lambda spec: spec.key)
 def test_kit_dockerfile_uses_only_what_modal_parses(spec: Any) -> None:
     """Modal's Dockerfile parser rejects BuildKit mounts and COPY globs that match nothing."""
@@ -222,6 +229,28 @@ def test_kit_apptainer_uses_the_kit_image_and_its_interpreter(monkeypatch: pytes
     _initialize(spec, "apptainer:dev", {"optimization": "fast"})
     assert records["image_uri"] == f"docker://{format_image_reference(kit_spec.image_name, 'dev')}"
     assert records["kwargs"]["python_version"] == kit_spec.python_version
+
+
+@pytest.mark.parametrize("spec", KIT_SPECS, ids=lambda spec: spec.key)
+def test_kit_apptainer_without_a_published_image_is_refused(monkeypatch: pytest.MonkeyPatch, spec: ModelSpec) -> None:
+    """No kit image is published, so a bare ``apptainer`` backend would fail late on a registry pull."""
+    records = _install_fake_backends(monkeypatch)
+    monkeypatch.delenv(KIT_IMAGE_SOURCE_ENV, raising=False)
+    with pytest.raises(ValueError, match="none is published"):
+        _initialize(spec, "apptainer", {"optimization": "exact"})
+    assert "started" not in records
+    monkeypatch.setenv(KIT_IMAGE_SOURCE_ENV, "registry")
+    _initialize(spec, "apptainer", {"optimization": "exact"})
+    assert records["started"] is True
+
+
+def test_opendde_checks_optimization_in_the_caller_and_keeps_its_one_image(monkeypatch: pytest.MonkeyPatch) -> None:
+    records = _install_fake_backends(monkeypatch)
+    with pytest.raises(ValueError, match="optimization must be one of"):
+        _initialize(OPENDDE_SPEC, "modal", {"optimization": "turbo"})
+    assert "started" not in records
+    _initialize(OPENDDE_SPEC, "modal", {"optimization": "fast"})
+    assert records["modal_cls"] is resolve_object(OPENDDE_SPEC.modal_class_path)  # type: ignore[arg-type]
 
 
 def test_apptainer_service_runs_under_the_image_interpreter() -> None:
