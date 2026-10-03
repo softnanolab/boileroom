@@ -67,7 +67,9 @@ per-residue arrays on `[0, 1]`, and scalar scores such as `ptm` and `iptm` are r
 In `0.3.1`, this replaces ESMFold's old padded pLDDT batch array and moves Boltz `ptm`/`iptm` from nested
 `confidence` dictionaries to top-level fields.
 
-Protenix and AlphaFold2-Multimer keep their model runners loaded between `fold()` calls. Create one model instance and reuse it for successive jobs, just like the other wrappers. They fetch MSAs from the ColabFold MMseqs2 server by default; neither needs local genetic databases. See [docs/models.md](docs/models.md) for examples, configuration and Modal GPU defaults.
+Protenix, OpenDDE and AlphaFold2-Multimer keep their model runners loaded between `fold()` calls. Create one model instance and reuse it for successive jobs, just like the other wrappers. They fetch MSAs from the ColabFold MMseqs2 server by default; none needs local genetic databases. Callers can supply their own alignment with `options={"msa": ...}` (Protenix, OpenDDE, ESMFold2 and AlphaFold2-Multimer) and mmCIF structure templates with `options={"templates": {...}}` (Protenix and OpenDDE only). See [docs/models.md](docs/models.md) for examples, configuration and Modal GPU defaults.
+
+ESMFold2, Protenix and OpenDDE also accept `config={"optimization": "vanilla" | "exact" | "fast"}` (default `"vanilla"`), which runs the Anthropic kit kernels on A100 or H100/H200 GPUs for a large per-fold speedup. See [docs/optimization.md](docs/optimization.md).
 
 ## Available Models
 
@@ -81,6 +83,7 @@ Protenix and AlphaFold2-Multimer keep their model runners loaded between `fold()
 | Chai-1    | ✅      | Protein design and structure prediction model | [Chai Discovery](https://github.com/chaidiscovery/chai-lab) |
 | Boltz-2   | ✅      | Diffusion-based protein structure prediction | [Boltz / MIT](https://github.com/jwohlwend/boltz) |
 | Protenix  | 🍊      | AlphaFold3-style biomolecular structure prediction (Protenix v2) | [ByteDance](https://github.com/bytedance/Protenix) |
+| OpenDDE   | 🍊      | AF3-style biomolecular structure prediction (OpenDDE v1, Protenix-compatible interface) | [Aureka Research](https://github.com/aurekaresearch/OpenDDE) |
 | AlphaFold2-Multimer | 🍊 | Protein complex prediction via ColabFold (`alphafold2_multimer_v3`) | [Google DeepMind](https://github.com/google-deepmind/alphafold) / [ColabFold](https://github.com/sokrypton/ColabFold) |
 
 > **Licensing:** all bundled model weights are MIT-licensed except **Chai-1**, whose weights are released under the non-commercial Chai Discovery Community License. Review Chai Discovery's terms before using Chai-1 outside research.
@@ -114,7 +117,7 @@ For Modal integration tests, run the model families in parallel shards:
 uv run pytest -v -n 4 --dist loadgroup -m integration
 ```
 
-This starts four pytest workers and keeps each model family on its own worker, so each model family (Boltz, Chai, ESM2, ESMFold, ESMFold2, Protenix, AlphaFold2-Multimer) uses its own Modal app without registering unrelated GPU functions in the same app.
+This starts four pytest workers and keeps each model family on its own worker, so each model family (Boltz, Chai, ESM2, ESMFold, ESMFold2, Protenix, OpenDDE, AlphaFold2-Multimer) uses its own Modal app without registering unrelated GPU functions in the same app.
 
 To run the same integration tests in series, omit xdist:
 

@@ -6,8 +6,11 @@
 - **boltz**: `boileroom/models/boltz/Dockerfile` → installs Boltz runtime dependencies from `requirements.txt`. Tag: `docker.io/jakublala/boileroom-boltz`.
 - **chai1**: `boileroom/models/chai/Dockerfile` → installs Chai runtime dependencies from `requirements.txt`, sets HF env vars. Tag: `docker.io/jakublala/boileroom-chai1`.
 - **esm**: `boileroom/models/esm/Dockerfile` → installs ESM runtime dependencies from `requirements.txt` shared by esm2/esmfold. Tag: `docker.io/jakublala/boileroom-esm`.
+- **opendde**: `boileroom/models/opendde/Dockerfile` → OpenDDE 1.1.1 and the Anthropic kit stack (Python 3.11, torch 2.7.1+cu126, cuequivariance 0.10.0) in `/opt/opendde`, CUDA 12.6 `nvcc` for the Triton JIT, GCC 13 libstdc++ for `exact`, HMMER/Kalign. `LAYERNORM_TYPE=fast_layernorm` is set but `ninja` is not installed, so the fused LayerNorm extension cannot build and torch's `layer_norm` is used in every mode. Tag: `docker.io/jakublala/boileroom-opendde`. Platform: `linux/amd64`.
 - **protenix**: `boileroom/models/protenix/Dockerfile` → installs Protenix plus HMMER/Kalign CLI dependencies. Tag: `docker.io/jakublala/boileroom-protenix`. Platform: `linux/amd64`.
 - **esmfold2**: `boileroom/models/esmfold2/Dockerfile` → installs the MIT-licensed 2026 Chan Zuckerberg Biohub `esm` package (`esm==3.4.1.post1`, torch 2.11, CUDA 12.6 only) from `requirements.txt`. Tag: `docker.io/jakublala/boileroom-esmfold2`. **Shared by ESMFold2, ESM-C, and ESM3** — all three use the same Biohub `esm` package, so ESM-C/ESM3 run on this image instead of a separate one.
+
+- **esmfold2-kit** and **protenix-kit** (opt-in, published by hand rather than by CI): `boileroom/models/esmfold2/kit/Dockerfile` and `boileroom/models/protenix/kit/Dockerfile` → the stack of the Anthropic optimization kit (torch 2.13+cu130, kit commit `f4f62fa`) behind `optimization="exact"` and `"fast"`. Names: `boileroom-esmfold2-kit` and `boileroom-protenix-kit`. Used only when a kit mode is requested; `optimization="vanilla"` (the default) keeps using the stock images above. Not part of the build/smoke/publish scripts or CI: see [Kit images](#kit-images-optimization-exact-and-fast).
 
 Dockerfiles are the canonical image definition for all runtimes. Docker/Apptainer images are built from these Dockerfiles, and Modal pulls the corresponding published model image from Docker Hub instead of maintaining a separate handwritten dependency stack. CUDA variants select the PyTorch wheel index; the runtime images rely on PyTorch/NVIDIA wheels for user-space CUDA libraries and on Docker/Apptainer GPU integration for host driver libraries.
 
@@ -16,6 +19,22 @@ Dockerfiles are the canonical image definition for all runtimes. Docker/Apptaine
 - The default CUDA line is `12.6`. That line also gets an unqualified alias for the exact package version, alpha prerelease, or temporary validation tag, for example `0.3.0`, `0.3.1-alpha.1`, or `sha-abc1234`.
 - `latest` is not published.
 - Runtime shorthands such as `backend="apptainer"` resolve through `BOILEROOM_IMAGE_TAG` when set, otherwise through the installed boileroom package version on the default `12.6` CUDA line.
+
+### Using prebuilt images when your checkout is ahead of the last release
+The default tag is the `version` in `pyproject.toml` (or the installed package version). Between releases that stable tag, for example `0.4.3`, is **not published**: `main` only publishes alpha tags such as `0.4.3-alpha.8`. A default lookup then fails to find the image, and the only way forward looks like building it locally (30–45 minutes). You do not need to build anything. Point the runtime at an existing published tag instead.
+
+Find a published tag on [Docker Hub](https://hub.docker.com/r/jakublala/boileroom-esmfold2/tags) (swap in the model's image name) and pick the newest `X.Y.Z-alpha.N` or the latest stable release. Then use any one of:
+
+```bash
+export BOILEROOM_IMAGE_TAG=0.4.3-alpha.8          # Modal and Apptainer
+uv run pytest --image-tag 0.4.3-alpha.8 ...       # pytest, both backends
+```
+
+```python
+ESMFold2(backend="apptainer:0.4.3-alpha.8")        # inline tag, wins over the env var
+```
+
+The tag must contain the model dependencies you need. Older tags contain older dependency stacks (for example, the `esm 3.4.1.post1` port of ESMFold2 is not in `0.4.1`), so prefer the newest alpha when you are on `main`. The first pull is large (the `esmfold2` image is about 4.3 GB compressed) but is cached afterwards.
 
 ### 🚀 Quick start
 Use the Python helper to build all images (base + models) with a single global worker limit.
@@ -79,7 +98,7 @@ The `.github/workflows/arm64-image-smoke.yml` workflow runs on pull requests to 
 
 The workflow does not install the full project dependency set on the host runner. Host-side image scripts run with `uv run --no-project --with pyyaml`, while heavy model dependencies such as PyTorch and SciPy are validated inside the Docker images themselves.
 
-Image configs can restrict supported platforms. AlphaFold2-Multimer and Protenix currently advertise `linux/amd64` only, so ARM64 smoke builds and checks skip those images while still validating the ARM64-compatible model images.
+Image configs can restrict supported platforms. AlphaFold2-Multimer, Protenix and OpenDDE currently advertise `linux/amd64` only, so ARM64 smoke builds and checks skip those images while still validating the ARM64-compatible model images.
 
 On `main`, ARM64 image smoke is folded into the Docker publishing workflow instead of running as a second separate workflow. That keeps the branch smoke path fast and local while making release promotion wait for the same ARM64 smoke coverage.
 
@@ -164,6 +183,24 @@ docker build \
 ```
 
 > ESM-C and ESM3 do not have their own image — they run on the `esmfold2` image above (same Biohub `esm` package).
+
+### Kit images (`optimization="exact"` and `"fast"`)
+The kit modes need a different stack from the stock images (see [optimization.md](optimization.md)), so ESMFold2 and Protenix have a second, opt-in image each, defined next to their stock Dockerfile in a `kit/` directory. They are not built by `scripts/images/` and not smoke-tested or published by CI: the ESMFold2 image compiles flash-attn, TransformerEngine and xformers from source (about 30 minutes on a 48-64 core builder, hours on a GitHub-hosted runner). Both images were built locally and pushed to `docker.io/jakublala` under the temporary tag `sha-dc652b0` (kit commit `f4f62fa`); once the PR merges they are retagged to the release version, with no rebuild. Until then, pull them with `BOILEROOM_KIT_IMAGE_SOURCE=registry BOILEROOM_DOCKER_REPOSITORY=docker.io/jakublala BOILEROOM_IMAGE_TAG=sha-dc652b0`.
+
+- **Modal** builds the image from the Dockerfile in your installed boileroom the first time a kit mode is used, and caches it. This is the default (`BOILEROOM_KIT_IMAGE_SOURCE=build`).
+- **Docker/Apptainer, or your own registry**: build and push the image, then point the runtime at it:
+
+```bash
+docker build -f boileroom/models/protenix/kit/Dockerfile boileroom/models/protenix/kit -t <repository>/boileroom-protenix-kit:<tag>
+docker build -f boileroom/models/esmfold2/kit/Dockerfile boileroom/models/esmfold2/kit -t <repository>/boileroom-esmfold2-kit:<tag>
+docker push <repository>/boileroom-esmfold2-kit:<tag>
+
+export BOILEROOM_KIT_IMAGE_SOURCE=registry BOILEROOM_DOCKER_REPOSITORY=<repository> BOILEROOM_IMAGE_TAG=<tag>
+```
+
+  With `backend="apptainer"` the kit image is pulled as `docker://<repository>/boileroom-<family>-kit:<tag>` (the interpreter is `/usr/local/bin/python3.11` in the Protenix kit image, `python3.12` in the ESMFold2 one).
+
+The Dockerfile pins the kit commit; `KIT_COMMIT` in `boileroom/images/metadata.py` must match it (`tests/contracts/test_kit_images.py` checks this).
 
 ### ☁️ Push local tags to Docker Hub
 Use the helper script with `--push` to push all images after building. Authenticate first:

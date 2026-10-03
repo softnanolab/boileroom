@@ -231,7 +231,7 @@ def ensure_buildx_builder() -> None:
         check=False,
     )
     builder_exists = inspect_result.returncode == 0
-    has_container_driver = "driver: docker-container" in inspect_result.stdout
+    has_container_driver = re.search(r"^driver:\s+docker-container\b", inspect_result.stdout, re.I | re.M) is not None
 
     if not builder_exists or not has_container_driver:
         if builder_exists:

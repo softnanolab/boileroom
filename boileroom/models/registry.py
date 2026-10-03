@@ -1,6 +1,6 @@
 """Model registry and shared contract metadata."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from importlib import import_module
 from typing import Any, Literal
 
@@ -14,6 +14,7 @@ ESMFOLD2_IMAGE_NAME = get_model_image_spec("esmfold2").image_name
 CHAI_IMAGE_NAME = get_model_image_spec("chai").image_name
 BOLTZ_IMAGE_NAME = get_model_image_spec("boltz").image_name
 PROTENIX_IMAGE_NAME = get_model_image_spec("protenix").image_name
+OPENDDE_IMAGE_NAME = get_model_image_spec("opendde").image_name
 ALPHAFOLD2_MULTIMER_IMAGE_NAME = get_model_image_spec("alphafold").image_name
 
 
@@ -45,6 +46,11 @@ class ModelSpec:
     contract: ModelContract
     supported_backends: tuple[str, ...] = ("modal",)
     default_backend: str = "modal"
+    # Families whose kit modes (optimization="exact" / "fast") need a different image than the default one run those
+    # modes there: the Modal class on the kit image, and the kit image key (see KIT_IMAGE_SPECS in images/metadata.py)
+    # for Apptainer. ``optimization="vanilla"`` never touches them.
+    kit_modal_class_path: str | None = None
+    kit_image_key: str | None = None
 
 
 def resolve_object(dotted_path: str) -> Any:
@@ -175,10 +181,14 @@ ESMFOLD2_SPEC = ModelSpec(
     apptainer_core_class_path="boileroom.models.esmfold2.core.ESMFold2Core",
     apptainer_image_name=ESMFOLD2_IMAGE_NAME,
     supported_backends=("modal", "apptainer"),
+    kit_modal_class_path="boileroom.models.esmfold2.modal_kit.ModalESMFold2Kit",
+    kit_image_key="esmfold2",
     contract=ModelContract(
         task_method="fold",
         task_kind="structure",
-        static_config_keys=frozenset({"device", "model_name", "cache_dir", "ccd_cache_dir", "dtype"}),
+        static_config_keys=frozenset(
+            {"device", "model_name", "revision", "cache_dir", "ccd_cache_dir", "dtype", "optimization", "kit_msa"}
+        ),
         minimal_output_fields=("metadata", "atom_array"),
         optional_output_fields=(
             "plddt",
@@ -258,6 +268,8 @@ PROTENIX_SPEC = ModelSpec(
     apptainer_core_class_path="boileroom.models.protenix.core.ProtenixCore",
     apptainer_image_name=PROTENIX_IMAGE_NAME,
     supported_backends=("modal", "apptainer"),
+    kit_modal_class_path="boileroom.models.protenix.modal_kit.ModalProtenixKit",
+    kit_image_key="protenix",
     contract=ModelContract(
         task_method="fold",
         task_kind="structure",
@@ -272,6 +284,7 @@ PROTENIX_SPEC = ModelSpec(
                 "enable_cache",
                 "enable_fusion",
                 "enable_tf32",
+                "optimization",
             }
         ),
         minimal_output_fields=("metadata", "atom_array"),
@@ -291,6 +304,21 @@ PROTENIX_SPEC = ModelSpec(
         ),
         supports_batch=False,
         supports_multimer=True,
+    ),
+)
+
+OPENDDE_SPEC = ModelSpec(
+    key="opendde",
+    public_name="OpenDDE",
+    family="opendde",
+    wrapper_class_path="boileroom.models.opendde.opendde.OpenDDE",
+    modal_class_path="boileroom.models.opendde.opendde.ModalOpenDDE",
+    apptainer_core_class_path="boileroom.models.opendde.core.OpenDDECore",
+    apptainer_image_name=OPENDDE_IMAGE_NAME,
+    supported_backends=PROTENIX_SPEC.supported_backends,
+    contract=replace(
+        PROTENIX_SPEC.contract,
+        static_config_keys=PROTENIX_SPEC.contract.static_config_keys | {"opendde_python"},
     ),
 )
 
@@ -371,6 +399,7 @@ MODEL_SPECS = (
     BOLTZ2_SPEC,
     SAE_SPEC,
     PROTENIX_SPEC,
+    OPENDDE_SPEC,
     ALPHAFOLD2_MULTIMER_SPEC,
 )
 MODEL_SPECS_BY_KEY = {spec.key: spec for spec in MODEL_SPECS}
@@ -403,6 +432,7 @@ __all__ = [
     "ModelContract",
     "ModelSpec",
     "PROTENIX_SPEC",
+    "OPENDDE_SPEC",
     "get_model_spec",
     "resolve_object",
 ]

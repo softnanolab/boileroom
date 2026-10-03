@@ -61,3 +61,57 @@ def test_runtime_reuses_weights_and_resets_request_state(monkeypatch, tmp_path) 
     (Path(runner.error_dir) / "target.txt").write_text("CUDA out of memory")
     with pytest.raises(RuntimeError, match="CUDA out of memory"):
         runtime.predict("third.json", "third", config)
+
+
+def test_runtime_points_featurizer_at_staged_templates(monkeypatch, tmp_path) -> None:
+    """Staged templates switch the featurizer to the caller's files for that request only."""
+    from boileroom.models.protenix import runtime as runtime_module
+    from boileroom.models.protenix.core import ProtenixCore
+    from boileroom.models.protenix.runtime import ProtenixRuntime
+
+    template = SimpleNamespace(
+        prot_template_mmcif_dir="/data/mmcif",
+        release_dates_path="/data/dates.json",
+        obsolete_pdbs_path="/data/obsolete.json",
+        fetch_remote=True,
+        kalign_binary_path="",
+    )
+    configs = SimpleNamespace(
+        model=SimpleNamespace(N_cycle=10),
+        sample_diffusion=SimpleNamespace(N_step=200, N_sample=5, guidance=SimpleNamespace(enable=False)),
+        sorted_by_ranking_score=True,
+        data=SimpleNamespace(template=template),
+        use_template=False,
+    )
+    runner = SimpleNamespace(configs=configs, model=SimpleNamespace(N_cycle=10), error_dir=str(tmp_path / "ERR"))
+    runner.update_model_configs = runner.init_basics = runner.init_dumper = Mock()
+    seen = []
+    batch = SimpleNamespace(
+        get_default_runner=Mock(return_value=runner),
+        inference_configs={},
+        init_logging=Mock(),
+        preprocess_input=Mock(side_effect=lambda path, **kwargs: path),
+    )
+    inference = SimpleNamespace(
+        infer_predict=lambda r, c: seen.append((c.use_template, copy.deepcopy(c.data.template)))
+    )
+    monkeypatch.setitem(sys.modules, "runner", ModuleType("runner"))
+    monkeypatch.setitem(sys.modules, "runner.batch_inference", batch)
+    monkeypatch.setitem(sys.modules, "runner.inference", inference)
+    monkeypatch.setattr(runtime_module, "_kalign_path", lambda: "/usr/bin/kalign")
+    config = dict(ProtenixCore.DEFAULT_CONFIG)
+    runtime = ProtenixRuntime(config, str(tmp_path))
+    staging = {
+        "mmcif_dir": "/stage/mmcif",
+        "release_dates_path": "/stage/d.json",
+        "obsolete_pdbs_path": "/stage/o.json",
+    }
+    runtime.predict("a.json", "a", {**config, "template_staging": staging})
+    runtime.predict("b.json", "b", config)
+
+    (with_t, staged_cfg), (without_t, plain_cfg) = seen
+    assert with_t and staged_cfg.prot_template_mmcif_dir == "/stage/mmcif" and staged_cfg.fetch_remote is False
+    assert staged_cfg.release_dates_path == "/stage/d.json" and staged_cfg.kalign_binary_path == "/usr/bin/kalign"
+    assert batch.preprocess_input.call_args_list[0].kwargs["use_template"] is True
+    # The next request starts from the pristine copy: nothing staged leaks across.
+    assert not without_t and plain_cfg.prot_template_mmcif_dir == "/data/mmcif" and plain_cfg.fetch_remote is True
