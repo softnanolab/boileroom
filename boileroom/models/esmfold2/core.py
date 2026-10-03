@@ -17,6 +17,7 @@ from typing import Any, ClassVar, cast
 import numpy as np
 
 from ...base import FoldingAlgorithm, PredictionMetadata
+from ...inputs import a3m_rows
 from ...optimization import (
     OptimizationResolution,
     OptimizationUnavailableError,
@@ -68,27 +69,6 @@ ESMFOLD2_HF_REPO = "biohub/ESMFold2"
 ESMFOLD2_HF_REVISION = "69869f737beffec5294845ede23db5fc0b4f509e"
 #: Under the model directory: the HF_HOME of the kit modes, which load their own pinned snapshots (not ESMFOLD2_HF_REVISION).
 KIT_HF_SUBDIR = "esmfold2/kit-hf"
-
-
-def _a3m_rows(text: object, sequence: str) -> list[str]:
-    """Parse A3M text into aligned rows (insertions dropped), checking them against the query chain."""
-    if not isinstance(text, str) or not text.lstrip().startswith(">"):
-        raise ValueError("ESMFold2 option 'msa' entries must be A3M text or None")
-    rows: list[str] = []
-    for line in text.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        if line.startswith(">"):
-            rows.append("")
-        elif rows:
-            rows[-1] += line
-    rows = ["".join(char for char in row if not char.islower() and char != ".") for row in rows]
-    if not rows or rows[0] != sequence:
-        raise ValueError("The first A3M row must match its input protein chain")
-    if any(len(row) != len(sequence) for row in rows):
-        raise ValueError("Every A3M row must have the input chain's aligned length")
-    return rows
 
 
 class ESMFold2Core(FoldingAlgorithm):
@@ -209,9 +189,25 @@ class ESMFold2Core(FoldingAlgorithm):
             return "fast"
         return "full_msa" if self.config["kit_msa"] else "full_nomsa"
 
+    def _check_kit_config(self) -> None:
+        """Refuse config the kit modes would silently ignore: they load their own pinned snapshots."""
+        for key in ("revision", "cache_dir", "ccd_cache_dir"):
+            if self.config.get(key) is not None:
+                raise ValueError(
+                    f"ESMFold2 config {key!r} does not apply to optimization='exact'/'fast', which load pinned "
+                    f"snapshots from {KIT_HF_SUBDIR}; use optimization='vanilla' to choose your own."
+                )
+        served = (ESMFOLD2_HF_REPO, f"{ESMFOLD2_HF_REPO}-Fast")
+        if self.config["model_name"] not in served:
+            raise ValueError(
+                f"optimization='exact'/'fast' serves {list(served)}, not model_name={self.config['model_name']!r}"
+            )
+
     def _activate_optimization(self) -> None:
         """Resolve ``optimization`` on this GPU and arm the kit; runs before any weights load."""
         mode = str(self.config["optimization"])
+        if mode != "vanilla":
+            self._check_kit_config()
         gpu = None if mode == "vanilla" else detect_gpu(self.config.get("device"))
         self.optimization = resolve_optimization("esmfold2", mode, gpu)
         if mode == "vanilla":
@@ -509,7 +505,7 @@ class ESMFold2Core(FoldingAlgorithm):
                 )
             if ":" in item.sequence or "|" in item.sequence:
                 raise ValueError(f"ESMFold2 option 'msa' entry {index} needs a single-chain input entry.")
-            rows = _a3m_rows(text, item.sequence)
+            rows = a3m_rows(text, item.sequence)
             attached.append(dataclasses.replace(item, msa=MSAInput(sequences=rows)))
         return dataclasses.replace(request, input=dataclasses.replace(request.input, sequences=attached))
 

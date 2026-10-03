@@ -12,11 +12,11 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, ClassVar, cast
 
-from biotite.sequence.io.fasta import FastaFile
 from biotite.structure.io.pdb import PDBFile
 from biotite.structure.io.pdbx import CIFFile, get_structure
 
 from ...base import FoldingAlgorithm, PredictionMetadata
+from ...inputs import a3m_rows
 from ...optimization import OptimizationResolution, detect_gpu, resolve_optimization, validate_optimization
 from ...utils import Timer, get_model_cache_dir
 from .._runtime_utils import command_env, include_field
@@ -111,7 +111,7 @@ class ProtenixCore(FoldingAlgorithm):
         self.optimization = resolve_optimization(self.FAMILY, mode, gpu)
         if self._worker is None:
             self._worker = ModelWorker(
-                {**self.config, "optimization_kit_config": self.optimization.kit_config},
+                self.config,
                 self._worker_env(self.config, self.optimization),
                 runtime_path=self.RUNTIME_PATH,
                 runtime_class=self.RUNTIME_CLASS,
@@ -161,7 +161,7 @@ class ProtenixCore(FoldingAlgorithm):
                 input_json = self._write_input_json(
                     validated_sequences[0],
                     buffer_path,
-                    effective_config.get("msa") or effective_config.get("unpaired_msa"),
+                    self._resolve_msa(effective_config),
                     staged,
                     effective_config["templates_chain"],
                 )
@@ -189,6 +189,20 @@ class ProtenixCore(FoldingAlgorithm):
         output.metadata.postprocessing_time = postprocess_timer.duration
         return output
 
+    def _resolve_msa(self, config: dict[str, Any]) -> list[str | None] | None:
+        """Return the caller's per-chain MSA from ``msa`` (or its older name ``unpaired_msa``), if any.
+
+        The two names are the same option; setting both is ambiguous, and an MSA the run would not read
+        (``use_msa=False``) is refused instead of silently ignored.
+        """
+        msa, unpaired = config.get("msa"), config.get("unpaired_msa")
+        if msa and unpaired:
+            raise ValueError("Pass either 'msa' or its older name 'unpaired_msa', not both")
+        supplied = msa or unpaired
+        if supplied and not config["use_msa"]:
+            raise ValueError("A caller-supplied MSA needs use_msa=True; it would be ignored")
+        return supplied
+
     def _stage_templates(self, sequence_entry: str, buffer_path: Path, config: dict[str, Any]) -> dict[str, str] | None:
         """Write caller-supplied template structures where Protenix reads them.
 
@@ -211,15 +225,15 @@ class ProtenixCore(FoldingAlgorithm):
         self,
         sequence_entry: str,
         buffer_path: Path,
-        unpaired_msa: list[str | None] | None = None,
+        msa: list[str | None] | None = None,
         staged_templates: dict[str, str] | None = None,
         templates_chain: int = 0,
     ) -> Path:
         chains = sequence_entry.split(":")
         if not chains or any(not part for part in chains) or len(chains) > 26:
             raise ValueError(f"{self.DISPLAY_NAME} input requires 1 to 26 nonempty protein chains")
-        if unpaired_msa is not None and len(unpaired_msa) != len(chains):
-            raise ValueError("unpaired_msa must have one A3M string or None per chain")
+        if msa is not None and len(msa) != len(chains):
+            raise ValueError("msa must have one A3M string or None per chain")
 
         sequence_records = []
         for index, sequence in enumerate(chains):
@@ -233,11 +247,11 @@ class ProtenixCore(FoldingAlgorithm):
                     }
                 }
             )
-            if unpaired_msa is not None:
+            if msa is not None:
                 # A query-only file for None suppresses upstream's automatic search
                 # for the binder while allowing an unpaired target alignment.
-                msa_text = unpaired_msa[index] or f">query\n{sequence}\n"
-                _validate_msa(msa_text, sequence)
+                msa_text = msa[index] or f">query\n{sequence}\n"
+                a3m_rows(msa_text, sequence)
                 msa_path = buffer_path / f"chain_{index}.a3m"
                 msa_path.write_text(msa_text, encoding="utf-8")
                 sequence_records[-1]["proteinChain"]["unpairedMsaPath"] = str(msa_path)
@@ -354,15 +368,3 @@ def _validate_config(config: dict[str, Any], dtypes: frozenset[str] = frozenset(
             raise ValueError(f"{field} must be a positive integer")
     if config["use_seeds_in_json"] or config["use_default_params"]:
         raise ValueError("Explicit seeds and sampling settings require use_seeds_in_json/use_default_params=False")
-
-
-def _validate_msa(text: str, sequence: str) -> None:
-    if not isinstance(text, str) or not text.lstrip().startswith(">"):
-        raise ValueError("unpaired_msa entries must be A3M text or None")
-    rows = list(FastaFile.read(StringIO(text)).values())
-    if not rows or rows[0] != sequence:
-        raise ValueError("The first A3M row must match its input protein chain")
-    for row in rows:
-        aligned = "".join(char for char in row if not char.islower() and char != ".")
-        if len(aligned) != len(sequence):
-            raise ValueError("Every A3M row must have the input chain's aligned length")

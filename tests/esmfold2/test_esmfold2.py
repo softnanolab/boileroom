@@ -410,7 +410,8 @@ def test_esmfold2_declares_msa_support_and_refuses_templates() -> None:
 
 def test_esmfold2_a3m_rows_drop_insertions_and_validate() -> None:
     """A3M text becomes aligned rows; mismatched queries and ragged rows fail clearly."""
-    rows = pytest.importorskip("boileroom.models.esmfold2.core")._a3m_rows
+    from boileroom.inputs import a3m_rows as rows
+
     assert rows(A3M, "ACD") == ["ACD", "ACD", "A-D"]
     with pytest.raises(ValueError, match="first A3M row"):
         rows(A3M, "AAA")
