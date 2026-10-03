@@ -151,7 +151,9 @@ def complex_a3m(rows: Sequence[str], chains: Sequence[str]) -> str:
     followed by the concatenated unique query and then one concatenated row per hit.
     Each hit contributes the segment of the first copy of every unique chain. Rows
     that align to several chains are used as the paired MSA; rows covering a single
-    chain (the rest gaps) are used as unpaired.
+    chain (the rest gaps) are used as unpaired. A heteromer also gets every chain's
+    own segments as gap-padded unpaired rows, as ColabFold's own complex a3m does:
+    with only paired rows a chain's unpaired MSA is empty and ColabFold refuses it.
     """
     unique, first_index, cardinalities = _unique_chains(chains)
     header = f"#{','.join(str(len(c)) for c in unique)}\t{','.join(str(n) for n in cardinalities)}"
@@ -164,6 +166,17 @@ def complex_a3m(rows: Sequence[str], chains: Sequence[str]) -> str:
                 f"MSA row {index} has {len(segments)} ':'-separated segments; expected one per chain ({len(chains)})"
             )
         lines.extend([f">seq_{index}", "".join(segments[i] for i in first_index)])
+    if len(unique) > 1:
+        widths = [len(chain) for chain in unique]
+        for index, chain in enumerate(unique):
+            before, after = "-" * sum(widths[:index]), "-" * sum(widths[index + 1 :])
+            seen = {chain}
+            lines.extend([f">{101 + index}", f"{before}{chain}{after}"])
+            for row in rows:
+                segment = row.split(":")[first_index[index]]
+                if segment not in seen and set(aligned(segment)) != {"-"}:
+                    seen.add(segment)
+                    lines.extend([f">{101 + index}", f"{before}{segment}{after}"])
     return "\n".join(lines) + "\n"
 
 

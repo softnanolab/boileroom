@@ -167,7 +167,10 @@ def test_materialize_msa_serializes_multichain_rows_with_complex_header(core_cla
     msa = MSAInput(sequences=["AAAA:AAAA:CCC", "AAAG:AAAG:CCD"])
     text = core_class()._materialize_msa(msa, ["AAAA", "AAAA", "CCC"])
 
-    assert text == "#4,3\t2,1\n>101\t102\nAAAACCC\n>seq_0\nAAAACCC\n>seq_1\nAAAGCCD\n"
+    assert text == (
+        "#4,3\t2,1\n>101\t102\nAAAACCC\n>seq_0\nAAAACCC\n>seq_1\nAAAGCCD\n"
+        ">101\nAAAA---\n>101\nAAAG---\n>102\n----CCC\n>102\n----CCD\n"
+    )
 
 
 def test_materialize_msa_rejects_rows_with_wrong_chain_count(core_class) -> None:

@@ -92,6 +92,31 @@ def test_non_a3m_text_rejected(tmp_path: Path) -> None:
         materialize_msa(MSAInput(path=path), ["AAAA"])
 
 
+def test_paired_rows_of_a_heteromer_also_get_unpaired_rows() -> None:
+    """ColabFold rejects a chain whose unpaired MSA is empty, so paired-only input needs both sections."""
+    text = materialize_msa(MSAInput(sequences=["AAAA:CCC", "AAAG:CCD", "AAAA:CCD"]), HETERO)
+
+    assert text.splitlines() == [
+        "#4,3\t1,1",
+        ">101\t102",
+        "AAAACCC",
+        ">seq_0",
+        "AAAACCC",
+        ">seq_1",
+        "AAAGCCD",
+        ">seq_2",
+        "AAAACCD",
+        ">101",
+        "AAAA---",
+        ">101",
+        "AAAG---",
+        ">102",
+        "----CCC",
+        ">102",
+        "----CCD",
+    ]
+
+
 # -- (a) per-chain A3M text list -----------------------------------------------
 
 
