@@ -186,7 +186,9 @@ ESMFOLD2_SPEC = ModelSpec(
     contract=ModelContract(
         task_method="fold",
         task_kind="structure",
-        static_config_keys=frozenset({"device", "model_name", "cache_dir", "ccd_cache_dir", "dtype", "optimization"}),
+        static_config_keys=frozenset(
+            {"device", "model_name", "revision", "cache_dir", "ccd_cache_dir", "dtype", "optimization", "kit_msa"}
+        ),
         minimal_output_fields=("metadata", "atom_array"),
         optional_output_fields=(
             "plddt",
