@@ -23,11 +23,11 @@ from biotite.structure.io.pdb import get_structure as get_pdb_structure
 from biotite.structure.io.pdbx import CIFFile, set_structure
 
 from ...base import FoldingAlgorithm, PredictionMetadata
-from ...inputs import MSAInput
 from ...msa_cache import MSACache
 from ...utils import Timer, get_model_cache_dir
 from .._runtime_utils import command_env, include_field
 from .._worker import ModelWorker
+from .msa import materialize_msa, split_chains
 from .types import AlphaFold2MultimerOutput
 
 logger = logging.getLogger(__name__)
@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 class AlphaFold2MultimerCore(FoldingAlgorithm):
     """AlphaFold2-Multimer structure prediction backed by ColabFold."""
 
-    #: ``options["msa"]`` is an ``MSAInput`` here (not the A3M-text list the other cores take).
+    #: ``options["msa"]`` is an ``MSAInput`` or a per-chain list of A3M text (see ``.msa``).
     SUPPORTS_USER_MSA: ClassVar[bool] = True
     DEFAULT_CONFIG: ClassVar[dict[str, Any]] = {
         "device": None,
@@ -113,8 +113,10 @@ class AlphaFold2MultimerCore(FoldingAlgorithm):
         """Run AlphaFold2-Multimer for one sequence entry.
 
         Use ``:`` inside a sequence string to define multiple protein chains.
-        An optional :class:`~boileroom.inputs.MSAInput` may be passed via
-        ``options["msa"]`` to supply an alignment instead of querying the server.
+        ``options["msa"]`` supplies an alignment instead of querying the server:
+        a :class:`~boileroom.inputs.MSAInput` (``:``-joined rows or an a3m path) or a
+        list with one A3M text (unpaired MSA) or ``None`` per chain. The alignment's
+        first row must match the requested chain(s), otherwise ``ValueError`` is raised.
         """
         effective_config = self._merge_options(options)
         _validate_config(effective_config)
@@ -124,10 +126,8 @@ class AlphaFold2MultimerCore(FoldingAlgorithm):
                 "AlphaFold2-Multimer currently supports exactly one top-level sequence per call; use ':' to join chains."
             )
         provided_msa = (options or {}).get("msa")
-        if provided_msa is not None and not isinstance(provided_msa, MSAInput):
-            raise ValueError("options['msa'] must be an MSAInput instance")
 
-        chains = _split_chains(validated_sequences[0])
+        chains = split_chains(validated_sequences[0])
         joined = ":".join(chains)
 
         metadata = dataclasses.replace(
@@ -179,7 +179,7 @@ class AlphaFold2MultimerCore(FoldingAlgorithm):
         self,
         joined: str,
         chains: list[str],
-        provided_msa: MSAInput | None,
+        provided_msa: Any,
         buffer_path: Path,
         config: dict[str, Any],
     ) -> tuple[Path, str | None, str | None]:
@@ -209,25 +209,12 @@ class AlphaFold2MultimerCore(FoldingAlgorithm):
 
         return self._write_fasta(joined, buffer_path), str(config["msa_mode"]), cache_key
 
-    def _materialize_msa(self, msa: MSAInput, chains: list[str]) -> str:
-        """Render a provided MSA into ColabFold a3m text, honoring ``remove_insertions``.
+    def _materialize_msa(self, msa: Any, chains: list[str]) -> str:
+        """Validate a provided MSA against ``chains`` and render it as ColabFold a3m text.
 
-        File-backed MSAs are passed through and may be plain a3m or ColabFold's complex
-        a3m (first line ``#<lengths>\t<cardinalities>``). Sequence lists for a complex
-        are ``:``-joined rows, one segment per chain, and get the complex header.
+        See :func:`boileroom.models.alphafold.msa.materialize_msa` for the accepted forms.
         """
-        if msa.path is not None:
-            text = Path(msa.path).read_text(encoding="utf-8")
-        elif len(chains) > 1:
-            text = _complex_a3m(msa.sequences or [], chains)
-        else:
-            rows = msa.sequences or []
-            text = "\n".join(f">seq_{index}\n{row}" for index, row in enumerate(rows)) + "\n"
-        if not text.lstrip().startswith((">", "#")):
-            raise ValueError("Provided MSA must be in a3m/FASTA format (first line starts with '>' or a '#' header)")
-        if msa.remove_insertions:
-            text = _strip_insertions(text)
-        return text
+        return materialize_msa(msa, chains)
 
     def _cache_key(self, joined: str, config: dict[str, Any]) -> str:
         signature = json.dumps(
@@ -325,37 +312,6 @@ class AlphaFold2MultimerCore(FoldingAlgorithm):
         return cast(AlphaFold2MultimerOutput, self._filter_include_fields(output, include_fields))
 
 
-def _split_chains(sequence_entry: str) -> list[str]:
-    chains = [part.strip() for part in sequence_entry.split(":")]
-    if not any(chains):
-        raise ValueError("AlphaFold2-Multimer input must contain at least one chain")
-    if not all(chains):
-        raise ValueError("AlphaFold2-Multimer input must not contain empty chains (check for stray ':')")
-    return chains
-
-
-def _complex_a3m(rows: list[str], chains: list[str]) -> str:
-    """Serialize ``:``-joined complex MSA rows into ColabFold's complex a3m format.
-
-    ColabFold expects a ``#<lengths>\t<cardinalities>`` header over the unique chains,
-    followed by the concatenated unique query and then one concatenated row per hit.
-    Each hit contributes the segment of the first copy of every unique chain.
-    """
-    unique = list(dict.fromkeys(chains))
-    first_index = [chains.index(chain) for chain in unique]
-    header = f"#{','.join(str(len(c)) for c in unique)}\t{','.join(str(chains.count(c)) for c in unique)}"
-    labels = "\t".join(str(101 + index) for index in range(len(unique)))
-    lines = [header, f">{labels}", "".join(unique)]
-    for index, row in enumerate(rows):
-        segments = row.split(":")
-        if len(segments) != len(chains):
-            raise ValueError(
-                f"MSA row {index} has {len(segments)} ':'-separated segments; expected one per chain ({len(chains)})"
-            )
-        lines.extend([f">seq_{index}", "".join(segments[i] for i in first_index)])
-    return "\n".join(lines) + "\n"
-
-
 def _validate_config(config: dict[str, Any]) -> None:
     if not str(config["colabfold_python"]).strip():
         raise ValueError("colabfold_python must not be empty")
@@ -374,16 +330,6 @@ def _validate_config(config: dict[str, Any]) -> None:
             raise ValueError(f"{field} must be a positive integer")
     if not 1 <= config["num_models"] <= 5:
         raise ValueError("num_models must be between 1 and 5")
-
-
-def _strip_insertions(a3m_text: str) -> str:
-    lines = []
-    for line in a3m_text.splitlines():
-        if line.startswith((">", "#")) or not line:
-            lines.append(line)
-        else:
-            lines.append("".join(char for char in line if not char.islower() and char != "."))
-    return "\n".join(lines) + "\n"
 
 
 def _rank_from_scores_path(path: Path) -> int:

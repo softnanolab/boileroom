@@ -130,7 +130,7 @@ def test_resolve_msa_input_accepts_provided_msa(tmp_path: Path, core_class) -> N
     """A provided MSA is materialized and used directly, bypassing the server."""
     core = core_class({"data_dir": str(tmp_path)})
     provided = MSAInput(path=str(tmp_path / "given.a3m"))
-    (tmp_path / "given.a3m").write_text(">query\nAAAA:CCCC\n>hit\nAAAA:CCCC\n", encoding="utf-8")
+    (tmp_path / "given.a3m").write_text("#4,4\t1,1\n>101\t102\nAAAACCCC\n>hit\nAAAACCCC\n", encoding="utf-8")
 
     input_path, msa_mode, cache_key = core._resolve_msa_input(
         "AAAA:CCCC", ["AAAA", "CCCC"], provided, tmp_path, core.config
@@ -179,7 +179,7 @@ def test_materialize_msa_rejects_rows_with_wrong_chain_count(core_class) -> None
 @pytest.mark.parametrize("entry", ["AAAA::CCCC", "AAAA:", ":AAAA"])
 def test_split_chains_rejects_empty_segments(entry: str) -> None:
     """Stray ``:`` separators fail instead of silently changing the stoichiometry."""
-    from boileroom.models.alphafold.core import _split_chains
+    from boileroom.models.alphafold.msa import split_chains as _split_chains
 
     with pytest.raises(ValueError, match="empty chains"):
         _split_chains(entry)

@@ -12,6 +12,7 @@ from ...images.volumes import model_weights
 from ...utils import HOURS, MINUTES, MODAL_MODEL_DIR
 from ..registry import ALPHAFOLD2_MULTIMER_SPEC
 from .image import alphafold2_multimer_image
+from .msa import encode_msa_option, materialize_msa, split_chains
 from .types import AlphaFold2MultimerOutput
 
 logger = logging.getLogger(__name__)
@@ -63,6 +64,11 @@ class AlphaFold2Multimer(ModelWrapper):
         loaded runners and parameters. Model settings belong in ``config``;
         seeds, MSA inputs and output selection can change in ``options``.
         Use ``:`` inside a sequence string to define multiple chains.
+
+        ``options["msa"]`` may be an :class:`~boileroom.inputs.MSAInput` or a list
+        with one A3M text (unpaired MSA) or ``None`` per chain. It is validated
+        against the requested sequence here, and file-backed MSAs are read on the
+        caller's side, so the same value works on the Modal and Apptainer backends.
         """
         validated_sequences = [sequences] if isinstance(sequences, str) else list(sequences)
         if len(validated_sequences) != 1:
@@ -76,4 +82,9 @@ class AlphaFold2Multimer(ModelWrapper):
                     "The following config keys can only be set at initialization and cannot be overridden per-call: "
                     f"{sorted(static_keys)}"
                 )
+        if options is not None and options.get("msa") is not None:
+            encoded = encode_msa_option(options["msa"])
+            chains = split_chains(validated_sequences[0])
+            materialize_msa(encoded, chains)  # fail before starting a backend
+            options = {**options, "msa": encoded}
         return self._call_backend_method("fold", sequences, options=options)
