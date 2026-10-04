@@ -15,7 +15,7 @@ import torch
 
 from ...base import EmbeddingAlgorithm
 from ...utils import Timer, get_model_cache_dir, validate_sequence
-from .types import ESM3Output, ESMCOutput, ESMEmbeddingOutput
+from .types import ESM3InverseFoldingOutput, ESM3Output, ESMCOutput, ESMEmbeddingOutput
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +110,10 @@ ESM3_TRACK_LOGIT_FIELDS: dict[str, tuple[str, tuple[str, ...]]] = {
     "function_logits": ("function", ("logits.function", "function")),
     "residue_annotation_logits": ("residue_annotations", ("residue_annotation_logits", "residue_annotations")),
 }
+
+
+# Standard amino acids, in the label order of ``ESM3Core.inverse_fold`` logits.
+INVERSE_FOLDING_AMINO_ACIDS = "ACDEFGHIKLMNPQRSTVWY"
 
 
 class _BaseESM3EmbeddingCore(EmbeddingAlgorithm):
@@ -440,10 +444,95 @@ class ESM3Core(_BaseESM3EmbeddingCore):
     def embed(self, sequences: str | Sequence[str], options: dict | None = None) -> ESM3Output:
         return cast(ESM3Output, super().embed(sequences, options=options))
 
+    def inverse_fold(
+        self,
+        sequence: str,
+        backbone_coordinates: np.ndarray,
+        positions: Sequence[int],
+    ) -> ESM3InverseFoldingOutput:
+        """Predict amino-acid logits at masked positions given the rest of the sequence and a backbone.
+
+        The residues at ``positions`` are replaced by the SDK mask token; every other residue stays
+        fixed. The structure is supplied as conditioning input, and ESM3's sequence track is read out
+        at the masked positions (all positions are scored in a single forward pass, so the result for
+        each masked position is conditioned on the other masked positions being masked as well).
+
+        Parameters
+        ----------
+        sequence : str
+            Amino-acid sequence; chains separated by ``:``.
+        backbone_coordinates : np.ndarray
+            ``(n_residues, 3, 3)`` N, CA, C coordinates in Angstrom, one row per residue (chain
+            breaks excluded). Residues with missing coordinates may be NaN.
+        positions : Sequence[int]
+            Residue indices to mask, counted over all residues (chain breaks excluded).
+
+        Returns
+        -------
+        ESM3InverseFoldingOutput
+            Logits over the 20 standard amino acids at each masked position.
+        """
+
+        parsed = parse_esm3_sequences(sequence)[0]
+        n_residues = parsed.residue_count
+        coordinates = np.asarray(backbone_coordinates, dtype=np.float32)
+        if coordinates.shape != (n_residues, 3, 3):
+            raise ValueError(
+                f"backbone_coordinates must have shape ({n_residues}, 3, 3) matching the sequence; "
+                f"got {coordinates.shape}."
+            )
+        position_array = np.asarray(list(positions), dtype=np.int64)
+        if position_array.ndim != 1 or position_array.size == 0:
+            raise ValueError("positions must be a non-empty 1D sequence of residue indices.")
+        if position_array.min() < 0 or position_array.max() >= n_residues:
+            raise ValueError(f"positions must lie in [0, {n_residues}); got {position_array.tolist()}.")
+        if len(set(position_array.tolist())) != position_array.size:
+            raise ValueError("positions must not contain duplicates.")
+
+        if self.model is None:
+            logger.warning("Model not loaded. Forcing the model to load... Next time call _load() first.")
+            self._load()
+        assert self.model is not None, "Model not loaded"
+        from esm.sdk.api import ESMProtein, LogitsConfig
+
+        keep_indices = self._residue_token_indices(parsed.sdk_sequence) - 1  # positions within sdk_sequence
+        masked_sdk = list(parsed.sdk_sequence)
+        for position in position_array:
+            masked_sdk[int(keep_indices[position])] = "_"
+
+        # SDK expects atom37 coordinates aligned to sdk_sequence (NaN rows at chain breaks / unused atoms).
+        atom37 = np.full((len(parsed.sdk_sequence), 37, 3), np.nan, dtype=np.float32)
+        atom37[keep_indices, :3] = coordinates
+
+        metadata = dataclasses.replace(self._metadata_template, sequence_lengths=[n_residues])
+        with Timer("ESM3 preprocessing") as preprocess_timer:
+            protein = ESMProtein(sequence="".join(masked_sdk), coordinates=torch.from_numpy(atom37))
+            encoded = self.model.encode(protein)
+        with Timer("Model Inference") as inference_timer, torch.inference_mode():
+            raw_output = self.model.logits(encoded, LogitsConfig(sequence=True))
+        with Timer("ESM3 postprocessing") as postprocess_timer:
+            logits = self._extract_array(raw_output, "logits.sequence", "sequence_logits")
+            if logits.ndim == 3 and logits.shape[0] == 1:
+                logits = logits[0]
+            token_ids = self.model.tokenizers.sequence.convert_tokens_to_ids(list(INVERSE_FOLDING_AMINO_ACIDS))
+            # +1 skips the BOS token the SDK prepends to the encoded stream.
+            token_rows = keep_indices[position_array] + 1
+            selected = logits[token_rows][:, np.asarray(token_ids, dtype=np.int64)].astype(np.float32)
+        metadata.preprocessing_time = preprocess_timer.duration
+        metadata.inference_time = inference_timer.duration
+        metadata.postprocessing_time = postprocess_timer.duration
+        return ESM3InverseFoldingOutput(
+            metadata=metadata,
+            positions=position_array.astype(np.int32),
+            logits=selected,
+            amino_acids=INVERSE_FOLDING_AMINO_ACIDS,
+        )
+
 
 __all__ = [
     "ESM3Core",
     "ESM3ParsedSequence",
+    "INVERSE_FOLDING_AMINO_ACIDS",
     "ESMCCore",
     "pad_residue_arrays",
     "parse_esm3_sequences",

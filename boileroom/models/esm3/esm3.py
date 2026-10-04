@@ -13,7 +13,9 @@ from ..registry import ESM3_SPEC
 from .image import esm3_image
 
 if TYPE_CHECKING:
-    from .types import ESM3Output
+    import numpy as np
+
+    from .types import ESM3InverseFoldingOutput, ESM3Output
 
 logger = logging.getLogger(__name__)
 app = get_modal_app("esm3")
@@ -44,6 +46,14 @@ class ModalESM3:
             raise RuntimeError("ModalESM3 has not been initialized")
         return self._core.embed(sequences, options=options)
 
+    @modal.method()
+    def inverse_fold(
+        self, sequence: str, backbone_coordinates: "np.ndarray", positions: Sequence[int]
+    ) -> "ESM3InverseFoldingOutput":
+        if getattr(self, "_core", None) is None:
+            raise RuntimeError("ModalESM3 has not been initialized")
+        return self._core.inverse_fold(sequence, backbone_coordinates, positions)
+
 
 class ESM3(ModelWrapper):
     """Interface for ESM3 residue-level embeddings (embed-only)."""
@@ -65,3 +75,24 @@ class ESM3(ModelWrapper):
                     f"overridden per-call: {conflicting_keys}"
                 )
         return self._call_backend_method("embed", sequences, options=options)
+
+    def inverse_fold(
+        self, sequence: str, backbone_coordinates: "np.ndarray", positions: Sequence[int]
+    ) -> "ESM3InverseFoldingOutput":
+        """Predict amino-acid logits at masked residues, conditioned on a backbone structure.
+
+        Parameters
+        ----------
+        sequence : str
+            Amino-acid sequence; chains separated by ``:``.
+        backbone_coordinates : np.ndarray
+            ``(n_residues, 3, 3)`` N, CA, C coordinates (Angstrom), chain breaks excluded.
+        positions : Sequence[int]
+            Residue indices to mask; all other residues are kept as given.
+
+        Returns
+        -------
+        ESM3InverseFoldingOutput
+            ``(n_positions, 20)`` logits over the standard amino acids at the masked positions.
+        """
+        return self._call_backend_method("inverse_fold", sequence, backbone_coordinates, positions)

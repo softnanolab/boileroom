@@ -231,6 +231,8 @@ Optional fields:
     - `residue_annotation_logits` — multi-hot residue-annotation logits.
 - `include_fields=["*"]` means all supported optional fields for that model.
 
+**ESM3 inverse folding.** `ESM3.inverse_fold(sequence, backbone_coordinates, positions)` masks the residues at `positions` (indices over all residues, chain breaks excluded), conditions ESM3 on the given `(n_residues, 3, 3)` N/CA/C backbone coordinates, and returns an `ESM3InverseFoldingOutput` with `logits` of shape `(n_positions, 20)` over `amino_acids` (`"ACDEFGHIKLMNPQRSTVWY"`). All positions are scored in one forward pass, so pass a single position for the distribution of one residue given all others.
+
 ### ESMFold2
 - ESMFold2 uses Biohub's ESMFold2 model family through the `esm` package (`esm>=3.4.1`, torch 2.11, CUDA 12.6 only), so it has its own runtime image instead of sharing the ESMFold/ESM-2 image.
 - The default `biohub/ESMFold2` checkpoint is pinned to a Hugging Face revision (`revision=None` resolves to the pin). Pass `config={"revision": "<sha>"}` to load another snapshot; other `model_name` values load their latest snapshot unless `revision` is set.
