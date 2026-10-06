@@ -10,7 +10,7 @@
 - **protenix**: `boileroom/models/protenix/Dockerfile` → installs Protenix plus HMMER/Kalign CLI dependencies. Tag: `docker.io/jakublala/boileroom-protenix`. Platform: `linux/amd64`.
 - **esmfold2**: `boileroom/models/esmfold2/Dockerfile` → installs the MIT-licensed 2026 Chan Zuckerberg Biohub `esm` package (`esm==3.4.1.post1`, torch 2.11, CUDA 12.6 only) from `requirements.txt`. Tag: `docker.io/jakublala/boileroom-esmfold2`. **Shared by ESMFold2, ESM-C, and ESM3** — all three use the same Biohub `esm` package, so ESM-C/ESM3 run on this image instead of a separate one.
 
-- **esmfold2-kit** and **protenix-kit** (opt-in, published by hand rather than by CI): `boileroom/models/esmfold2/kit/Dockerfile` and `boileroom/models/protenix/kit/Dockerfile` → the stack of the Anthropic optimization kit (torch 2.13+cu130, kit commit `f4f62fa`) behind `optimization="exact"` and `"fast"`. Names: `boileroom-esmfold2-kit` and `boileroom-protenix-kit`. Used only when a kit mode is requested; `optimization="vanilla"` (the default) keeps using the stock images above. Not part of the build/smoke/publish scripts or CI: see [Kit images](#kit-images-optimization-exact-and-fast).
+- **esmfold2-kit** and **protenix-kit** (opt-in, published by hand rather than by CI): `boileroom/models/esmfold2/kit/Dockerfile` and `boileroom/models/protenix/kit/Dockerfile` → the stack of the Anthropic optimization kit (torch 2.13+cu130, kit commit `f4f62fa`) behind `optimization="exact"` and `"fast"`. Names: `boileroom-esmfold2-kit` and `boileroom-protenix-kit`. Used only when a kit mode is requested; `optimization="vanilla"` (the default) keeps using the stock images above. Not part of the build/smoke/publish scripts or CI: see [Kit images](#kit-images-optimizationexact-and-fast).
 
 Dockerfiles are the canonical image definition for all runtimes. Docker/Apptainer images are built from these Dockerfiles, and Modal pulls the corresponding published model image from Docker Hub instead of maintaining a separate handwritten dependency stack. CUDA variants select the PyTorch wheel index; the runtime images rely on PyTorch/NVIDIA wheels for user-space CUDA libraries and on Docker/Apptainer GPU integration for host driver libraries.
 
@@ -193,6 +193,7 @@ The kit modes need a different stack from the stock images (see [optimization.md
 ```bash
 docker build -f boileroom/models/protenix/kit/Dockerfile boileroom/models/protenix/kit -t <repository>/boileroom-protenix-kit:<tag>
 docker build -f boileroom/models/esmfold2/kit/Dockerfile boileroom/models/esmfold2/kit -t <repository>/boileroom-esmfold2-kit:<tag>
+docker push <repository>/boileroom-protenix-kit:<tag>
 docker push <repository>/boileroom-esmfold2-kit:<tag>
 
 export BOILEROOM_KIT_IMAGE_SOURCE=registry BOILEROOM_DOCKER_REPOSITORY=<repository> BOILEROOM_IMAGE_TAG=<tag>

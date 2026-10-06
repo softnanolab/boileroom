@@ -3,7 +3,10 @@
 import json
 import os
 import pathlib
+from collections.abc import Callable
+from contextlib import AbstractContextManager
 from io import StringIO
+from typing import Any
 
 import numpy as np
 import pytest
@@ -21,7 +24,9 @@ KIT_IMAGE_SOURCE_ENV = "BOILEROOM_KIT_IMAGE_SOURCE"
 KIT_DEFAULT_DEVICE = "A100-80GB"
 
 
-def test_esmfold2_modal_fold_basic(backend_option: str, device_option: str | None, output_ctx) -> None:
+def test_esmfold2_modal_fold_basic(
+    backend_option: str, device_option: str | None, output_ctx: Callable[[], AbstractContextManager[Any]]
+) -> None:
     """Fold a short protein with ESMFold2 and validate real structure outputs."""
     sequence = "MLKNVHVLVLGAGDVGSVVVRLLEK"
     config = {"model_name": "biohub/ESMFold2-Fast"}
@@ -171,7 +176,10 @@ def _assert_matches_biohub_reference(result, lengths: list[int], expected_atoms:
 
 @pytest.mark.parametrize("reference_id", _reference_ids())
 def test_esmfold2_matches_biohub_reference(
-    reference_id: str, backend_option: str, device_option: str | None, output_ctx
+    reference_id: str,
+    backend_option: str,
+    device_option: str | None,
+    output_ctx: Callable[[], AbstractContextManager[Any]],
 ) -> None:
     """A vanilla boileroom fold of a PDB entry's sequence must reproduce Biohub's own ESMFold2 prediction.
 
@@ -208,7 +216,11 @@ def _kit_reference_ids() -> list[str]:
 @pytest.mark.parametrize("reference_id", _kit_reference_ids())
 @pytest.mark.parametrize("optimization", ["exact", "fast"])
 def test_esmfold2_kit_mode_matches_biohub_reference_within_seed_noise(
-    reference_id: str, optimization: str, backend_option: str, device_option: str | None, output_ctx
+    reference_id: str,
+    optimization: str,
+    backend_option: str,
+    device_option: str | None,
+    output_ctx: Callable[[], AbstractContextManager[Any]],
 ) -> None:
     """A kit mode's 1UBQ fold must sit within vanilla's seed-change noise of the Biohub reference.
 

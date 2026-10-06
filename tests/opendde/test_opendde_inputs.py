@@ -1,7 +1,10 @@
 """OpenDDE integration test for caller-supplied MSAs and templates (GPU, weights required)."""
 
 import io
+from collections.abc import Callable
+from contextlib import AbstractContextManager
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
@@ -27,7 +30,7 @@ def _template_sequence() -> str:
 
 
 def test_opendde_uses_caller_supplied_msa_and_templates(
-    backend_option: str, device_option: str | None, output_ctx
+    backend_option: str, device_option: str | None, output_ctx: Callable[[], AbstractContextManager[Any]]
 ) -> None:
     """A caller MSA replaces the MSA search, and a caller template changes the prediction."""
     query = "MK" + _template_sequence()[3:-2] + "GGAA"
