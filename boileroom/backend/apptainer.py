@@ -15,6 +15,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 import httpx
+import numpy as np
 
 from ..utils import ensure_cache_dir
 from .base import Backend
@@ -729,6 +730,45 @@ class _ApptainerModelProxy:
                 if self._log_file_path is not None:
                     log_file_msg = f"\n\nServer log file: {self._log_file_path}"
                 # Raise RuntimeError with log file path, chaining from the original HTTPStatusError
+                raise RuntimeError(
+                    f"Internal server error (500) occurred.{log_file_msg}\nHTTP request failed: {e}"
+                ) from e
+            raise
+        return _deserialize_output(response.json(), self._transport_secret)
+
+    def inverse_fold(self, sequence: str, backbone_coordinates: Any, positions: list[int]) -> Any:
+        """Predict masked-residue amino-acid logits by making a POST request to /inverse_fold.
+
+        Parameters
+        ----------
+        sequence : str
+            Amino-acid sequence; chains separated by ``:``.
+        backbone_coordinates : array-like
+            ``(n_residues, 3, 3)`` N, CA, C coordinates. NaN entries (missing atoms) are sent as JSON ``null``.
+        positions : list[int]
+            Residue indices to mask.
+
+        Returns
+        -------
+        Any
+            Deserialized inverse-folding output with numpy arrays reconstructed.
+        """
+        coordinates = np.asarray(backbone_coordinates, dtype=np.float64)
+        json_coordinates = coordinates.astype(object)
+        json_coordinates[np.isnan(coordinates)] = None  # JSON has no NaN
+        payload = {
+            "sequence": sequence,
+            "backbone_coordinates": json_coordinates.tolist(),
+            "positions": [int(position) for position in positions],
+        }
+        response = self._client.post("/inverse_fold", json=payload)
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            if response.status_code == 500:
+                log_file_msg = ""
+                if self._log_file_path is not None:
+                    log_file_msg = f"\n\nServer log file: {self._log_file_path}"
                 raise RuntimeError(
                     f"Internal server error (500) occurred.{log_file_msg}\nHTTP request failed: {e}"
                 ) from e

@@ -347,3 +347,97 @@ def test_esm3_package_types_import_has_no_modal_wrapper_side_effects(monkeypatch
     assert "boileroom.models.esm3.esmc" not in sys.modules
     assert "boileroom.models.esm3.esm3" not in sys.modules
     assert "modal" not in sys.modules
+
+
+class _FakeSequenceTokenizer:
+    """Maps amino acids to non-contiguous ids so tests catch id/column mix-ups."""
+
+    def convert_tokens_to_ids(self, tokens: list[str]) -> list[int]:
+        """Return a distinct, non-contiguous id for each token."""
+        return [5 + 2 * index for index, _ in enumerate(tokens)]
+
+
+class _FakeTokenizers:
+    sequence = _FakeSequenceTokenizer()
+
+
+class _FakeIFModel(_FakeSDKModel):
+    tokenizers = _FakeTokenizers()
+    proteins: ClassVar[list[Any]] = []
+
+    def encode(self, protein: Any) -> _FakeEncoded:
+        """Record the protein passed to the SDK and return a fake encoding."""
+        self.proteins.append(protein)
+        return _FakeEncoded(protein.sequence)
+
+    def logits(self, encoded: _FakeEncoded, config: _FakeLogitsConfig) -> Any:
+        """Return sequence logits whose value encodes the (token row, vocab column) it came from."""
+        torch = pytest.importorskip("torch")
+        n_tokens = len(encoded.sequence) + 2
+        vocab = 64
+        # logits[token, v] = 1000 * token + v, so selected values identify (row, column) exactly.
+        values = torch.arange(vocab, dtype=torch.float32)[None, :] + 1000 * torch.arange(n_tokens)[:, None]
+        return types.SimpleNamespace(logits=types.SimpleNamespace(sequence=values[None]))
+
+
+@pytest.fixture()
+def fake_if_sdk(fake_esm_sdk: type[_FakeSDKModel], monkeypatch: pytest.MonkeyPatch) -> type[_FakeIFModel]:
+    """Install the fake inverse-folding SDK model and a protein type that records coordinates."""
+    _FakeIFModel.proteins = []
+    cast(Any, sys.modules["esm.models.esm3"]).ESM3 = _FakeIFModel
+
+    class _Protein(_FakeProtein):
+        def __init__(self, sequence: str, coordinates: Any = None) -> None:
+            """Store the sequence and optional coordinates."""
+            super().__init__(sequence)
+            self.coordinates = coordinates
+
+    cast(Any, sys.modules["esm.sdk.api"]).ESMProtein = _Protein
+    return _FakeIFModel
+
+
+def test_esm3_inverse_fold_masks_positions_and_selects_amino_acid_logits(fake_if_sdk: type[_FakeIFModel]) -> None:
+    """Masked sequence, atom37 layout and the selected logit rows/columns match the request."""
+    from boileroom.models.esm3.core import INVERSE_FOLDING_AMINO_ACIDS, ESM3Core
+
+    core = ESM3Core(config={"device": "cpu"})
+    coords = np.arange(5 * 3 * 3, dtype=np.float32).reshape(5, 3, 3)
+    result = core.inverse_fold("ACD:EF", coords, positions=[3, 1])
+
+    protein = fake_if_sdk.proteins[-1]
+    assert protein.sequence == "A_D|_F"
+    assert tuple(protein.coordinates.shape) == (6, 37, 3)
+    # Backbone placed at residue rows, chain-break row and unused atoms are NaN.
+    assert protein.coordinates[:3, :3].numpy().tolist() == coords[:3].tolist()
+    assert protein.coordinates[4:, :3].numpy().tolist() == coords[3:].tolist()
+    assert np.isnan(protein.coordinates[3].numpy()).all()
+    assert np.isnan(protein.coordinates[0, 3:].numpy()).all()
+
+    assert result.amino_acids == INVERSE_FOLDING_AMINO_ACIDS
+    assert result.positions.tolist() == [3, 1]
+    assert result.logits.shape == (2, 20)
+    # residue 3 -> sdk index 4 -> token row 5; residue 1 -> sdk index 1 -> token row 2
+    expected_columns = [5 + 2 * i for i in range(20)]
+    assert result.logits[0].tolist() == [5000 + c for c in expected_columns]
+    assert result.logits[1].tolist() == [2000 + c for c in expected_columns]
+
+
+@pytest.mark.parametrize(
+    ("positions", "coords_shape", "match"),
+    [
+        ([], (3, 3, 3), "non-empty"),
+        ([3], (3, 3, 3), "lie in"),
+        ([-1], (3, 3, 3), "lie in"),
+        ([1, 1], (3, 3, 3), "duplicates"),
+        ([1], (2, 3, 3), "shape"),
+    ],
+)
+def test_esm3_inverse_fold_rejects_invalid_inputs(
+    fake_if_sdk: type[_FakeIFModel], positions: list[int], coords_shape: tuple[int, ...], match: str
+) -> None:
+    """Bad positions or coordinate shapes raise ValueError before any model call."""
+    from boileroom.models.esm3.core import ESM3Core
+
+    core = ESM3Core(config={"device": "cpu"})
+    with pytest.raises(ValueError, match=match):
+        core.inverse_fold("ACD", np.zeros(coords_shape, dtype=np.float32), positions=positions)

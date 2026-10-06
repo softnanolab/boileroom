@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from .types import ESM3Output, ESMCOutput, ESMEmbeddingOutput
+from .types import ESM3InverseFoldingOutput, ESM3Output, ESMCOutput, ESMEmbeddingOutput
 
 
 def __getattr__(name: str) -> Any:
@@ -19,4 +19,13 @@ def __getattr__(name: str) -> Any:
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
-__all__ = ["ESM3", "ESM3Output", "ESMC", "ESMCOutput", "ESMEmbeddingOutput", "ModalESM3", "ModalESMC"]
+__all__ = [
+    "ESM3",
+    "ESM3InverseFoldingOutput",
+    "ESM3Output",
+    "ESMC",
+    "ESMCOutput",
+    "ESMEmbeddingOutput",
+    "ModalESM3",
+    "ModalESMC",
+]

@@ -32,7 +32,31 @@ class ESMEmbeddingOutput(EmbeddingPrediction):
     residue_annotation_logits: np.ndarray | None = None  # multi-hot residue-annotation logits
 
 
+@dataclass
+class ESM3InverseFoldingOutput:
+    """Structure-conditioned sequence logits at masked residue positions (ESM3 only).
+
+    Attributes
+    ----------
+    metadata : PredictionMetadata
+        Timing and model metadata.
+    positions : np.ndarray
+        ``(n_positions,)`` residue indices that were masked, counted over the residues of the
+        whole (possibly multichain) input, excluding chain breaks.
+    logits : np.ndarray
+        ``(n_positions, 20)`` sequence-track logits restricted to the 20 standard amino acids,
+        in the order given by ``amino_acids``.
+    amino_acids : str
+        Amino-acid one-letter codes labelling the last axis of ``logits``.
+    """
+
+    metadata: PredictionMetadata
+    positions: np.ndarray
+    logits: np.ndarray
+    amino_acids: str
+
+
 ESMCOutput = ESMEmbeddingOutput
 ESM3Output = ESMEmbeddingOutput
 
-__all__ = ["ESM3Output", "ESMCOutput", "ESMEmbeddingOutput"]
+__all__ = ["ESM3InverseFoldingOutput", "ESM3Output", "ESMCOutput", "ESMEmbeddingOutput"]

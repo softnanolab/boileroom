@@ -77,6 +77,7 @@ import builtins  # noqa: E402
 
 builtins.__import__ = _import_with_modal_fix
 
+import numpy as np  # noqa: E402
 from fastapi import FastAPI, HTTPException  # noqa: E402
 from fastapi.responses import JSONResponse  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
@@ -189,6 +190,14 @@ class FoldRequest(BaseModel):
     options: dict[str, Any] | None = None
 
 
+class InverseFoldRequest(BaseModel):
+    """Request model for inverse_fold endpoint."""
+
+    sequence: str
+    backbone_coordinates: list[Any]  # (n_residues, 3, 3) nested lists; null entries mean NaN
+    positions: list[int]
+
+
 def _serialize_output(output: Any) -> dict[str, str]:
     """Serialize output object for signed JSON transport.
 
@@ -232,6 +241,46 @@ async def embed(request: EmbedRequest) -> JSONResponse:
     except Exception as e:
         logger.error(f"Embedding failed: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Embedding failed: {str(e)}") from e
+
+
+@app.post("/inverse_fold")
+async def inverse_fold(request: InverseFoldRequest) -> JSONResponse:
+    """Predict masked-residue amino-acid logits using the loaded model.
+
+    Parameters
+    ----------
+    request : InverseFoldRequest
+        Request containing the sequence, backbone coordinates and positions to mask.
+
+    Returns
+    -------
+    JSONResponse
+        Signed inverse-folding output payload.
+
+    Raises
+    ------
+    HTTPException
+        422 for invalid inputs (``ValueError``), 501 if the model has no ``inverse_fold``, 503 if no model is
+        loaded, and 500 for unexpected failures.
+    """
+    if _model_instance is None:
+        raise HTTPException(status_code=503, detail="Model not loaded")
+    if not hasattr(_model_instance, "inverse_fold"):
+        raise HTTPException(status_code=501, detail="Loaded model does not support inverse folding")
+
+    try:
+        # ``dtype=float32`` turns JSON null entries back into NaN.
+        coordinates = np.asarray(request.backbone_coordinates, dtype=np.float32)
+        output = _model_instance.inverse_fold(request.sequence, coordinates, request.positions)
+        serialized = _serialize_output(output)
+        return JSONResponse(content=serialized)
+    except ValueError as e:
+        # Invalid caller input (duplicate positions, wrong coordinate shape, ...), not a server fault.
+        logger.warning(f"Inverse folding rejected invalid input: {str(e)}")
+        raise HTTPException(status_code=422, detail=f"Invalid inverse folding input: {str(e)}") from e
+    except Exception as e:
+        logger.error(f"Inverse folding failed: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Inverse folding failed: {str(e)}") from e
 
 
 @app.post("/fold")
