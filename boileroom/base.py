@@ -11,8 +11,15 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol, cast
 
 import numpy as np
 
-from .images.metadata import format_image_reference, get_image_tag
+from .images.metadata import (
+    DEFAULT_PYTHON_VERSION,
+    format_image_reference,
+    get_image_tag,
+    get_kit_image_source,
+    get_kit_image_spec,
+)
 from .models.registry import ModelSpec, resolve_object
+from .optimization import DEFAULT_OPTIMIZATION, validate_optimization
 from .utils import validate_sequence
 
 if TYPE_CHECKING:
@@ -45,6 +52,7 @@ class PredictionMetadata:
     preprocessing_time: float | None = None  # in seconds
     inference_time: float | None = None  # in seconds
     postprocessing_time: float | None = None  # in seconds
+    optimization: dict[str, Any] | None = None  # resolved optimization mode and GPU
 
 
 class StructurePrediction(Protocol):
@@ -72,6 +80,14 @@ class Algorithm(ABC):
     DEFAULT_CONFIG: ClassVar[Mapping[str, Any]] = MappingProxyType({})
     # Static config keys that can only be set at initialization and cannot be overridden per-call
     STATIC_CONFIG_KEYS: ClassVar[frozenset[str]] = frozenset()
+
+    #: Capability flags for the shared optional folding inputs. ``msa`` is one A3M
+    #: text (or ``None``) per chain, or an ``MSAInput`` where a family documents
+    #: it (AlphaFold2-Multimer takes both); ``templates`` maps a name to mmCIF text. A wrapper that
+    #: sets a flag must translate the input to its model's native form; one
+    #: that does not is refused by ``_merge_options`` rather than ignored.
+    SUPPORTS_USER_MSA: ClassVar[bool] = False
+    SUPPORTS_USER_TEMPLATES: ClassVar[bool] = False
 
     def __init__(self, config: dict | None = None) -> None:
         """Initialize the algorithm instance and set its default runtime attributes.
@@ -169,6 +185,11 @@ class Algorithm(ABC):
             raise ValueError(
                 f"The following config keys can only be set at initialization and cannot be overridden per-call: {sorted(conflicting_keys)}"
             )
+
+        for key, flag in (("msa", "SUPPORTS_USER_MSA"), ("templates", "SUPPORTS_USER_TEMPLATES")):
+            if options.get(key) and not getattr(self, flag, False):
+                name = getattr(self, "DISPLAY_NAME", type(self).__name__)
+                raise ValueError(f"{name} does not support user-supplied {key!r}")
 
         # Merge: static config (from self.config) + dynamic options
         return {**self.config, **options}
@@ -408,20 +429,40 @@ class ModelWrapper:
             )
 
         backend_instance: Any
+        # A family with a kit image (ESMFold2, Protenix) runs "exact" and "fast" there; "vanilla" keeps the stock image.
+        kit_image_key = None
+        if "optimization" in model_spec.contract.static_config_keys:
+            # Checked here so a bad mode fails in the caller, not in a Modal container that would restart silently.
+            mode = validate_optimization(resolved_config.get("optimization", DEFAULT_OPTIMIZATION))
+            if mode != DEFAULT_OPTIMIZATION and model_spec.kit_image_key is not None:
+                kit_image_key = model_spec.kit_image_key
         if backend_type == "modal":
-            if model_spec.modal_class_path is None:
+            modal_class_path = model_spec.kit_modal_class_path if kit_image_key else model_spec.modal_class_path
+            if modal_class_path is None:
                 raise ValueError(f"Modal backend is not configured for {model_spec.public_name}")
-            modal_cls = resolve_object(model_spec.modal_class_path)
+            modal_cls = resolve_object(modal_class_path)
             backend_instance = ModalBackend(modal_cls, resolved_config, device=device)
         elif backend_type == "apptainer":
             if model_spec.apptainer_core_class_path is None or model_spec.apptainer_image_name is None:
                 raise ValueError(f"Apptainer backend is not configured for {model_spec.public_name}")
-            image_uri = f"docker://{format_image_reference(model_spec.apptainer_image_name, backend_tag)}"
+            image_name = model_spec.apptainer_image_name
+            python_version = DEFAULT_PYTHON_VERSION
+            if kit_image_key:
+                if get_kit_image_source() != "registry" and ":" not in resolved_backend:
+                    raise ValueError(
+                        f"Apptainer pulls the {model_spec.public_name} kit image from a registry, and none is published. "
+                        "Build and push it (see docs/optimization.md), then set BOILEROOM_KIT_IMAGE_SOURCE=registry "
+                        'with BOILEROOM_DOCKER_REPOSITORY and BOILEROOM_IMAGE_TAG (or pass backend="apptainer:<tag>").'
+                    )
+                kit_spec = get_kit_image_spec(kit_image_key)
+                image_name, python_version = kit_spec.image_name, kit_spec.python_version
+            image_uri = f"docker://{format_image_reference(image_name, backend_tag)}"
             backend_instance = ApptainerBackend(
                 model_spec.apptainer_core_class_path,
                 image_uri,
                 resolved_config,
                 device=device,
+                python_version=python_version,
             )
         else:
             raise ValueError(f"Backend {backend_type} not supported")

@@ -75,9 +75,20 @@ MSA handling:
   (default `https://api.colabfold.com`, the same as AlphaFold2-Multimer and Boltz). Protenix's own default
   server can queue jobs for a long time, so Boileroom points the worker at the configured server via
   `MMSEQS_SERVICE_HOST_URL`.
-- **Provided MSA:** pass `config={"unpaired_msa": [a3m_chain_a, None, ...]}` with one A3M string (or `None` for
-  query-only) per chain; no server call is made.
+- **Provided MSA:** pass `options={"msa": [a3m_chain_a, None, ...]}` with one A3M string per chain, or `None` for a
+  query-only chain (this also suppresses the automatic search for that chain). The list length must equal the number of
+  chains and each A3M's first row must be the chain's sequence. When `msa` is set, no server call is made. `unpaired_msa`
+  is the older name for the same list and is still accepted; passing both is an error. A supplied MSA needs `use_msa=True`.
 - **Single sequence:** set `use_msa=False`.
+
+Templates:
+- Pass `options={"templates": {"name": mmcif_text, ...}}` with up to 4 mmCIF structures (name -> mmCIF text). The templates
+  apply to one chain only, selected by `options["templates_chain"]` (index into the `:`-separated chains, default `0`); the
+  other chains are left to Protenix's normal handling.
+- Each mmCIF must be a full PDB-style file with `_atom_site`, `_entity_poly_seq` and `_struct_asym` loops and exactly one
+  polymer chain, and must share at least 10 aligned residues with the target chain. Boileroom stages each structure under a
+  synthetic id, aligns it to the query chain and stamps a release date that passes Protenix's 2021-09-30 cutoff; nothing is
+  searched or downloaded.
 
 Sampling is controlled by `seeds` (comma-separated), `sample` (diffusion samples per seed, default 5), `cycle`
 (recycles, default 10) and `step` (diffusion steps, default 200). Lower values trade accuracy for speed. Template
@@ -85,9 +96,29 @@ and RNA-MSA searches require the external tools and databases expected by Proten
 `hmmer` and `kalign`, but database paths still need to be available inside the container when those features are
 enabled.
 
+Optimization: `config={"optimization": "vanilla" | "exact" | "fast"}` (default `"vanilla"`, initialization-only) switches
+to the Anthropic kit kernels on A100 or H100/H200 GPUs only; other GPUs are refused by name. See
+[optimization.md](optimization.md) for the requirements, kit image and measured speedups.
+
 Protenix keeps its runner in a persistent worker, retaining a hard `timeout_seconds` limit (3500 seconds by default, `None` disables it). A timeout or inference failure discards the worker; the next call reloads cleanly. Use one model context for repeated predictions. Seeds, cycle/step/sample counts, dtype, MSA inputs and output selection remain per-call options; each request gets fresh output paths and inference settings.
 
-The prerelease CLI setting `protenix_command` has been removed. `model_name`, `device`, `msa_server_url`, `use_template`, `trimul_kernel`, `triatt_kernel`, `enable_cache`, `enable_fusion`, and `enable_tf32` are now initialization-only settings. Create a new instance to change them.
+The prerelease CLI setting `protenix_command` has been removed. `model_name`, `device`, `msa_server_url`, `use_template`, `trimul_kernel`, `triatt_kernel`, `enable_cache`, `enable_fusion`, `enable_tf32`, and `optimization` are now initialization-only settings. Create a new instance to change them.
+
+### OpenDDE
+`OpenDDE` wraps the AF3-style [OpenDDE](https://github.com/aurekaresearch/OpenDDE) runner (`opendde==1.1.1`, single released model `opendde_v1`). Its runner API, JSON input and output files match Protenix 2.0, so it shares Protenix's interface end to end: one sequence entry per call with `:` joining chains, the ColabFold MMseqs2 server via `msa_server_url`, the persistent worker with `timeout_seconds`, and the same `OpenDDEOutput` fields (`atom_array`, `confidence`, `plddt`, `ptm`, `iptm`, `pae`, `token_chain_ids`, `token_res_ids`, `atom_plddt`, `seeds`, `sample_ranks`, `pdb`, `cif`). Differences: `dtype` is `bf16` (default) or `fp32`, `trimul_kernel`/`triatt_kernel` default to `auto`, and the runner lives in its own Python 3.11 virtualenv (`opendde_python`, initialization-only). Weights download to `$MODEL_DIR/opendde` on first use. On Modal it defaults to an `A100-40GB` GPU.
+
+- **Provided MSA:** `options={"msa": [a3m_chain_a, None, ...]}`, one A3M string or `None` (query-only) per chain, with the same rules as Protenix (`unpaired_msa` is the older, still-accepted name; passing both is an error).
+- **Templates:** `options={"templates": {"name": mmcif_text}}` (up to 4) applied to chain `options["templates_chain"]` (default `0`). Each mmCIF must be a full PDB-style file with `_atom_site`, `_entity_poly_seq` and `_struct_asym` and exactly one polymer chain; see the Protenix section for how they are staged.
+- **Optimization:** `config={"optimization": "vanilla" | "exact" | "fast"}` (default `"vanilla"`, initialization-only). `exact` and `fast` use the Anthropic OpenDDE kit on A100 or H100/H200 only (other GPUs are refused by name); see [optimization.md](optimization.md). Unlike Protenix and ESMFold2, OpenDDE uses the stock `boileroom-opendde` image for every mode, because its image already carries the kit stack.
+
+```python
+from boileroom import OpenDDE
+
+with OpenDDE(backend="modal", config={"optimization": "fast"}) as model:
+    result = model.fold("SEQ_A:SEQ_B", options={"include_fields": ["pae", "token_chain_ids", "ptm", "iptm"]})
+```
+
+The image sets `LAYERNORM_TYPE=fast_layernorm`, and the core exports the same default for every mode with a JIT cache under `$MODEL_DIR/opendde/jit`. The image does not install `ninja`, so upstream's fused LayerNorm CUDA extension cannot be built and falls back to torch's `layer_norm` in all modes; the speedups in [optimization.md](optimization.md) were measured without it.
 
 ### AlphaFold2-Multimer
 `AlphaFold2Multimer` keeps ColabFold's Python model runners and parameters resident, using `alphafold2_multimer_v3`
@@ -137,11 +168,13 @@ MSA handling mirrors the other adapters:
   Cache identity includes `msa_server_url`; switching providers fetches a fresh alignment. Older entries
   without a provider in their key are ignored.
 - **Provided MSA:** pass `options={"msa": MSAInput(path="complex.a3m")}` (or `MSAInput(sequences=[...])`) to supply a
-  ColabFold-compatible complex a3m directly; the server is not queried.
+  ColabFold-compatible complex a3m directly; the server is not queried. Unlike Protenix, OpenDDE and ESMFold2 (which take a
+  list of A3M text), AlphaFold2-Multimer requires an `MSAInput` instance and rejects anything else.
 - **Single sequence:** set `config={"use_msa_server": False}` to run without an alignment.
 
-Set `use_templates=True` to enable ColabFold templates and `use_amber=True` (optionally `use_gpu_relax=True`) for
-Amber relaxation of the ranked predictions.
+`options["templates"]` (caller-supplied mmCIF structures, accepted by Protenix and OpenDDE) is refused here with a `ValueError`.
+Set `use_templates=True` to enable ColabFold's own server-side templates and `use_amber=True` (optionally `use_gpu_relax=True`) for
+Amber relaxation of the ranked predictions. The `optimization` kit modes do not apply to AlphaFold2-Multimer.
 
 Other config keys: `num_models` (1–5, default 5), `num_recycle` (default 3), `num_seeds`, `random_seed`,
 `msa_mode`, `pair_mode` (default `unpaired_paired`), `rank_by` (default `multimer`), and `timeout_seconds` (no
@@ -241,6 +274,11 @@ Optional fields:
 - String inputs follow the existing BoilerRoom convention: `model.fold("AAA:BBB")` predicts one multichain complex, while `model.fold(["AAA", "BBB"])` predicts a batch of independent proteins.
 - For all-atom complexes, pass lightweight input dataclasses from `boileroom.models.esmfold2.types` such as `ProteinInput`, `DNAInput`, `RNAInput`, `LigandInput`, and `StructurePredictionInput`.
 - For explicit in-memory MSAs, use the shared `boileroom.inputs.MSAInput` abstraction; ESMFold2 also re-exports it from `boileroom.models.esmfold2` for compatibility. File-backed MSA paths are reserved for adapters such as Boltz-2 and are not consumed by ESMFold2 yet.
+- `options={"msa": [a3m_text_or_None, ...]}` is a shortcut that attaches an A3M to protein entries: one A3M string or `None` per entry of the input's `sequences` (for `"AAA:BBB"` that is one entry per chain). It applies to a single input structure (not a batch), the first A3M row must equal the entry's sequence, every row must have the same aligned length, and an entry that already carries an `MSAInput` or is not a protein must be `None`.
+- `options["templates"]` is not supported: ESMFold2 refuses it with a `ValueError` (only Protenix and OpenDDE take caller-supplied mmCIF templates).
+- `config={"optimization": "vanilla" | "exact" | "fast"}` (default `"vanilla"`, initialization-only) runs the Anthropic kit kernels on A100 or H100/H200 only; L4, L40S and CPU are refused. Kit modes run on a separate kit image and Modal class (the default Modal GPU is `A100-80GB`); see [optimization.md](optimization.md).
+- Kit modes: the kit loads its own pinned snapshots (about 27 GB) into `$MODEL_DIR/esmfold2/kit-hf` on the first call, so `revision`, `cache_dir` and `ccd_cache_dir` do not apply (the kit reads its own `ccd.pkl` from that directory). The kit arms one variant per process: ESMFold2-Fast uses its own variant, and the full model uses a no-MSA variant unless `config={"kit_msa": True}` (initialization-only), which selects the MSA-consuming variant. An `options["msa"]` is refused in a kit mode unless it runs the full model with `kit_msa=True`.
+- Reference check: `tests/esmfold2/test_esmfold2_integration.py` folds the sequences of PDB entries 1UBQ (ubiquitin) and 1BRS (barnase–barstar, chains A and D) with both checkpoints and compares structure, pLDDT, pTM, ipTM and the full PAE matrix (including its inter-chain blocks) against predictions made by the Biohub Platform's hosted ESMFold2 for the same sequences and sampler settings. The references live under `tests/data/esmfold2/` with a `manifest.json`; regenerate them with `ESM_API_KEY=... uv run --with "esm==3.4.1.post1" python scripts/testing/esmfold2_biohub_reference.py`. The Platform's `lm_mask_pct` and `lm_dropout` are pinned to the checkpoints' own values (0.0 and 0.25) so both sides run the same model settings. The Platform exposes no seed, so the vanilla comparison allows sampler noise (structure is compared tightly only over residues both predictions call confident); the `exact` and `fast` kit modes fold 1UBQ with both checkpoints and must land within 1.1 times vanilla's own seed-to-seed noise of the Biohub reference on four metrics (all-residue and confident-residue CA RMSD, mean and max PAE entry gap; the noise was measured on an A100-80GB over seeds 0-3 and is recorded in the test). The kit comparisons run only when `BOILEROOM_KIT_IMAGE_SOURCE` is set (see [optimization.md](optimization.md)).
 
 Example usage:
 ```python
@@ -248,6 +286,7 @@ from boileroom import ESMFold2
 from boileroom.inputs import MSAInput
 from boileroom.models.esmfold2.types import DNAInput, LigandInput, ProteinInput, StructurePredictionInput
 
+# Vanilla runs on any GPU. For the kit kernels use config={"optimization": "fast"} with an A100 or H100/H200; L4 is refused.
 model = ESMFold2(
     backend="modal",
     device="L4",

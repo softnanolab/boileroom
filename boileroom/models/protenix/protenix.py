@@ -9,6 +9,7 @@ import modal
 from ...backend.modal import get_modal_app
 from ...base import ModelWrapper
 from ...images.volumes import model_weights
+from ...optimization import initialize_core, retry_initialize
 from ...utils import MINUTES, MODAL_MODEL_DIR
 from ..registry import PROTENIX_SPEC
 from .image import protenix_image
@@ -35,7 +36,7 @@ class ModalProtenix:
         from .core import ProtenixCore
 
         self._core = ProtenixCore(json.loads(self.config.decode("utf-8")))
-        self._core._initialize()
+        self._refusal = initialize_core(self._core)
 
     @modal.exit()
     def _shutdown(self) -> None:
@@ -43,6 +44,9 @@ class ModalProtenix:
 
     @modal.method()
     def fold(self, sequences: str | Sequence[str], options: dict | None = None) -> "ProtenixOutput":
+        self._refusal = retry_initialize(self._core, self._refusal)
+        if self._refusal is not None:
+            raise self._refusal
         return self._core.fold(sequences, options=options)
 
 
@@ -62,7 +66,7 @@ class Protenix(ModelWrapper):
         Keep one instance open and call ``fold()`` for each job to reuse the
         loaded model. The backend context owns the worker's lifetime.
         Use ``:`` inside a sequence string to define multiple chains.
-        Pass ``options={"unpaired_msa": [target_a3m_text, None]}`` for an
+        Pass ``options={"msa": [target_a3m_text, None]}`` for an
         unpaired target alignment and a single-sequence binder. Results retain
         numeric seeds and within-seed confidence ranks. Request ``pae``,
         ``token_chain_ids`` and ``token_res_ids`` to compute interface scores.

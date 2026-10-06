@@ -17,6 +17,7 @@ from urllib.parse import urlparse
 import httpx
 import numpy as np
 
+from ..images.metadata import DEFAULT_PYTHON_VERSION
 from ..utils import ensure_cache_dir
 from .base import Backend
 from .transport import TRANSPORT_HMAC_KEY_ENV, deserialize_transport_payload
@@ -202,7 +203,7 @@ def _check_architecture_compatibility(host_arch: str, image_arch: str) -> bool:
     return _normalize_arch(host_arch) == _normalize_arch(image_arch)
 
 
-def _build_ld_library_path() -> str:
+def _build_ld_library_path(python_version: str = DEFAULT_PYTHON_VERSION) -> str:
     """Build LD_LIBRARY_PATH for CUDA libraries in the container.
 
     Includes paths for:
@@ -212,12 +213,16 @@ def _build_ld_library_path() -> str:
     - System CUDA toolkit paths
     - NVIDIA driver libraries (added by --nv flag)
 
+    Parameters
+    ----------
+    python_version : str
+        Version of the interpreter whose ``site-packages`` holds those libraries.
+
     Returns
     -------
     str
         Colon-separated LD_LIBRARY_PATH string.
     """
-    python_version = "3.12"
     site_packages = f"/usr/local/lib/python{python_version}/site-packages"
 
     python_lib_paths = [
@@ -336,6 +341,7 @@ class ApptainerBackend(Backend):
         config: dict | None = None,
         device: str | None = None,
         cache_dir: Path | str | None = None,
+        python_version: str = DEFAULT_PYTHON_VERSION,
     ) -> None:
         """Initialize the ApptainerBackend with a Core class path and Docker image.
 
@@ -352,6 +358,8 @@ class ApptainerBackend(Backend):
             Optional device identifier (e.g., 'cuda:0' or 'cpu').
         cache_dir : Path | str | None
             Optional cache directory for .sif files. If None, uses ~/.cache/boileroom.
+        python_version : str
+            Version of the interpreter in the image that runs the service (``/usr/local/bin/python<version>``).
 
         Raises
         ------
@@ -363,6 +371,7 @@ class ApptainerBackend(Backend):
         self._config = dict(config) if config is not None else {}
         self._device = device or "cuda:0"
         self._image_uri = image_uri
+        self._python_version = python_version
 
         # Check if apptainer is available
         if not _is_tool_available("apptainer"):
@@ -506,7 +515,7 @@ class ApptainerBackend(Backend):
         }
 
         # Build LD_LIBRARY_PATH to include Python wheel CUDA libraries and driver paths.
-        env_vars["LD_LIBRARY_PATH"] = _build_ld_library_path()
+        env_vars["LD_LIBRARY_PATH"] = _build_ld_library_path(self._python_version)
 
         if device_number is not None:
             env_vars["CUDA_VISIBLE_DEVICES"] = device_number
@@ -532,7 +541,7 @@ class ApptainerBackend(Backend):
         cmd.append(str(self._sif_path))
         cmd.extend(
             [
-                "/usr/local/bin/python3.12",
+                f"/usr/local/bin/python{self._python_version}",
                 container_server_path,
                 "--host",
                 "0.0.0.0",

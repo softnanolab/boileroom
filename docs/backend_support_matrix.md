@@ -17,6 +17,7 @@ Legend:
 | Chai-1     | 🍊       | 🍊           |
 | ESMFold2   | 🍊       | 🍊           |
 | ESMFold    | ✅       | 🍊           |
+| OpenDDE    | 🍊       | 🍊           |
 | Protenix   | 🍊       | 🍊           |
 
 ### Embedding Algorithms
