@@ -256,6 +256,12 @@ async def inverse_fold(request: InverseFoldRequest) -> JSONResponse:
     -------
     JSONResponse
         Signed inverse-folding output payload.
+
+    Raises
+    ------
+    HTTPException
+        422 for invalid inputs (``ValueError``), 501 if the model has no ``inverse_fold``, 503 if no model is
+        loaded, and 500 for unexpected failures.
     """
     if _model_instance is None:
         raise HTTPException(status_code=503, detail="Model not loaded")
@@ -268,6 +274,10 @@ async def inverse_fold(request: InverseFoldRequest) -> JSONResponse:
         output = _model_instance.inverse_fold(request.sequence, coordinates, request.positions)
         serialized = _serialize_output(output)
         return JSONResponse(content=serialized)
+    except ValueError as e:
+        # Invalid caller input (duplicate positions, wrong coordinate shape, ...), not a server fault.
+        logger.warning(f"Inverse folding rejected invalid input: {str(e)}")
+        raise HTTPException(status_code=422, detail=f"Invalid inverse folding input: {str(e)}") from e
     except Exception as e:
         logger.error(f"Inverse folding failed: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Inverse folding failed: {str(e)}") from e
