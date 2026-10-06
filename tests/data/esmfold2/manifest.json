@@ -1,0 +1,77 @@
+{
+  "sampler": {
+    "num_loops": 3,
+    "num_sampling_steps": 50
+  },
+  "generated_by": "scripts/testing/esmfold2_biohub_reference.py",
+  "references": {
+    "1BRS.esmfold2-2026-05": {
+      "pdb_entry": "1BRS",
+      "chains": [
+        {
+          "id": "A",
+          "sequence": "AQVINTFDGVADYLQTYHKLPDNYITKSEAQALGWVASKGNLADVAPGKSIGGDIFSNREGKLPGKSGRTWREADINYTSGFRNSDRILYSSDWLIYKTTDHYQTFTKIR"
+        },
+        {
+          "id": "D",
+          "sequence": "KKAVINGEQIRSISDLHQTLKKELALPEYYGENLDALWDALTGWVEYPLVLEWRQFEQSKQLTENGAESVLQVFREAKAEGADITIILS"
+        }
+      ],
+      "biohub_model": "esmfold2-2026-05",
+      "model_name": "biohub/ESMFold2",
+      "cif": "1BRS.esmfold2-2026-05.cif",
+      "confidence": "1BRS.esmfold2-2026-05.npz",
+      "generated_at": "2026-10-06"
+    },
+    "1BRS.esmfold2-fast-2026-05": {
+      "pdb_entry": "1BRS",
+      "chains": [
+        {
+          "id": "A",
+          "sequence": "AQVINTFDGVADYLQTYHKLPDNYITKSEAQALGWVASKGNLADVAPGKSIGGDIFSNREGKLPGKSGRTWREADINYTSGFRNSDRILYSSDWLIYKTTDHYQTFTKIR"
+        },
+        {
+          "id": "D",
+          "sequence": "KKAVINGEQIRSISDLHQTLKKELALPEYYGENLDALWDALTGWVEYPLVLEWRQFEQSKQLTENGAESVLQVFREAKAEGADITIILS"
+        }
+      ],
+      "biohub_model": "esmfold2-fast-2026-05",
+      "model_name": "biohub/ESMFold2-Fast",
+      "cif": "1BRS.esmfold2-fast-2026-05.cif",
+      "confidence": "1BRS.esmfold2-fast-2026-05.npz",
+      "generated_at": "2026-10-06"
+    },
+    "1UBQ.esmfold2-2026-05": {
+      "pdb_entry": "1UBQ",
+      "chains": [
+        {
+          "id": "A",
+          "sequence": "MQIFVKTLTGKTITLEVEPSDTIENVKAKIQDKEGIPPDQQRLIFAGKQLEDGRTLSDYNIQKESTLHLVLRLRGG"
+        }
+      ],
+      "biohub_model": "esmfold2-2026-05",
+      "model_name": "biohub/ESMFold2",
+      "cif": "1UBQ.esmfold2-2026-05.cif",
+      "confidence": "1UBQ.esmfold2-2026-05.npz",
+      "generated_at": "2026-10-06"
+    },
+    "1UBQ.esmfold2-fast-2026-05": {
+      "pdb_entry": "1UBQ",
+      "chains": [
+        {
+          "id": "A",
+          "sequence": "MQIFVKTLTGKTITLEVEPSDTIENVKAKIQDKEGIPPDQQRLIFAGKQLEDGRTLSDYNIQKESTLHLVLRLRGG"
+        }
+      ],
+      "biohub_model": "esmfold2-fast-2026-05",
+      "model_name": "biohub/ESMFold2-Fast",
+      "cif": "1UBQ.esmfold2-fast-2026-05.cif",
+      "confidence": "1UBQ.esmfold2-fast-2026-05.npz",
+      "generated_at": "2026-10-06"
+    }
+  },
+  "platform_model_settings": {
+    "lm_mask_pct": 0.0,
+    "lm_dropout": 0.25
+  }
+}
