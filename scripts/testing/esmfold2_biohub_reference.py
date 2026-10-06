@@ -148,7 +148,9 @@ def main(argv: list[str] | None = None) -> int:
         for model in models:
             prediction = fold_on_biohub(model, chains, token)
             stem = f"{entry}.{model}"
-            (args.out / f"{stem}.cif").write_text(str(prediction["cif"]))
+            # mmCIF header lines come back with trailing spaces, which the repository's whitespace hook rejects.
+            cif_text = "\n".join(line.rstrip() for line in str(prediction["cif"]).splitlines()) + "\n"
+            (args.out / f"{stem}.cif").write_text(cif_text)
             np.savez(
                 args.out / f"{stem}.npz",
                 plddt=prediction["plddt"],
