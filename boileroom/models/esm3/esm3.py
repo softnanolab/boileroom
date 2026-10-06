@@ -50,6 +50,7 @@ class ModalESM3:
     def inverse_fold(
         self, sequence: str, backbone_coordinates: "np.ndarray", positions: Sequence[int]
     ) -> "ESM3InverseFoldingOutput":
+        """Run :meth:`ESM3Core.inverse_fold` on the Modal worker (see that method for parameters)."""
         if getattr(self, "_core", None) is None:
             raise RuntimeError("ModalESM3 has not been initialized")
         return self._core.inverse_fold(sequence, backbone_coordinates, positions)

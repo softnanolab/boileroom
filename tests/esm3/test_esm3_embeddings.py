@@ -353,6 +353,7 @@ class _FakeSequenceTokenizer:
     """Maps amino acids to non-contiguous ids so tests catch id/column mix-ups."""
 
     def convert_tokens_to_ids(self, tokens: list[str]) -> list[int]:
+        """Return a distinct, non-contiguous id for each token."""
         return [5 + 2 * index for index, _ in enumerate(tokens)]
 
 
@@ -365,10 +366,12 @@ class _FakeIFModel(_FakeSDKModel):
     proteins: ClassVar[list[Any]] = []
 
     def encode(self, protein: Any) -> _FakeEncoded:
+        """Record the protein passed to the SDK and return a fake encoding."""
         self.proteins.append(protein)
         return _FakeEncoded(protein.sequence)
 
     def logits(self, encoded: _FakeEncoded, config: _FakeLogitsConfig) -> Any:
+        """Return sequence logits whose value encodes the (token row, vocab column) it came from."""
         torch = pytest.importorskip("torch")
         n_tokens = len(encoded.sequence) + 2
         vocab = 64
@@ -379,11 +382,13 @@ class _FakeIFModel(_FakeSDKModel):
 
 @pytest.fixture()
 def fake_if_sdk(fake_esm_sdk: type[_FakeSDKModel], monkeypatch: pytest.MonkeyPatch) -> type[_FakeIFModel]:
+    """Install the fake inverse-folding SDK model and a protein type that records coordinates."""
     _FakeIFModel.proteins = []
     cast(Any, sys.modules["esm.models.esm3"]).ESM3 = _FakeIFModel
 
     class _Protein(_FakeProtein):
         def __init__(self, sequence: str, coordinates: Any = None) -> None:
+            """Store the sequence and optional coordinates."""
             super().__init__(sequence)
             self.coordinates = coordinates
 
@@ -392,6 +397,7 @@ def fake_if_sdk(fake_esm_sdk: type[_FakeSDKModel], monkeypatch: pytest.MonkeyPat
 
 
 def test_esm3_inverse_fold_masks_positions_and_selects_amino_acid_logits(fake_if_sdk: type[_FakeIFModel]) -> None:
+    """Masked sequence, atom37 layout and the selected logit rows/columns match the request."""
     from boileroom.models.esm3.core import INVERSE_FOLDING_AMINO_ACIDS, ESM3Core
 
     core = ESM3Core(config={"device": "cpu"})
@@ -429,6 +435,7 @@ def test_esm3_inverse_fold_masks_positions_and_selects_amino_acid_logits(fake_if
 def test_esm3_inverse_fold_rejects_invalid_inputs(
     fake_if_sdk: type[_FakeIFModel], positions: list[int], coords_shape: tuple[int, ...], match: str
 ) -> None:
+    """Bad positions or coordinate shapes raise ValueError before any model call."""
     from boileroom.models.esm3.core import ESM3Core
 
     core = ESM3Core(config={"device": "cpu"})
