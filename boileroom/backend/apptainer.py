@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import platform
+import re
 import secrets
 import shutil
 import socket
@@ -12,17 +13,39 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
 
 import httpx
 import numpy as np
 
 from ..images.metadata import DEFAULT_PYTHON_VERSION
+from ..optimization import REFUSAL_PROCESS_EXIT_CODE, OptimizationUnavailableError
+from ..provenance import IMAGE_REF_ENV
 from ..utils import ensure_cache_dir
 from .base import Backend
 from .transport import TRANSPORT_HMAC_KEY_ENV, deserialize_transport_payload
 
 logger = logging.getLogger(__name__)
+
+#: Environment variable that overrides how long :meth:`ApptainerBackend.startup` waits for the server to become ready.
+STARTUP_TIMEOUT_ENV = "BOILEROOM_APPTAINER_STARTUP_TIMEOUT"
+#: Default startup wait in seconds. The server answers /health only after the core has loaded its weights, and a first
+#: run downloads them into MODEL_DIR: the kit images load about 27 GB (ESMFold2 plus its ESM-C trunk), which takes about
+#: 23 minutes at a modest 20 MB/s, before any CUDA extension JIT. 30 minutes covers that; a server that exits is still
+#: reported as soon as it dies, so the long wait only applies to a server that hangs.
+DEFAULT_STARTUP_TIMEOUT = 1800.0
+#: Lines of the server log quoted in a startup error.
+_LOG_TAIL_LINES = 50
+#: Docker Hub's registry API host; image references name it ``docker.io``.
+_DOCKER_HUB_REGISTRY = "registry-1.docker.io"
+#: Manifest types accepted when resolving a tag, so a multi-platform tag resolves to its index digest.
+_MANIFEST_MEDIA_TYPES = (
+    "application/vnd.oci.image.index.v1+json",
+    "application/vnd.docker.distribution.manifest.list.v2+json",
+    "application/vnd.oci.image.manifest.v1+json",
+    "application/vnd.docker.distribution.manifest.v2+json",
+)
+_DIGEST_PATTERN = re.compile(r"sha256:[0-9a-f]{64}")
+_REGISTRY_TIMEOUT = httpx.Timeout(10.0)
 
 ARCH_NORMALIZATION = {
     "x86_64": "amd64",
@@ -100,29 +123,211 @@ def _is_tool_available(tool_name: str) -> bool:
     return shutil.which(tool_name) is not None
 
 
-def _get_cached_sif_path(image_uri: str, cache_dir: Path) -> Path:
-    """Get the cache path for a .sif file from an image URI.
+def _split_image_reference(image_uri: str) -> tuple[str, str, str | None, str | None]:
+    """Split a Docker reference into its registry, repository, tag and digest.
 
     Parameters
     ----------
     image_uri : str
-        Docker URI (e.g., 'docker://docker.io/jakublala/boileroom-chai:0.3.0').
+        Docker reference, with or without the ``docker://`` prefix.
+
+    Returns
+    -------
+    tuple[str, str, str | None, str | None]
+        The registry (``docker.io`` when the reference names none), the repository path, the tag and the digest; the
+        tag and the digest are None when the reference has none.
+    """
+    reference = image_uri.removeprefix("docker://")
+    name, _, digest = reference.partition("@")
+    first_component, _, remainder = name.partition("/")
+    if remainder and ("." in first_component or ":" in first_component or first_component == "localhost"):
+        registry, path = first_component, remainder
+    else:
+        registry, path = "docker.io", name
+    repository, tag = path, None
+    if ":" in path.rsplit("/", 1)[-1]:
+        repository, tag = path.rsplit(":", 1)
+    return registry, repository, tag or None, digest or None
+
+
+def _get_cached_sif_path(image_uri: str, cache_dir: Path) -> Path:
+    """Get the cache path for a .sif file from an image URI.
+
+    The file name carries the repository, the image name and the tag or digest, so two references that can resolve to
+    different images never share a cache entry.
+
+    Parameters
+    ----------
+    image_uri : str
+        Docker URI, by tag (``docker://docker.io/jakublala/boileroom-chai:0.3.0``) or by digest
+        (``docker://docker.io/jakublala/boileroom-esmfold2-kit@sha256:<hex>``).
     cache_dir : Path
         Base cache directory.
 
     Returns
     -------
     Path
-        Path to cached .sif file.
+        Path to the cached .sif file, for example ``<cache_dir>/images/jakublala-boileroom-chai_0.3.0.sif`` or
+        ``<cache_dir>/images/jakublala-boileroom-esmfold2-kit_sha256-<hex>.sif``. A registry other than docker.io is
+        prefixed to the name.
     """
-    # Extract image name from URI
-    # docker://docker.io/jakublala/boileroom-chai:0.3.0 -> boileroom-chai_0.3.0.sif
-    parsed = urlparse(image_uri.replace("docker://", "https://"))
-    image_name = parsed.path.lstrip("/").replace("/", "-").replace(":", "_")
-    if not image_name.endswith(".sif"):
-        image_name = f"{image_name}.sif"
+    registry, repository, tag, digest = _split_image_reference(image_uri)
+    stem = repository.replace("/", "-") + (f"_{tag}" if tag else "")
+    if registry != "docker.io":
+        stem = f"{registry.replace(':', '_')}-{stem}"
+    if digest:
+        algorithm, _, hex_digest = digest.partition(":")
+        stem = f"{stem}_{algorithm}-{hex_digest}"
+    return cache_dir / "images" / f"{stem}.sif"
 
-    return cache_dir / "images" / image_name
+
+def _registry_token(client: httpx.Client, challenge: str) -> str | None:
+    """Fetch an anonymous pull token for a registry's ``WWW-Authenticate: Bearer`` challenge, or None."""
+    scheme, _, parameters = challenge.partition(" ")
+    if scheme.lower() != "bearer":
+        return None
+    fields = dict(re.findall(r'(\w+)="([^"]*)"', parameters))
+    realm = fields.pop("realm", None)
+    if not realm:
+        return None
+    response = client.get(realm, params=fields)
+    response.raise_for_status()
+    body = response.json()
+    token = body.get("token") or body.get("access_token")
+    return token if isinstance(token, str) and token else None
+
+
+def _resolve_registry_digest(image_uri: str, client: httpx.Client | None = None) -> str | None:
+    """Return the digest a tag reference points at in its registry now, or None when it cannot be resolved.
+
+    Asks the registry's v2 API for the manifest of the tag (anonymously, as ``apptainer pull`` of a public image does).
+    A multi-platform tag resolves to the digest of its index, which ``apptainer pull`` accepts like the tag. A digest
+    reference is returned as is. Any failure (no network, a private repository, a registry without the v2 API) is
+    logged and returns None, and the caller pulls by tag as before.
+
+    Parameters
+    ----------
+    image_uri : str
+        Docker reference, with or without the ``docker://`` prefix.
+    client : httpx.Client | None
+        HTTP client to use; None creates one for the call.
+
+    Returns
+    -------
+    str | None
+        The ``sha256:<hex>`` digest, or None.
+    """
+    registry, repository, tag, digest = _split_image_reference(image_uri)
+    if digest is not None:
+        return digest
+    if tag is None:
+        return None
+    host = _DOCKER_HUB_REGISTRY if registry == "docker.io" else registry
+    if registry == "docker.io" and "/" not in repository:
+        repository = f"library/{repository}"
+    url = f"https://{host}/v2/{repository}/manifests/{tag}"
+    headers = {"Accept": ", ".join(_MANIFEST_MEDIA_TYPES)}
+    own_client = client is None
+    http = httpx.Client(timeout=_REGISTRY_TIMEOUT, follow_redirects=True) if client is None else client
+    try:
+        response = http.head(url, headers=headers)
+        if response.status_code == 401:
+            token = _registry_token(http, response.headers.get("www-authenticate", ""))
+            if token is not None:
+                response = http.head(url, headers={**headers, "Authorization": f"Bearer {token}"})
+        response.raise_for_status()
+        resolved = response.headers.get("docker-content-digest", "")
+        if not _DIGEST_PATTERN.fullmatch(resolved):
+            raise ValueError(f"the registry returned no sha256 digest (Docker-Content-Digest: {resolved!r})")
+        return resolved
+    except (httpx.HTTPError, ValueError) as error:
+        logger.warning(f"Could not resolve the digest of {image_uri}; pulling it by tag: {error}")
+        return None
+    finally:
+        if own_client:
+            http.close()
+
+
+def _digest_record_path(sif_path: Path) -> Path:
+    """Return the file beside a cached .sif that records the digest it was pulled at."""
+    return sif_path.with_name(f"{sif_path.name}.digest")
+
+
+def _cached_image_reference(image_uri: str, sif_path: Path) -> str:
+    """Return the reference of the image in ``sif_path``, for BOILEROOM_IMAGE_REF.
+
+    A tag reference carries the digest the .sif was pulled at (``<name>:<tag>@sha256:<hex>``) when that was recorded,
+    so the provenance names the exact image even after the tag moves on. Without a record (a .sif pulled before
+    digests were recorded, or a pull whose digest could not be resolved), it is the reference as given.
+    """
+    reference = image_uri.removeprefix("docker://")
+    if "@" in reference:
+        return reference
+    try:
+        recorded = _digest_record_path(sif_path).read_text().strip()
+    except OSError:
+        return reference
+    return f"{reference}@{recorded}" if _DIGEST_PATTERN.fullmatch(recorded) else reference
+
+
+def _pull_pinned_image(image_uri: str, sif_path: Path, log_file: Path | None = None) -> None:
+    """Pull an image into ``sif_path``, by digest when a tag reference resolves, and record that digest beside it.
+
+    Resolving the tag first and pulling that digest means the recorded digest is exactly the content pulled, even if
+    the tag moves during the pull. A digest reference is pulled as is.
+
+    Raises
+    ------
+    RuntimeError
+        If the pull fails (see :func:`_pull_image`).
+    """
+    record = _digest_record_path(sif_path)
+    record.unlink(missing_ok=True)  # a failed pull must not leave a stale record beside whatever .sif remains
+    reference = image_uri.removeprefix("docker://")
+    # A tag reference only: _resolve_registry_digest returns a digest reference's own digest, which needs no record.
+    resolved = None if "@" in reference else _resolve_registry_digest(image_uri)
+    if resolved is None:
+        _pull_image(image_uri, sif_path, log_file=log_file)
+        return
+    name = reference.rsplit(":", 1)[0]  # resolved, so the reference ends in ``:<tag>``
+    logger.info(f"{image_uri} resolves to {resolved}; pulling that digest")
+    _pull_image(f"docker://{name}@{resolved}", sif_path, log_file=log_file)
+    record.write_text(f"{resolved}\n")
+
+
+def _resolve_startup_timeout(startup_timeout: float | None) -> float:
+    """Return the startup timeout: the argument, else BOILEROOM_APPTAINER_STARTUP_TIMEOUT, else the default.
+
+    Raises
+    ------
+    ValueError
+        If the chosen value is not a positive number of seconds.
+    """
+    if startup_timeout is None:
+        raw = os.environ.get(STARTUP_TIMEOUT_ENV, "").strip()
+        if not raw:
+            return DEFAULT_STARTUP_TIMEOUT
+        try:
+            startup_timeout = float(raw)
+        except ValueError:
+            raise ValueError(f"{STARTUP_TIMEOUT_ENV} must be a number of seconds, got {raw!r}") from None
+    if not startup_timeout > 0 or startup_timeout == float("inf"):
+        raise ValueError(
+            f"The Apptainer startup timeout must be a positive, finite number of seconds, got {startup_timeout!r}"
+        )
+    return float(startup_timeout)
+
+
+def _read_log_tail(log_path: Path | None, lines: int = _LOG_TAIL_LINES) -> str:
+    """Return the last ``lines`` lines of the server log, or a note saying why there are none."""
+    if log_path is None or not log_path.exists():
+        return "(no server log)"
+    try:
+        with open(log_path, errors="replace") as handle:
+            return "".join(handle.readlines()[-lines:])
+    except OSError as exc:
+        logger.debug(f"Failed to read log file for error context: {exc}")
+        return f"(Could not read log file: {exc})"
 
 
 def _is_image_cached(sif_path: Path) -> bool:
@@ -342,6 +547,7 @@ class ApptainerBackend(Backend):
         device: str | None = None,
         cache_dir: Path | str | None = None,
         python_version: str = DEFAULT_PYTHON_VERSION,
+        startup_timeout: float | None = None,
     ) -> None:
         """Initialize the ApptainerBackend with a Core class path and Docker image.
 
@@ -360,11 +566,14 @@ class ApptainerBackend(Backend):
             Optional cache directory for .sif files. If None, uses ~/.cache/boileroom.
         python_version : str
             Version of the interpreter in the image that runs the service (``/usr/local/bin/python<version>``).
+        startup_timeout : float | None
+            Seconds :meth:`startup` waits for the server to answer /health. None reads
+            ``BOILEROOM_APPTAINER_STARTUP_TIMEOUT``, falling back to :data:`DEFAULT_STARTUP_TIMEOUT` (1800 s).
 
         Raises
         ------
         ValueError
-            If apptainer is not available in PATH.
+            If apptainer is not available in PATH, or the startup timeout is not a positive number.
         """
         super().__init__()
         self._core_class_path = core_class_path
@@ -372,6 +581,7 @@ class ApptainerBackend(Backend):
         self._device = device or "cuda:0"
         self._image_uri = image_uri
         self._python_version = python_version
+        self._startup_timeout = _resolve_startup_timeout(startup_timeout)
 
         # Check if apptainer is available
         if not _is_tool_available("apptainer"):
@@ -421,7 +631,7 @@ class ApptainerBackend(Backend):
         logger.info(f"Starting ApptainerBackend with image_uri={self._image_uri}, device={self._device}")
 
         if not _is_image_cached(self._sif_path):
-            _pull_image(self._image_uri, self._sif_path, log_file=self._log_file_path)
+            _pull_pinned_image(self._image_uri, self._sif_path, log_file=self._log_file_path)
         else:
             host_arch = _get_host_architecture()
             cached_arch = _get_image_architecture(self._sif_path)
@@ -512,6 +722,9 @@ class ApptainerBackend(Backend):
             # Set C compiler for Triton (needed for runtime CUDA kernel compilation)
             "CC": "gcc",
             "CXX": "g++",
+            # The image this server runs, reported as ``image_ref`` in each prediction's provenance: by digest
+            # (``<name>:<tag>@sha256:<hex>``) when the cached .sif's digest is recorded, so a moved tag still shows.
+            IMAGE_REF_ENV: _cached_image_reference(self._image_uri, self._sif_path),
         }
 
         # Build LD_LIBRARY_PATH to include Python wheel CUDA libraries and driver paths.
@@ -564,7 +777,12 @@ class ApptainerBackend(Backend):
             )
 
         logger.info(f"Waiting for health check at {self._base_url} (port {self._port})")
-        self._wait_for_health_check()
+        try:
+            self._wait_for_health_check(timeout=self._startup_timeout)
+        except BaseException:
+            # Never leave a half-started server behind: it would hold the GPU and the port.
+            self._stop_process()
+            raise
 
         logger.info(f"Creating HTTP client for {self._base_url}")
         # Use 30 minute timeout to handle large responses (e.g., PAE matrices for long sequences)
@@ -585,18 +803,24 @@ class ApptainerBackend(Backend):
             self._client.close()
             self._client = None
 
-        if self._process is not None:
-            try:
-                self._process.terminate()
-                self._process.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                self._process.kill()
-                self._process.wait()
-            finally:
-                self._process = None
-
+        self._stop_process()
         self._base_url = None
         self._port = None
+
+    def _stop_process(self) -> None:
+        """Terminate the server process, kill it if it ignores SIGTERM for 10 s, and reap it."""
+        if self._process is None:
+            return
+        try:
+            if self._process.poll() is None:
+                self._process.terminate()
+                try:
+                    self._process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    self._process.kill()
+                    self._process.wait()
+        finally:
+            self._process = None
 
     def get_model(self) -> Any:
         """Get the HTTP proxy object for making requests to the container server.
@@ -620,20 +844,24 @@ class ApptainerBackend(Backend):
             log_file_path=self._log_file_path,
         )
 
-    def _wait_for_health_check(self, timeout: float = 300.0, poll_interval: float = 1.0) -> None:
+    def _wait_for_health_check(self, timeout: float = DEFAULT_STARTUP_TIMEOUT, poll_interval: float = 1.0) -> None:
         """Wait for the server to become ready by polling the /health endpoint.
 
         Parameters
         ----------
         timeout : float
-            Maximum time to wait in seconds (default 300s = 5 minutes for model downloads).
+            Maximum time to wait in seconds; :meth:`startup` passes the backend's startup timeout.
         poll_interval : float
             Time between health check attempts in seconds.
 
         Raises
         ------
+        OptimizationUnavailableError
+            If the server exits with the refusal code (:data:`boileroom.optimization.REFUSAL_PROCESS_EXIT_CODE`):
+            the core refused the requested optimization mode on this GPU or in this image.
         RuntimeError
-            If the server doesn't become ready within the timeout period.
+            If the server process exits otherwise, or does not become ready within the timeout. The errors quote the
+            tail of the server log; :meth:`startup` stops the process before re-raising.
         """
         if self._base_url is None:
             raise RuntimeError("Base URL not set")
@@ -674,24 +902,25 @@ class ApptainerBackend(Backend):
                 )
 
             # Check if process has died
-            if self._process is not None and self._process.poll() is not None:
-                # Read last 50 lines from log file for error context
-                error_context = ""
-                if self._log_file_path is not None and self._log_file_path.exists():
-                    try:
-                        with open(self._log_file_path) as f:
-                            lines = f.readlines()
-                            error_context = "".join(lines[-50:])
-                    except Exception as e:
-                        logger.debug(f"Failed to read log file for error context: {e}")
-                        error_context = f"(Could not read log file: {e})"
-
-                error_msg = f"Server process died. Last 50 lines of log:\n{error_context}"
-                raise RuntimeError(error_msg)
+            returncode = self._process.poll() if self._process is not None else None
+            if returncode is not None:
+                log_tail = (
+                    f"Last {_LOG_TAIL_LINES} lines of log ({self._log_file_path}):\n"
+                    f"{_read_log_tail(self._log_file_path)}"
+                )
+                if returncode == REFUSAL_PROCESS_EXIT_CODE:
+                    raise OptimizationUnavailableError(
+                        f"The model server refused to load the model (exit code {returncode}): the requested "
+                        f"optimization mode is not available with this GPU or image. {log_tail}"
+                    )
+                raise RuntimeError(f"Server process died (exit code {returncode}). {log_tail}")
 
             time.sleep(poll_interval)
 
-        raise RuntimeError(f"Server did not become ready within {timeout} seconds")
+        raise RuntimeError(
+            f"Server did not become ready within {timeout:g} seconds (set {STARTUP_TIMEOUT_ENV} to wait longer). "
+            f"Last {_LOG_TAIL_LINES} lines of log ({self._log_file_path}):\n{_read_log_tail(self._log_file_path)}"
+        )
 
 
 class _ApptainerModelProxy:
@@ -728,22 +957,15 @@ class _ApptainerModelProxy:
         -------
         Any
             Deserialized embedding output with numpy arrays reconstructed.
+
+        Raises
+        ------
+        OptimizationUnavailableError
+            If the core refused the call's optimization mode.
+        RuntimeError
+            If the server failed the call otherwise (HTTP 500).
         """
-        payload = {"sequences": sequences, "options": options}
-        response = self._client.post("/embed", json=payload)
-        try:
-            response.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            if response.status_code == 500:
-                log_file_msg = ""
-                if self._log_file_path is not None:
-                    log_file_msg = f"\n\nServer log file: {self._log_file_path}"
-                # Raise RuntimeError with log file path, chaining from the original HTTPStatusError
-                raise RuntimeError(
-                    f"Internal server error (500) occurred.{log_file_msg}\nHTTP request failed: {e}"
-                ) from e
-            raise
-        return _deserialize_output(response.json(), self._transport_secret)
+        return self._post("/embed", {"sequences": sequences, "options": options})
 
     def inverse_fold(self, sequence: str, backbone_coordinates: Any, positions: list[int]) -> Any:
         """Predict masked-residue amino-acid logits by making a POST request to /inverse_fold.
@@ -761,6 +983,11 @@ class _ApptainerModelProxy:
         -------
         Any
             Deserialized inverse-folding output with numpy arrays reconstructed.
+
+        Raises
+        ------
+        RuntimeError
+            If the server failed the call (HTTP 500).
         """
         coordinates = np.asarray(backbone_coordinates, dtype=np.float64)
         json_coordinates = coordinates.astype(object)
@@ -770,19 +997,7 @@ class _ApptainerModelProxy:
             "backbone_coordinates": json_coordinates.tolist(),
             "positions": [int(position) for position in positions],
         }
-        response = self._client.post("/inverse_fold", json=payload)
-        try:
-            response.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            if response.status_code == 500:
-                log_file_msg = ""
-                if self._log_file_path is not None:
-                    log_file_msg = f"\n\nServer log file: {self._log_file_path}"
-                raise RuntimeError(
-                    f"Internal server error (500) occurred.{log_file_msg}\nHTTP request failed: {e}"
-                ) from e
-            raise
-        return _deserialize_output(response.json(), self._transport_secret)
+        return self._post("/inverse_fold", payload)
 
     def fold(self, sequences: str | list[str], options: dict | None = None) -> Any:
         """Fold sequences by making a POST request to /fold.
@@ -799,21 +1014,41 @@ class _ApptainerModelProxy:
         -------
         Any
             Deserialized folding output with numpy arrays reconstructed.
+
+        Raises
+        ------
+        OptimizationUnavailableError
+            If the core refused the call's optimization mode.
+        RuntimeError
+            If the server failed the call otherwise (HTTP 500).
         """
-        payload = {"sequences": sequences, "options": options}
-        response = self._client.post("/fold", json=payload)
+        return self._post("/fold", {"sequences": sequences, "options": options})
+
+    def _post(self, path: str, payload: dict[str, Any]) -> Any:
+        """POST ``payload`` to ``path`` and return the verified, deserialized output.
+
+        A 500 response names the exception type the core raised (``error_type``, see ``server.py``); a refusal is
+        raised again as :class:`OptimizationUnavailableError`, anything else as ``RuntimeError``.
+        """
+        response = self._client.post(path, json=payload)
         try:
             response.raise_for_status()
         except httpx.HTTPStatusError as e:
-            if response.status_code == 500:
-                log_file_msg = ""
-                if self._log_file_path is not None:
-                    log_file_msg = f"\n\nServer log file: {self._log_file_path}"
-                # Raise RuntimeError with log file path, chaining from the original HTTPStatusError
-                raise RuntimeError(
-                    f"Internal server error (500) occurred.{log_file_msg}\nHTTP request failed: {e}"
-                ) from e
-            raise
+            if response.status_code != 500:
+                raise
+            try:
+                body = response.json()
+            except ValueError:
+                body = None
+            body = body if isinstance(body, dict) else {}
+            detail = body.get("detail") or response.text
+            log_file_msg = f"\n\nServer log file: {self._log_file_path}" if self._log_file_path is not None else ""
+            if body.get("error_type") == OptimizationUnavailableError.__name__:
+                raise OptimizationUnavailableError(f"{detail}{log_file_msg}") from e
+            # Raise RuntimeError with log file path, chaining from the original HTTPStatusError
+            raise RuntimeError(
+                f"Internal server error (500) occurred: {detail}{log_file_msg}\nHTTP request failed: {e}"
+            ) from e
         return _deserialize_output(response.json(), self._transport_secret)
 
 
