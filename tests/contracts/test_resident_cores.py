@@ -15,7 +15,8 @@ import pytest
 def test_core_loads_once_for_multiple_fold_jobs(monkeypatch, tmp_path, family, class_name) -> None:
     """Repeated folds use one worker and fresh files, and closing releases it."""
     module = importlib.import_module(f"boileroom.models.{family}.core")
-    worker = Mock()
+    # ``info`` is the worker's describe() record, which the Protenix-family cores copy into metadata.runtime.
+    worker = Mock(info={})
     factory = Mock(return_value=worker)
     # OpenDDE inherits its worker lifecycle from ProtenixCore.
     worker_module = importlib.import_module("boileroom.models.protenix.core") if family == "opendde" else module

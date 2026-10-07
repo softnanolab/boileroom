@@ -1,19 +1,17 @@
 """Modal entrypoint that runs Protenix on the optimization-kit image (``optimization="exact"`` and ``"fast"``)."""
 
-import json
-from collections.abc import Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import modal
 
 from ...backend.modal import get_modal_app
+from ...backend.modal_server import ModalFoldServer
 from ...images.modal import get_modal_kit_image
 from ...images.volumes import model_weights
-from ...optimization import initialize_core, retry_initialize
 from ...utils import HOURS, MINUTES, MODAL_MODEL_DIR
 
 if TYPE_CHECKING:
-    from .types import ProtenixOutput
+    from .core import ProtenixCore
 
 # A separate app: Modal builds every image registered on an app when it starts, and the kit image is not needed for the
 # vanilla modes.
@@ -29,25 +27,12 @@ protenix_kit_image = get_modal_kit_image("protenix")
     scaledown_window=10 * MINUTES,
     volumes={MODAL_MODEL_DIR: model_weights},
 )
-class ModalProtenixKit:
+class ModalProtenixKit(ModalFoldServer):
     """Modal entrypoint for Protenix on the kit image."""
 
     config: bytes = modal.parameter(default=b"{}")
 
-    @modal.enter()
-    def _initialize(self) -> None:
+    def _build_core(self, config: dict[str, Any]) -> "ProtenixCore":
         from .core import ProtenixCore
 
-        self._core = ProtenixCore(json.loads(self.config.decode("utf-8")))
-        self._refusal = initialize_core(self._core)
-
-    @modal.exit()
-    def _shutdown(self) -> None:
-        self._core.close()
-
-    @modal.method()
-    def fold(self, sequences: str | Sequence[str], options: dict | None = None) -> "ProtenixOutput":
-        self._refusal = retry_initialize(self._core, self._refusal)
-        if self._refusal is not None:
-            raise self._refusal
-        return self._core.fold(sequences, options=options)
+        return ProtenixCore(config)

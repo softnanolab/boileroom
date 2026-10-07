@@ -1,6 +1,5 @@
 """ESMFold2 wrapper for Biohub's all-atom structure prediction model."""
 
-import json
 import logging
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
@@ -8,9 +7,9 @@ from typing import TYPE_CHECKING, Any
 import modal
 
 from ...backend.modal import get_modal_app
+from ...backend.modal_server import ModalFoldServer
 from ...base import ModelWrapper
 from ...images.volumes import model_weights
-from ...optimization import initialize_core, retry_initialize
 from ...utils import MINUTES, MODAL_MODEL_DIR
 from ..registry import ESMFOLD2_SPEC
 from .image import esmfold2_image
@@ -18,6 +17,7 @@ from .payloads import encode_fold_input
 from .types import DNAInput, LigandInput, ProteinInput, RNAInput, StructurePredictionInput
 
 if TYPE_CHECKING:
+    from .core import ESMFold2Core
     from .types import ESMFold2Output
 
 logger = logging.getLogger(__name__)
@@ -41,26 +41,15 @@ ESMFold2FoldInput = (
     scaledown_window=10 * MINUTES,
     volumes={MODAL_MODEL_DIR: model_weights},
 )
-class ModalESMFold2:
+class ModalESMFold2(ModalFoldServer):
     """Modal-specific wrapper around `ESMFold2Core`."""
 
     config: bytes = modal.parameter(default=b"{}")
 
-    @modal.enter()
-    def _initialize(self) -> None:
-        """Create and initialize the core ESMFold2 backend."""
+    def _build_core(self, config: dict[str, Any]) -> "ESMFold2Core":
         from .core import ESMFold2Core
 
-        self._core = ESMFold2Core(json.loads(self.config.decode("utf-8")))
-        self._refusal = initialize_core(self._core)
-
-    @modal.method()
-    def fold(self, sequences: ESMFold2FoldInput, options: dict | None = None) -> "ESMFold2Output":
-        """Run ESMFold2 structure prediction."""
-        self._refusal = retry_initialize(self._core, self._refusal)
-        if self._refusal is not None:
-            raise self._refusal
-        return self._core.fold(sequences, options=options)
+        return ESMFold2Core(config)
 
 
 class ESMFold2(ModelWrapper):
