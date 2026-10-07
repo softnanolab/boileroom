@@ -203,21 +203,27 @@ ESMFold2 `exact` and `fast` on A100 and `fast` on H100; Protenix `exact` and `fa
 template on A100; OpenDDE `exact` and `fast` on A100. `PredictionMetadata.optimization` reported the mode, kit config and
 card each time. Their timings were single runs and are not benchmark data.
 
+The opt-in kit suites (`--run-kit`) then ran this round's code on Modal (2026-10-06): p53/MDM2 parity of `exact` and
+`fast` against `vanilla` for ESMFold2 on A100-80GB and H100, Protenix and OpenDDE on A100-40GB, and the refusal tests of
+each family. On 2026-10-07 the ESMFold2 parity and refusal tests (A100-80GB) and the Protenix suite (A100-40GB) passed
+again on the images pinned in `KIT_IMAGE_DIGESTS`, which record `kit.commit`, and every kit mode passed the memory test
+below.
+
 Not exercised: the Apptainer kit path, `kit_msa` for ESMFold2, a Protenix or OpenDDE kit fold with a caller-supplied MSA,
-OpenDDE kit modes on H100 with the current OpenDDE image, and any kit mode with the code of this round of fixes on a GPU.
+and OpenDDE kit modes on H100 with the current OpenDDE image.
 
 ### Memory across calls
 
-The kit's native TriMul adapter keeps the packed weights of the last two input lengths per device and evicts older
-ones, but the finalizer it registers on each model weight still holds every evicted cache until the model is freed. A
-runtime that folds many different lengths then grows by about 0.3 GB per new length until it runs out of memory. This
-was measured with ESMFold2 `fast` on A100-80GB at kit commit `f4f62fa`: allocated memory rose from 15.4 to 19.3 GB
-over 16 folds cycling four lengths, while `exact` and `vanilla` stayed flat. `fast` uses the native adapter on A100 at
-every length and on H100 only at the lengths it serves natively; OpenDDE `fast` loads the same adapter and was not
-measured. boileroom frees the evicted caches after every fold (`boileroom.models._worker.release_evicted_kit_caches`,
-called by the ESMFold2 core and by every worker child), which kept the same 16 folds flat. The release reads the
-adapter's private state, so re-check it when the kit commit changes; the upstream fix is for the kit to hold the cache
-weakly or to detach its finalizers on eviction.
+The kit's native TriMul adapter keeps the packed weights of the last two input lengths per device and evicts older ones,
+but the finalizer it registers on each model weight still holds every evicted cache until the model is freed. A runtime
+that folds many different lengths then grows by about 0.3–0.5 GiB per new length until it runs out of memory. This was
+measured with ESMFold2 `fast` on A100-80GB at kit commit `f4f62fa`: allocated memory rose from 15.1 to 19.4 GiB over 16
+folds cycling four lengths, while `exact` and `vanilla` stayed flat. `fast` uses the native adapter on A100 at every
+length and on H100 only at the lengths it serves natively; OpenDDE `fast` loads the same adapter. boileroom frees the
+evicted caches after every fold (`boileroom.models._worker.release_evicted_kit_caches`, called by the ESMFold2 core and
+by every worker child), which kept the same 16 folds flat. The release reads the adapter's private state, so re-check it
+when the kit commit changes; the upstream fix is for the kit to hold the cache weakly or to detach its finalizers on
+eviction.
 
 Freeing an evicted cache is safe only if no CUDA graph still reads it. The ESMFold2 kit drops every graph on a new trunk
 shape. The Protenix forward kit, however, keeps one PairformerStack graph per token count (up to 448 tokens) and
@@ -233,7 +239,10 @@ workspaces of its live graphs alive.
 `gpu.mem.used_mib` in each output shows whether a runtime's memory grows. The opt-in GPU test
 `tests/test_memory_stability.py` checks this for every model and mode: four cycles over three lengths on one live model,
 and the peak of the last cycle may not exceed that of the second by 256 MiB. Its module docstring has the command and
-cost.
+cost. On Modal (2026-10-07, with the release and the stack-graph reset) every model and mode passed it except SAE, whose
+local checkpoint fails to load (softnanolab/boileroom#115); ESMFold2 `fast` passed on both A100-80GB and H100; with the
+release disabled, ESMFold2 `fast` grew 1930 MiB on A100-80GB and 1160 MiB on H100. Protenix `exact` and both OpenDDE kit
+modes still grow 40–75 MiB per cycle of three folds, within the limit and not yet explained.
 
 ## What a prediction records
 
