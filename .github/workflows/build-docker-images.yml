@@ -57,6 +57,7 @@ jobs:
     outputs:
       release_version: ${{ steps.version.outputs.docker_tag }}
       image_tag: ${{ steps.image_tag.outputs.value }}
+      candidate_tag: ${{ steps.image_tag.outputs.candidate }}
       cuda_versions: ${{ steps.image_metadata.outputs.cuda_versions }}
       default_cuda_version: ${{ steps.image_metadata.outputs.default_cuda_version }}
       amd64_model_matrix: ${{ steps.image_metadata.outputs.amd64_model_matrix }}
@@ -129,6 +130,13 @@ jobs:
         env:
           DERIVED_DOCKER_TAG: ${{ steps.version.outputs.docker_tag }}
         run: |
+          # AMD64 images are pushed and smoked under the candidate tag; a promoted run then retags each verified image
+          # to value. A release uses the full commit SHA so it cannot share a candidate with a main run of that commit.
+          if [ "$GITHUB_EVENT_NAME" = "release" ]; then
+            echo "candidate=sha-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          else
+            echo "candidate=sha-${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+          fi
           if [ "$SHOULD_PROMOTE" = "true" ]; then
             echo "value=${DERIVED_DOCKER_TAG}" >> "$GITHUB_OUTPUT"
           else
@@ -185,6 +193,7 @@ jobs:
     env:
       CUDA_VERSION: ${{ matrix.cuda_version }}
       IMAGE_TAG: ${{ needs.prepare-release.outputs.image_tag }}
+      CANDIDATE_TAG: ${{ needs.prepare-release.outputs.candidate_tag }}
     strategy:
       fail-fast: false
       matrix:
@@ -218,13 +227,32 @@ jobs:
         run: |
           uv run --no-project --with click --with pyyaml python ./scripts/images/build_model_images.py \
             --cuda-version="${CUDA_VERSION}" \
-            --tag="${IMAGE_TAG}" \
+            --tag="${CANDIDATE_TAG}" \
             --docker-user="${DOCKER_REPOSITORY_FOR_RUN}" \
             --platform=linux/amd64 \
             --base-mode=only \
             --push \
             --max-workers=${IMAGE_BUILD_MAX_WORKERS} \
             --verbose
+
+      - name: Publish base image tags
+        # The base has no smoke check of its own (the model jobs smoke it); it gets its final tags once it is built.
+        if: needs.prepare-release.outputs.image_tag != needs.prepare-release.outputs.candidate_tag
+        run: |
+          uv run --no-project --with click --with pyyaml python - <<'PY'
+          import os
+
+          from boileroom.images.metadata import BASE_IMAGE_SPEC
+          from scripts.images.promote_image_tags import promote_one
+
+          promote_one(
+              BASE_IMAGE_SPEC,
+              os.environ["CUDA_VERSION"],
+              os.environ["CANDIDATE_TAG"],
+              os.environ["IMAGE_TAG"],
+              os.environ["DOCKER_REPOSITORY_FOR_RUN"],
+          )
+          PY
 
       - name: Free disk space after build
         if: always()
@@ -238,6 +266,7 @@ jobs:
     env:
       CUDA_VERSION: ${{ matrix.cuda_version }}
       IMAGE_TAG: ${{ needs.prepare-release.outputs.image_tag }}
+      CANDIDATE_TAG: ${{ needs.prepare-release.outputs.candidate_tag }}
       MODEL: ${{ matrix.model }}
     strategy:
       fail-fast: false
@@ -272,7 +301,7 @@ jobs:
           uv run --no-project --with click --with pyyaml python ./scripts/images/build_model_images.py \
             --cuda-version="${CUDA_VERSION}" \
             --model="${MODEL}" \
-            --tag="${IMAGE_TAG}" \
+            --tag="${CANDIDATE_TAG}" \
             --docker-user="${DOCKER_REPOSITORY_FOR_RUN}" \
             --platform=linux/amd64 \
             --base-mode=existing \
@@ -289,7 +318,7 @@ jobs:
             --cuda-version="${CUDA_VERSION}" \
             --model="${MODEL}" \
             --docker-user="${DOCKER_REPOSITORY_FOR_RUN}" \
-            --tag="${IMAGE_TAG}" \
+            --tag="${CANDIDATE_TAG}" \
             --pull
 
       - name: Verify canonical image server health
@@ -298,7 +327,7 @@ jobs:
             --cuda-version="${CUDA_VERSION}" \
             --model="${MODEL}" \
             --docker-user="${DOCKER_REPOSITORY_FOR_RUN}" \
-            --tag="${IMAGE_TAG}" \
+            --tag="${CANDIDATE_TAG}" \
             --cleanup
 
       - name: Verify default-CUDA alias image imports
@@ -307,7 +336,7 @@ jobs:
           uv run --no-project --with click --with pyyaml python ./scripts/images/check_model_imports.py \
             --model="${MODEL}" \
             --docker-user="${DOCKER_REPOSITORY_FOR_RUN}" \
-            --tag="${IMAGE_TAG}" \
+            --tag="${CANDIDATE_TAG}" \
             --pull
 
       - name: Verify default-CUDA alias image server health
@@ -316,8 +345,27 @@ jobs:
           uv run --no-project --with click --with pyyaml python ./scripts/images/check_model_server_health.py \
             --model="${MODEL}" \
             --docker-user="${DOCKER_REPOSITORY_FOR_RUN}" \
-            --tag="${IMAGE_TAG}" \
+            --tag="${CANDIDATE_TAG}" \
             --cleanup
+
+      - name: Publish verified model image tags
+        # Runs only after every verify step passed, so the final tags name the manifest that was smoked.
+        if: needs.prepare-release.outputs.image_tag != needs.prepare-release.outputs.candidate_tag
+        run: |
+          uv run --no-project --with click --with pyyaml python - <<'PY'
+          import os
+
+          from boileroom.images.metadata import get_model_image_spec
+          from scripts.images.promote_image_tags import promote_one
+
+          promote_one(
+              get_model_image_spec(os.environ["MODEL"]),
+              os.environ["CUDA_VERSION"],
+              os.environ["CANDIDATE_TAG"],
+              os.environ["IMAGE_TAG"],
+              os.environ["DOCKER_REPOSITORY_FOR_RUN"],
+          )
+          PY
 
       - name: Free disk space after build
         if: always()
@@ -476,3 +524,43 @@ jobs:
       - name: Free disk space after build
         if: always()
         run: docker builder prune --all --force
+
+  publish-kit-image-tags:
+    # The kit images are not rebuilt per release: a full release tags the digest each kit image is pinned to in
+    # KIT_IMAGE_DIGESTS with the stable X.Y.Z tag, so every released pin stays tagged on Docker Hub. A tag that already
+    # names another digest is refused, never moved.
+    if: ${{ github.event_name == 'release' && github.event.release.prerelease == false }}
+    needs: prepare-release
+    name: Publish kit image tags
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      IMAGE_TAG: ${{ needs.prepare-release.outputs.image_tag }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-suffix: image-publish-kit
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          registry: docker.io
+          username: ${{ env.DOCKERHUB_USERNAME_FOR_RUN }}
+          password: ${{ secrets[env.DOCKERHUB_TOKEN_SECRET_FOR_RUN] }}
+
+      - name: Tag the pinned kit image digests
+        run: |
+          uv run --no-project --with click --with pyyaml python ./scripts/images/promote_image_tags.py \
+            --kit-images-only \
+            --target-tag="${IMAGE_TAG}" \
+            --docker-user="${DOCKER_REPOSITORY_FOR_RUN}"

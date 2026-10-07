@@ -38,13 +38,20 @@ def test_click_commands_support_help_aliases() -> None:
             assert "Usage:" in result.output
 
 
-def test_promote_cli_requires_source_and_target_tags() -> None:
-    """Parser-level required options should still fail before Docker is touched."""
+def test_promote_cli_requires_source_and_target_tags(monkeypatch: MonkeyPatch) -> None:
+    """A missing tag fails as a usage error before Docker is touched (``--source-tag`` unless ``--kit-images-only``)."""
 
+    def no_docker() -> None:
+        raise AssertionError("Docker was touched")
+
+    monkeypatch.setattr(promote_image_tags, "ensure_buildx", no_docker)
     result = CliRunner().invoke(promote_image_tags.cli, [])
-
     assert result.exit_code == 2
-    assert "Missing option '--source-tag'" in result.output
+    assert "Missing option '--target-tag'" in result.output
+
+    result = CliRunner().invoke(promote_image_tags.cli, ["--target-tag", "0.3.0"])
+    assert result.exit_code == 2
+    assert "--source-tag is required unless --kit-images-only is set" in result.output
 
 
 def test_derive_version_cli_passes_path_options(monkeypatch: MonkeyPatch, tmp_path: Path) -> None:
