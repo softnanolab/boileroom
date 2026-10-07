@@ -1,11 +1,28 @@
 """Sparse autoencoder (SAE) module for ESM-C representations.
 
-This implements the sparse-autoencoder used to decompose ESM-C residue
+This implements the sparse autoencoder used to decompose ESM-C residue
 representations into a high-dimensional, sparse, and interpretable feature
 space, as described in *Language Modeling Materializes a World Model of Protein
 Biology* (Biohub, 2026). A separate SAE is trained per transformer layer; the
 featured configuration in the paper uses ``k = 64`` active features per residue
 and a codebook (feature) size of ``2**14 = 16384``.
+
+The forward pass reproduces Biohub's reference implementation,
+``esm.models.esmc.sae.EsmcSaeLayer`` (``esm==3.4.1.post1``), which the released
+``biohub/ESMC-*-sae-*`` checkpoints are trained for::
+
+    z         = (x - mean(x)) / (std(x) + 1e-5)    # per-residue z-score
+    pre_acts  = (z - b_dec) @ W_enc                # no encoder bias
+    acts      = scatter(topk(relu(pre_acts), k))   # TopK activation
+    recon     = acts @ W_dec + b_dec               # reconstructs z, not x
+
+A checkpoint holds exactly ``W_enc``, ``W_dec``, ``b_dec`` and two per-feature
+normalization statistics, ``idf`` and ``max``. Normalized features are
+``acts / max * idf`` (Biohub's ``normalize_sae`` / Forge ``normalize_features``);
+the statistics are the maximum activation and ``log(N / f)`` inverse document
+frequency over UniRef90. The released all-layer checkpoints ship placeholder
+statistics (all ones), so :meth:`SparseAutoencoder.normalize_features` refuses to
+run on them rather than return unnormalized features under that name.
 
 The module is intentionally free of Modal / ``esm`` SDK dependencies so it can be
 imported and unit-tested with only ``numpy`` and ``torch``. The heavier
@@ -14,18 +31,11 @@ imported and unit-tested with only ``numpy`` and ``torch``. The heavier
 Two encoder activations are supported:
 
 ``"topk"``
-    Keep the ``k`` largest positive pre-activations per residue and zero the
-    rest. This is the activation used for the released Biohub SAEs.
+    Keep the ``k`` largest ReLU-ed pre-activations per residue and zero the
+    rest. This is the activation the released Biohub SAEs are trained with.
 ``"relu"``
-    A plain ``ReLU`` sparse autoencoder (no hard sparsity budget), provided for
-    experimentation and comparison.
-
-The forward pass follows the standard tied-bias formulation::
-
-    centered  = x - b_pre
-    pre_acts  = centered @ W_enc + b_enc
-    acts      = activation(pre_acts)          # TopK or ReLU
-    recon     = acts @ W_dec + b_pre
+    A plain ``ReLU`` (no hard sparsity budget), for experimentation only: on the
+    released checkpoints it does not reproduce the reference features.
 """
 
 from __future__ import annotations
@@ -33,21 +43,17 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import torch
 from torch import Tensor, nn
 
 Activation = Literal["topk", "relu"]
 
-# Candidate parameter-name aliases seen across public SAE checkpoints. ``load_state_dict``
-# maps whichever alias is present onto this module's canonical names.
-_KEY_ALIASES: dict[str, tuple[str, ...]] = {
-    "W_enc": ("W_enc", "encoder.weight", "encoder.W", "w_enc"),
-    "b_enc": ("b_enc", "encoder.bias", "b_encoder", "latent_bias"),
-    "W_dec": ("W_dec", "decoder.weight", "decoder.W", "w_dec"),
-    "b_pre": ("b_pre", "b_dec", "pre_bias", "decoder.bias"),
-}
+#: Epsilon of the reference per-residue z-score (``EsmcSaeLayer._zscore_normalize_representation``).
+ZSCORE_EPS = 1e-5
+#: Tensors of a released Biohub SAE layer checkpoint; loading requires exactly these.
+CHECKPOINT_KEYS: tuple[str, ...] = ("W_enc", "W_dec", "b_dec", "idf", "max")
 
 
 @dataclass(frozen=True)
@@ -66,16 +72,12 @@ class SAEModuleConfig:
         Ignored when ``activation == "relu"``.
     activation : {"topk", "relu"}
         Encoder sparsity mechanism.
-    normalize_decoder : bool
-        If ``True``, decoder rows are unit-normalized on load, matching the
-        common SAE training convention where dictionary atoms have unit norm.
     """
 
     d_model: int
     num_features: int
     k: int = 64
     activation: Activation = "topk"
-    normalize_decoder: bool = False
 
     def __post_init__(self) -> None:
         if self.d_model <= 0 or self.num_features <= 0:
@@ -87,7 +89,10 @@ class SAEModuleConfig:
 
 
 def topk_activation(pre_acts: Tensor, k: int) -> Tensor:
-    """Keep the ``k`` largest positive pre-activations per row, zero the rest.
+    """Keep the ``k`` largest ReLU-ed pre-activations per row, zero the rest.
+
+    Matches the reference ``relu`` -> ``topk`` -> ``scatter`` order of
+    ``EsmcSaeLayer.forward``.
 
     Parameters
     ----------
@@ -102,17 +107,15 @@ def topk_activation(pre_acts: Tensor, k: int) -> Tensor:
         Sparse activations with the same shape as ``pre_acts``; at most ``k``
         entries per row are non-zero and all are non-negative.
     """
-    if k >= pre_acts.shape[-1]:
-        return torch.relu(pre_acts)
-    values, indices = torch.topk(pre_acts, k=k, dim=-1)
-    values = torch.relu(values)
-    out = torch.zeros_like(pre_acts)
-    out.scatter_(-1, indices, values)
-    return out
+    acts = torch.relu(pre_acts)
+    if k >= acts.shape[-1]:
+        return acts
+    topk = torch.topk(acts, k=k, dim=-1)
+    return torch.zeros_like(acts).scatter(-1, topk.indices, topk.values)
 
 
 class SparseAutoencoder(nn.Module):
-    """Tied-bias sparse autoencoder over ESM-C residue representations.
+    """Biohub ESM-C sparse autoencoder over residue representations.
 
     Parameters
     ----------
@@ -121,19 +124,25 @@ class SparseAutoencoder(nn.Module):
 
     Notes
     -----
-    Weights are stored as ``W_enc`` of shape ``(d_model, num_features)`` and
-    ``W_dec`` of shape ``(num_features, d_model)`` so that ``encode`` and
-    ``decode`` are plain matrix multiplies without transposes at call time.
+    Parameter and buffer names match the released checkpoints, so
+    ``state_dict()`` round-trips them unchanged: ``W_enc`` of shape
+    ``(d_model, num_features)``, ``W_dec`` of shape ``(num_features, d_model)``,
+    ``b_dec`` of shape ``(d_model,)``, and the ``idf`` / ``max`` buffers of shape
+    ``(num_features,)``, which default to ones (no normalization statistics).
     """
+
+    idf: Tensor
+    max: Tensor
 
     def __init__(self, config: SAEModuleConfig) -> None:
         super().__init__()
         self.config = config
         d, f = config.d_model, config.num_features
         self.W_enc = nn.Parameter(torch.zeros(d, f))
-        self.b_enc = nn.Parameter(torch.zeros(f))
         self.W_dec = nn.Parameter(torch.zeros(f, d))
-        self.b_pre = nn.Parameter(torch.zeros(d))
+        self.b_dec = nn.Parameter(torch.zeros(d))
+        self.register_buffer("idf", torch.ones(f))
+        self.register_buffer("max", torch.ones(f))
         self.reset_parameters()
 
     @property
@@ -149,18 +158,19 @@ class SparseAutoencoder(nn.Module):
         nn.init.kaiming_uniform_(self.W_enc, a=5**0.5)
         with torch.no_grad():
             self.W_dec.copy_(self.W_enc.t())
-            if self.config.normalize_decoder:
-                self._unit_normalize_decoder()
-        nn.init.zeros_(self.b_enc)
-        nn.init.zeros_(self.b_pre)
+            self.idf.fill_(1.0)
+            self.max.fill_(1.0)
+        nn.init.zeros_(self.b_dec)
 
-    def _unit_normalize_decoder(self) -> None:
-        norms = self.W_dec.norm(dim=1, keepdim=True).clamp_min(1e-8)
-        self.W_dec.div_(norms)
+    @staticmethod
+    def standardize(x: Tensor) -> Tensor:
+        """Z-score each representation over its feature axis, as the reference does before encoding."""
+        x = x - x.mean(dim=-1, keepdim=True)
+        return x / (x.std(dim=-1, keepdim=True) + ZSCORE_EPS)
 
     def pre_activations(self, x: Tensor) -> Tensor:
-        """Return encoder pre-activations ``(x - b_pre) @ W_enc + b_enc``."""
-        return (x - self.b_pre) @ self.W_enc + self.b_enc
+        """Return encoder pre-activations ``(standardize(x) - b_dec) @ W_enc``."""
+        return (self.standardize(x) - self.b_dec) @ self.W_enc
 
     def encode(self, x: Tensor) -> Tensor:
         """Map representations to sparse feature activations.
@@ -168,7 +178,8 @@ class SparseAutoencoder(nn.Module):
         Parameters
         ----------
         x : Tensor
-            Residue representations of shape ``(..., d_model)``.
+            Residue representations of shape ``(..., d_model)``, as produced by
+            ESM-C (the module standardizes them itself).
 
         Returns
         -------
@@ -182,13 +193,64 @@ class SparseAutoencoder(nn.Module):
         return torch.relu(pre)
 
     def decode(self, acts: Tensor) -> Tensor:
-        """Reconstruct representations from feature activations."""
-        return acts @ self.W_dec + self.b_pre
+        """Reconstruct the *standardized* representation from feature activations."""
+        return acts @ self.W_dec + self.b_dec
 
     def forward(self, x: Tensor) -> tuple[Tensor, Tensor]:
-        """Return ``(feature_activations, reconstruction)`` for ``x``."""
+        """Return ``(feature_activations, reconstruction_of_standardize(x))`` for ``x``."""
         acts = self.encode(x)
         return acts, self.decode(acts)
+
+    # ------------------------------------------------------------------
+    # Feature normalization
+    # ------------------------------------------------------------------
+    @property
+    def has_normalization_stats(self) -> bool:
+        """Whether ``idf`` / ``max`` hold real statistics rather than all-ones placeholders."""
+        return not (bool(torch.all(self.idf == 1)) and bool(torch.all(self.max == 1)))
+
+    def check_normalization_stats(self) -> None:
+        """Raise unless ``idf`` / ``max`` can normalize features like the reference does.
+
+        Raises
+        ------
+        ValueError
+            If the statistics are the all-ones placeholders the released all-layer
+            checkpoints ship (normalizing would silently return raw activations),
+            or if ``max`` holds non-positive or non-finite values (the reference
+            ``acts / max`` would produce ``inf`` / ``nan``).
+        """
+        if not self.has_normalization_stats:
+            raise ValueError(
+                "This SAE checkpoint ships placeholder normalization statistics (idf and max are all 1.0), "
+                "so normalized features ((activation / max) * idf over UniRef90) are not available for it. "
+                "Use raw activations (normalize_features=False)."
+            )
+        if not (bool(torch.isfinite(self.max).all()) and bool((self.max > 0).all())):
+            raise ValueError("SAE normalization statistic 'max' must be finite and positive for every feature.")
+        if not bool(torch.isfinite(self.idf).all()):
+            raise ValueError("SAE normalization statistic 'idf' must be finite for every feature.")
+
+    def normalize_features(self, acts: Tensor) -> Tensor:
+        """Apply the reference feature normalization ``acts / max * idf``.
+
+        Parameters
+        ----------
+        acts : Tensor
+            Feature activations of shape ``(..., num_features)`` from :meth:`encode`.
+
+        Returns
+        -------
+        Tensor
+            Normalized activations with the same shape.
+
+        Raises
+        ------
+        ValueError
+            If the checkpoint has no usable statistics; see :meth:`check_normalization_stats`.
+        """
+        self.check_normalization_stats()
+        return acts / self.max * self.idf
 
     # ------------------------------------------------------------------
     # Persistence
@@ -212,84 +274,66 @@ class SparseAutoencoder(nn.Module):
         """Load a checkpoint previously written by :meth:`save`."""
         directory = Path(directory)
         config = SAEModuleConfig(**json.loads((directory / "config.json").read_text()))
-        module = cls(config)
         state = torch.load(directory / "sae.pt", map_location=device or "cpu")
-        module.load_state_dict(state)
-        if device is not None:
-            module = module.to(device)
-        return module.eval()
+        return cls.from_state_dict(state, config, device=device)
 
     @classmethod
     def from_state_dict(
         cls,
         state_dict: dict[str, Tensor],
         config: SAEModuleConfig,
-        strict: bool = False,
+        device: str | torch.device | None = None,
     ) -> SparseAutoencoder:
-        """Build a module from a possibly foreign ``state_dict``.
+        """Build a module from a released Biohub SAE layer ``state_dict``.
 
-        Parameter names are remapped through :data:`_KEY_ALIASES`, so checkpoints
-        that call the encoder weight ``encoder.weight`` (etc.) still load. Encoder
-        / decoder matrices are transposed automatically when their orientation is
-        the transpose of this module's ``(d_model, num_features)`` convention.
+        The checkpoint must hold exactly :data:`CHECKPOINT_KEYS` in this module's
+        orientation. Nothing is renamed, transposed, defaulted or dropped: a
+        missing tensor, an extra tensor (e.g. an encoder bias ``b_enc``, which the
+        reference architecture does not have) or a wrong shape raises.
 
         Parameters
         ----------
         state_dict : dict[str, Tensor]
-            Source parameters.
+            Source tensors, e.g. ``safetensors.torch.load_file("layer_27.safetensors")``.
         config : SAEModuleConfig
             Target architecture. Must match the checkpoint's dimensions.
-        strict : bool
-            If ``True``, raise when a canonical parameter cannot be resolved.
+        device : str | torch.device | None
+            Device to move the loaded module to.
 
         Returns
         -------
         SparseAutoencoder
             A module in eval mode with weights loaded.
-        """
-        module = cls(config)
-        remapped: dict[str, Tensor] = {}
-        lowered = {key.lower(): value for key, value in state_dict.items()}
-        for canonical, aliases in _KEY_ALIASES.items():
-            tensor = None
-            for alias in aliases:
-                if alias in state_dict:
-                    tensor = state_dict[alias]
-                    break
-                if alias.lower() in lowered:
-                    tensor = lowered[alias.lower()]
-                    break
-            if tensor is None:
-                if strict:
-                    raise KeyError(
-                        f"Could not resolve parameter {canonical!r} from state dict keys {sorted(state_dict)}."
-                    )
-                continue
-            remapped[canonical] = cls._orient(canonical, torch.as_tensor(tensor), config)
-        missing = module.load_state_dict(remapped, strict=False)
-        if strict and missing.missing_keys:
-            raise KeyError(f"Missing parameters after remap: {missing.missing_keys}.")
-        # load_state_dict overwrites the decoder with checkpoint values, so re-apply
-        # the unit-normalization contract that reset_parameters established.
-        if config.normalize_decoder:
-            with torch.no_grad():
-                module._unit_normalize_decoder()
-        return module.eval()
 
-    @staticmethod
-    def _orient(name: str, tensor: Tensor, config: SAEModuleConfig) -> Tensor:
-        """Transpose 2-D weights when they arrive in the opposite orientation."""
-        if name == "W_enc":
-            target = (config.d_model, config.num_features)
-        elif name == "W_dec":
-            target = (config.num_features, config.d_model)
-        else:
-            return tensor
-        if tuple(tensor.shape) == target:
-            return tensor
-        if tuple(tensor.shape) == (target[1], target[0]):
-            return tensor.t().contiguous()
-        raise ValueError(f"{name} has shape {tuple(tensor.shape)}, incompatible with target {target}.")
+        Raises
+        ------
+        KeyError
+            If tensors are missing or unexpected.
+        ValueError
+            If a tensor's shape does not match ``config``.
+        """
+        keys = set(state_dict)
+        missing = [key for key in CHECKPOINT_KEYS if key not in keys]
+        unexpected = sorted(keys - set(CHECKPOINT_KEYS))
+        if missing or unexpected:
+            raise KeyError(
+                f"SAE checkpoint does not match the Biohub EsmcSaeLayer layout {list(CHECKPOINT_KEYS)}: "
+                f"missing {missing}, unexpected {unexpected} (checkpoint keys: {sorted(keys)})."
+            )
+        d, f = config.d_model, config.num_features
+        expected_shapes = {"W_enc": (d, f), "W_dec": (f, d), "b_dec": (d,), "idf": (f,), "max": (f,)}
+        for key, shape in expected_shapes.items():
+            actual = tuple(state_dict[key].shape)
+            if actual != shape:
+                raise ValueError(
+                    f"SAE checkpoint tensor {key!r} has shape {actual}; expected {shape} for "
+                    f"d_model={d}, num_features={f}."
+                )
+        module = cls(config)
+        module.load_state_dict(state_dict, strict=True)
+        if device is not None:
+            module = module.to(device)
+        return module.eval()
 
     @classmethod
     def from_pretrained(
@@ -297,33 +341,34 @@ class SparseAutoencoder(nn.Module):
         repo_id: str,
         *,
         layer: int,
-        num_features: int,
-        d_model: int,
-        k: int = 64,
+        d_model: int | None = None,
+        num_features: int | None = None,
+        k: int | None = None,
         activation: Activation = "topk",
-        filename: str | None = None,
         revision: str | None = None,
         cache_dir: str | Path | None = None,
         device: str | torch.device | None = None,
-        normalize_decoder: bool = False,
     ) -> SparseAutoencoder:
         """Download and load a released per-layer SAE from the Hugging Face Hub.
 
-        The Biohub SAE collection stores one ``safetensors`` file per transformer
-        layer (e.g. ``layer_60.safetensors``) inside a repo such as
-        ``biohub/ESMC-6B-sae-k64-codebook16384``.
+        A Biohub SAE repo such as ``biohub/ESMC-600M-sae-k64-codebook16384``
+        holds a ``config.json`` (``d_model``, ``codebook_dim``, ``k``,
+        ``available_layers``, ``use_residual_update_instead_of_states``) and one
+        ``layer_{layer}.safetensors`` per backbone layer. The architecture is read
+        from ``config.json``; any value the caller passes must agree with it.
 
         Parameters
         ----------
         repo_id : str
             Hugging Face repo id hosting the per-layer SAE weights.
         layer : int
-            Transformer layer index; selects ``layer_{layer}.safetensors`` unless
-            ``filename`` is given.
-        num_features, d_model, k, activation, normalize_decoder
-            Architecture description; see :class:`SAEModuleConfig`.
-        filename : str | None
-            Explicit weight filename, overriding the ``layer_{layer}`` default.
+            Backbone layer index; selects ``layer_{layer}.safetensors``. Biohub
+            numbers layers by the native ESM-C hidden-state stack, where layer
+            ``N`` is the input of transformer block ``N``.
+        d_model, num_features, k : int | None
+            Expected architecture; ``None`` takes the repo's value.
+        activation : {"topk", "relu"}
+            Encoder activation; see :class:`SAEModuleConfig`.
         revision, cache_dir, device
             Passed through to the Hub download / tensor placement.
 
@@ -331,29 +376,55 @@ class SparseAutoencoder(nn.Module):
         -------
         SparseAutoencoder
             A module in eval mode with the downloaded weights loaded.
+
+        Raises
+        ------
+        ValueError
+            If the repo does not ship ``layer``, was trained on residual updates
+            rather than hidden states, or disagrees with a requested dimension.
         """
         from huggingface_hub import hf_hub_download
         from safetensors.torch import load_file
 
-        weight_file = filename or f"layer_{layer}.safetensors"
-        local_path = hf_hub_download(
-            repo_id=repo_id, filename=weight_file, revision=revision, cache_dir=str(cache_dir) if cache_dir else None
-        )
-        state_dict = load_file(local_path, device="cpu")
+        def _download(filename: str) -> str:
+            return hf_hub_download(
+                repo_id=repo_id,
+                filename=filename,
+                revision=revision,
+                cache_dir=str(cache_dir) if cache_dir else None,
+            )
+
+        repo_config: dict[str, Any] = json.loads(Path(_download("config.json")).read_text())
+        available = repo_config.get("available_layers")
+        if available is not None and layer not in available:
+            raise ValueError(f"{repo_id} has no SAE for layer {layer}; available layers: {sorted(available)}.")
+        if repo_config.get("use_residual_update_instead_of_states", False):
+            raise ValueError(
+                f"{repo_id} was trained on residual updates (h[N] - h[N-1]), not hidden states; "
+                "boileroom only feeds hidden states to the SAE."
+            )
+        resolved = {
+            "d_model": repo_config["d_model"],
+            "num_features": repo_config["codebook_dim"],
+            "k": repo_config["k"],
+        }
+        requested = {"d_model": d_model, "num_features": num_features, "k": k}
+        mismatched = {
+            name: (value, resolved[name])
+            for name, value in requested.items()
+            if value is not None and int(value) != int(resolved[name])
+        }
+        if mismatched:
+            details = ", ".join(f"{name}={want} (repo has {have})" for name, (want, have) in mismatched.items())
+            raise ValueError(f"{repo_id} config.json disagrees with the requested SAE architecture: {details}.")
         config = SAEModuleConfig(
-            d_model=d_model,
-            num_features=num_features,
-            k=k,
+            d_model=int(resolved["d_model"]),
+            num_features=int(resolved["num_features"]),
+            k=int(resolved["k"]),
             activation=activation,
-            normalize_decoder=normalize_decoder,
         )
-        # Load strictly: a downloaded checkpoint whose parameter names fall outside
-        # _KEY_ALIASES would otherwise silently keep the random init and return
-        # meaningless features.
-        module = cls.from_state_dict(state_dict, config, strict=True)
-        if device is not None:
-            module = module.to(device)
-        return module.eval()
+        state_dict = load_file(_download(f"layer_{layer}.safetensors"), device="cpu")
+        return cls.from_state_dict(state_dict, config, device=device)
 
 
 def max_pool_features(feature_acts: Tensor, valid_mask: Tensor | None = None) -> Tensor:
@@ -389,6 +460,7 @@ def max_pool_features(feature_acts: Tensor, valid_mask: Tensor | None = None) ->
 
 
 __all__ = [
+    "CHECKPOINT_KEYS",
     "Activation",
     "SAEModuleConfig",
     "SparseAutoencoder",

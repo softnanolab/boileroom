@@ -12,7 +12,9 @@ Two feature sources are supported and selected by the ``feature_source`` config:
     Run ESM-C locally / on Modal to get per-layer hidden states, then apply a
     local :class:`~boileroom.models.sae.sae_module.SparseAutoencoder` loaded from
     the Biohub per-layer Hugging Face weights. Works for the 300M / 600M SAEs on a
-    single GPU with no API token.
+    single GPU with no API token. ``sae_layer`` uses Biohub's layer numbering:
+    layer ``N`` is the input of transformer block ``N`` (the output of ``N``
+    blocks), and the last layer is the final, layer-normed ESM-C embedding.
 
 Either way, per-protein feature vectors are formed by **max-pooling** each feature
 across the (unpadded) residues, following *Language Modeling Materializes a World
@@ -48,13 +50,14 @@ ESMC_D_MODEL: dict[str, int] = {
 }
 
 # Per-model defaults for the *local* backend: the released Biohub per-layer SAE
-# repo and a representative transformer layer for each locally runnable ESM-C
-# model. The base DEFAULT_CONFIG sae_layer/sae_repo_id target the default Forge
-# ESMC-6B / layer-60 SAE, which is wrong for the local 300M/600M models (600M has
-# no layer 60). The collection ships an SAE per layer; these defaults pick the
-# layer at the same relative depth (~0.75) as the paper's featured 6B / layer-60
-# SAE (60 of 6B's 80 layers), i.e. layer 27 for the 36-layer 600M model and layer
-# 22 for the 30-layer 300M model. Override ``sae_layer`` to target another layer.
+# repo and a representative layer for each locally runnable ESM-C model. The base
+# DEFAULT_CONFIG sae_layer/sae_repo_id target the default Forge ESMC-6B / layer-60
+# SAE, which is wrong for the local 300M/600M models (600M has no layer 60). The
+# collection ships an SAE per layer (0..num_blocks); these defaults pick the layer
+# at the same relative depth (~0.75) as the paper's featured 6B / layer-60 SAE (60
+# of 6B's 80 blocks), i.e. layer 27 for the 36-block 600M model (also Biohub's
+# hosted 600M layer) and layer 22 for the 30-block 300M model (Biohub hosts 23).
+# Override ``sae_layer`` to target another layer.
 LOCAL_SAE_DEFAULTS: dict[str, dict[str, str | int]] = {
     "esmc_300m": {"sae_repo_id": "biohub/ESMC-300M-sae-k64-codebook16384", "sae_layer": 22},
     "esmc_600m": {"sae_repo_id": "biohub/ESMC-600M-sae-k64-codebook16384", "sae_layer": 27},
@@ -84,7 +87,10 @@ class SAECore(EmbeddingAlgorithm):
         Shared
             ``feature_source`` (``"forge"`` | ``"local"``), ``normalize_features``,
             ``include_per_residue``, ``num_features``, ``k``, ``sae_layer``,
-            ``device``.
+            ``device``. ``normalize_features`` scales each feature by its UniRef90
+            ``idf / max`` statistics; it defaults to ``True`` for Forge and
+            ``False`` locally, where the released checkpoints ship placeholder
+            statistics and requesting it raises.
         Forge backend
             ``forge_model``, ``forge_sae_model``, ``forge_url``, ``forge_token``
             (falls back to the ``ESM_API_KEY`` env var).
@@ -170,7 +176,9 @@ class SAECore(EmbeddingAlgorithm):
         The base :attr:`DEFAULT_CONFIG` ``sae_repo_id`` / ``sae_layer`` match the
         default Forge ESMC-6B / layer-60 SAE. For the local backend they must match
         the selected ESM-C model instead, so fill them from :data:`LOCAL_SAE_DEFAULTS`
-        for ``esmc_model_name`` unless the caller provided them.
+        for ``esmc_model_name`` unless the caller provided them. ``normalize_features``
+        defaults to ``False`` locally because the released per-layer checkpoints carry
+        no normalization statistics.
 
         Parameters
         ----------
@@ -178,6 +186,8 @@ class SAECore(EmbeddingAlgorithm):
             The raw, unmerged config passed to ``__init__`` — used to tell an
             explicit override apart from an inherited default.
         """
+        if "normalize_features" not in user_config:
+            self.config["normalize_features"] = False
         defaults = LOCAL_SAE_DEFAULTS.get(str(self.config["esmc_model_name"]))
         if defaults is None:
             return
@@ -221,6 +231,9 @@ class SAECore(EmbeddingAlgorithm):
                     device=self.config["device"],
                 )
             self._sae.eval()
+            if bool(self.config["normalize_features"]):
+                # Fail at load, not mid-batch, when the checkpoint cannot normalize.
+                self._sae.check_normalization_stats()
         self.ready = True
 
     def _infer_d_model(self) -> int:
@@ -290,8 +303,7 @@ class SAECore(EmbeddingAlgorithm):
         if hidden_states is None:
             raise ValueError("The ESM-C embedder did not return hidden_states; cannot compute SAE features.")
 
-        hidden = np.asarray(hidden_states)
-        layer_states = self._select_layer(hidden, layer)  # (batch, residues, d_model)
+        layer_states = self._select_layer(np.asarray(hidden_states), np.asarray(emb.embeddings), layer)
         chain_index = np.asarray(emb.chain_index)
         residue_index = np.asarray(emb.residue_index)
 
@@ -316,23 +328,43 @@ class SAECore(EmbeddingAlgorithm):
         )
 
     @staticmethod
-    def _select_layer(hidden: np.ndarray, layer: int) -> np.ndarray:
-        """Return hidden states at ``layer`` with shape ``(batch, residues, d_model)``.
+    def _select_layer(hidden: np.ndarray, embeddings: np.ndarray, layer: int) -> np.ndarray:
+        """Return the representation Biohub's SAE for ``layer`` was trained on.
 
-        ESM-C hidden states are returned with the layer axis first
-        (``(layers, batch, residues, d_model)``). A 3-D array is treated as a
-        single already-selected layer (``(batch, residues, d_model)``).
+        Biohub numbers SAE layers by the native ESM-C hidden-state stack: layer
+        ``N`` is the input of transformer block ``N`` for ``0 <= N < num_blocks``,
+        and layer ``num_blocks`` is the final, layer-normed output. The embedder
+        returns ``hidden[i]`` = the output of block ``i`` (pre-norm) and the normed
+        output as ``embeddings``, so layer ``N`` is ``hidden[N - 1]`` and layer
+        ``num_blocks`` is ``embeddings``. Layer 0 (the token embeddings) is not
+        exposed by the embedder.
+
+        Parameters
+        ----------
+        hidden : np.ndarray
+            Per-block outputs of shape ``(num_blocks, batch, residues, d_model)``.
+        embeddings : np.ndarray
+            Final normed representations of shape ``(batch, residues, d_model)``.
+        layer : int
+            Biohub SAE layer index.
+
+        Returns
+        -------
+        np.ndarray
+            Representations of shape ``(batch, residues, d_model)``.
         """
-        if hidden.ndim == 3:
-            return hidden
         if hidden.ndim != 4:
             raise ValueError(
                 f"Expected hidden states with 4 dims (layers, batch, residues, features); got shape {hidden.shape}."
             )
-        n_layers = hidden.shape[0]
-        if not -n_layers <= layer < n_layers:
-            raise IndexError(f"sae_layer={layer} is out of range for {n_layers} available layers.")
-        return hidden[layer]
+        num_blocks = hidden.shape[0]
+        if not 0 <= layer <= num_blocks:
+            raise IndexError(f"sae_layer={layer} is out of range; this ESM-C model has SAE layers 0..{num_blocks}.")
+        if layer == 0:
+            raise ValueError("sae_layer=0 (the token embeddings) is not supported: ESM-C does not expose them.")
+        if layer == num_blocks:
+            return embeddings
+        return hidden[layer - 1]
 
     def _apply_sae(
         self,
@@ -357,7 +389,7 @@ class SAECore(EmbeddingAlgorithm):
                 x = torch.as_tensor(layer_states[i], dtype=dtype, device=device)
                 acts = self._sae.encode(x)  # (residues, num_features)
                 if normalize:
-                    acts = torch.nn.functional.normalize(acts, dim=-1)
+                    acts = self._sae.normalize_features(acts)
                 mask = torch.as_tensor(valid, dtype=torch.bool, device=device)
                 pooled[i] = max_pool_features(acts, mask).float().cpu().numpy()
                 if per_residue is not None:
