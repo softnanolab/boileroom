@@ -15,17 +15,22 @@ from .images.metadata import (
     DEFAULT_PYTHON_VERSION,
     format_image_reference,
     get_image_tag,
-    get_kit_image_source,
     get_kit_image_spec,
+    kit_image_reference,
 )
 from .models.registry import ModelSpec, resolve_object
-from .optimization import DEFAULT_OPTIMIZATION, validate_optimization
+from .optimization import DEFAULT_OPTIMIZATION, refuse_without_kit, validate_optimization
 from .utils import validate_sequence
 
 if TYPE_CHECKING:
     import torch
 
 logger = logging.getLogger(__name__)
+
+#: Config keys every model accepts whether or not its ``DEFAULT_CONFIG`` lists them. ``msa`` and ``templates`` are
+#: refused unless the model sets the matching ``SUPPORTS_USER_*`` flag; ``optimization`` accepts only ``"vanilla"``
+#: unless the model lists it (a family with an optimization kit).
+SHARED_CONFIG_KEYS: frozenset[str] = frozenset({"msa", "templates", "optimization"})
 
 
 def _filter_dataclass_fields(output: Any, include_fields: list[str] | None, always_include: set[str]) -> Any:
@@ -53,6 +58,7 @@ class PredictionMetadata:
     inference_time: float | None = None  # in seconds
     postprocessing_time: float | None = None  # in seconds
     optimization: dict[str, Any] | None = None  # resolved optimization mode and GPU
+    runtime: dict[str, str] | None = None  # code, image, stack and GPU provenance (see boileroom.provenance)
 
 
 class StructurePrediction(Protocol):
@@ -96,10 +102,18 @@ class Algorithm(ABC):
         ----------
         config : dict
             Configuration overrides merged into the class DEFAULT_CONFIG; keys in this dict take precedence over defaults.
+
+        Raises
+        ------
+        ValueError
+            If ``config`` has a key the model does not accept, or ``msa`` / ``templates`` the model cannot use.
+        OptimizationUnavailableError
+            If ``config`` asks a model without an optimization kit for ``optimization`` other than ``"vanilla"``.
         """
         if config is None:
             config = {}
         self.config = {**self.DEFAULT_CONFIG, **config}
+        self._validate_config(self.config)
         self.name: str = self.__class__.__name__
         self.version: str = ""  # Should be overridden by implementations
         self.ready: bool = False
@@ -133,7 +147,40 @@ class Algorithm(ABC):
         logger.warning("This does not work with Modal and remote execution. Create a new instance instead.")
         # TODO: Make this work smartly with remote Modal, calling _load() again, etc. and thus programmatically
         # updating the model if anything has changed
-        self.config = {**self.config, **config}
+        updated = {**self.config, **config}
+        self._validate_config(updated)
+        self.config = updated
+
+    def _validate_config(self, config: Mapping[str, Any]) -> None:
+        """Refuse config keys this model does not accept and shared inputs it cannot use.
+
+        Parameters
+        ----------
+        config : Mapping[str, Any]
+            A full (merged) configuration.
+
+        Raises
+        ------
+        ValueError
+            If a key is neither in ``DEFAULT_CONFIG`` nor in :data:`SHARED_CONFIG_KEYS`, if ``msa`` or ``templates``
+            is set on a model whose ``SUPPORTS_USER_*`` flag is off, or if ``optimization`` is not a known mode.
+        OptimizationUnavailableError
+            If a model without an optimization kit is asked for ``optimization`` other than ``"vanilla"``.
+        """
+        name = getattr(self, "DISPLAY_NAME", type(self).__name__)
+        allowed = set(self.DEFAULT_CONFIG) | SHARED_CONFIG_KEYS
+        unknown = set(config) - allowed
+        if unknown:
+            raise ValueError(f"{name} does not accept config keys {sorted(unknown)}; allowed keys: {sorted(allowed)}")
+        for key, flag in (("msa", "SUPPORTS_USER_MSA"), ("templates", "SUPPORTS_USER_TEMPLATES")):
+            if config.get(key) and not getattr(self, flag, False):
+                raise ValueError(f"{name} does not support user-supplied {key!r}")
+        # Every family validates the mode here, so a kit family needs no check of its own to refuse an unknown one.
+        if "optimization" in config:
+            if "optimization" in self.DEFAULT_CONFIG:
+                validate_optimization(config["optimization"])
+            else:
+                refuse_without_kit(name, config["optimization"])
 
     def _resolve_device(self) -> "torch.device":
         """Select the computation device based on instance configuration and system capability.
@@ -170,14 +217,14 @@ class Algorithm(ABC):
         Raises
         ------
         ValueError
-            If `options` contains any keys present in `STATIC_CONFIG_KEYS`.
+            If `options` contains any keys present in `STATIC_CONFIG_KEYS` (or ``optimization``, which is always set at
+            initialization), a key the model does not accept, or ``msa`` / ``templates`` the model cannot use (checked
+            on the merged configuration, so a value set at construction is refused too).
         """
         if options is None:
             options = {}
 
-        static_keys: set[str] = getattr(self, "STATIC_CONFIG_KEYS", set())
-        if not isinstance(static_keys, set):
-            static_keys = set(static_keys)
+        static_keys = set(getattr(self, "STATIC_CONFIG_KEYS", ())) | {"optimization"}
 
         # Check for attempts to override static config keys
         conflicting_keys = set(options.keys()) & static_keys
@@ -186,13 +233,10 @@ class Algorithm(ABC):
                 f"The following config keys can only be set at initialization and cannot be overridden per-call: {sorted(conflicting_keys)}"
             )
 
-        for key, flag in (("msa", "SUPPORTS_USER_MSA"), ("templates", "SUPPORTS_USER_TEMPLATES")):
-            if options.get(key) and not getattr(self, flag, False):
-                name = getattr(self, "DISPLAY_NAME", type(self).__name__)
-                raise ValueError(f"{name} does not support user-supplied {key!r}")
-
         # Merge: static config (from self.config) + dynamic options
-        return {**self.config, **options}
+        merged = {**self.config, **options}
+        self._validate_config(merged)
+        return merged
 
     @staticmethod
     def _initialize_metadata(model_name: str, model_version: str) -> PredictionMetadata:
@@ -430,14 +474,16 @@ class ModelWrapper:
 
         backend_instance: Any
         # A family with a kit image (ESMFold2, Protenix) runs "exact" and "fast" there; "vanilla" keeps the stock image.
-        kit_image_key = None
-        if "optimization" in model_spec.contract.static_config_keys:
-            # Checked here so a bad mode fails in the caller, not in a Modal container that would restart silently.
-            mode = validate_optimization(resolved_config.get("optimization", DEFAULT_OPTIMIZATION))
-            if mode != DEFAULT_OPTIMIZATION and model_spec.kit_image_key is not None:
-                kit_image_key = model_spec.kit_image_key
+        uses_kit_image = False
+        # Checked here so a bad or unavailable mode fails in the caller, not in a Modal container that would restart
+        # silently.
+        mode = resolved_config.get("optimization", DEFAULT_OPTIMIZATION)
+        if "optimization" not in model_spec.contract.static_config_keys:
+            refuse_without_kit(model_spec.public_name, mode)
+        elif validate_optimization(mode) != DEFAULT_OPTIMIZATION:
+            uses_kit_image = model_spec.kit_modal_class_path is not None
         if backend_type == "modal":
-            modal_class_path = model_spec.kit_modal_class_path if kit_image_key else model_spec.modal_class_path
+            modal_class_path = model_spec.kit_modal_class_path if uses_kit_image else model_spec.modal_class_path
             if modal_class_path is None:
                 raise ValueError(f"Modal backend is not configured for {model_spec.public_name}")
             modal_cls = resolve_object(modal_class_path)
@@ -445,18 +491,17 @@ class ModelWrapper:
         elif backend_type == "apptainer":
             if model_spec.apptainer_core_class_path is None or model_spec.apptainer_image_name is None:
                 raise ValueError(f"Apptainer backend is not configured for {model_spec.public_name}")
-            image_name = model_spec.apptainer_image_name
             python_version = DEFAULT_PYTHON_VERSION
-            if kit_image_key:
-                if get_kit_image_source() != "registry" and ":" not in resolved_backend:
-                    raise ValueError(
-                        f"Apptainer pulls the {model_spec.public_name} kit image from a registry, and none is published. "
-                        "Build and push it (see docs/optimization.md), then set BOILEROOM_KIT_IMAGE_SOURCE=registry "
-                        'with BOILEROOM_DOCKER_REPOSITORY and BOILEROOM_IMAGE_TAG (or pass backend="apptainer:<tag>").'
-                    )
-                kit_spec = get_kit_image_spec(kit_image_key)
-                image_name, python_version = kit_spec.image_name, kit_spec.python_version
-            image_uri = f"docker://{format_image_reference(image_name, backend_tag)}"
+            if uses_kit_image:
+                # Apptainer always pulls a kit image from the registry: by the digest pinned in KIT_IMAGE_DIGESTS, or
+                # by the tag that backend="apptainer:<tag>" (first) or BOILEROOM_KIT_IMAGE_TAG names.
+                # BOILEROOM_IMAGE_TAG does not apply to kit images.
+                kit_spec = get_kit_image_spec(model_spec.family)
+                inline_tag = resolved_backend.partition(":")[2].strip() or None
+                image_uri = f"docker://{kit_image_reference(kit_spec, inline_tag)}"
+                python_version = kit_spec.python_version
+            else:
+                image_uri = f"docker://{format_image_reference(model_spec.apptainer_image_name, backend_tag)}"
             backend_instance = ApptainerBackend(
                 model_spec.apptainer_core_class_path,
                 image_uri,

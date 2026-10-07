@@ -1,11 +1,14 @@
 import json
 from pathlib import Path
+from typing import Any
+from unittest.mock import Mock
 
 import numpy as np
 import pytest
 
 from boileroom.base import PredictionMetadata
 from boileroom.models.protenix.types import ProtenixOutput
+from boileroom.optimization import OptimizationUnavailableError
 
 
 @pytest.fixture
@@ -115,28 +118,27 @@ def test_protenix_command_env_preserves_backend_device_by_default(monkeypatch, c
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "7")
     monkeypatch.setenv("MODEL_DIR", str(tmp_path))
     monkeypatch.delenv("PROTENIX_ROOT_DIR", raising=False)
-    from boileroom.models.protenix.core import _command_env
+    core = core_class()
 
-    assert _command_env(core_class().config)["CUDA_VISIBLE_DEVICES"] == "7"
-    assert _command_env(core_class().config)["PROTENIX_ROOT_DIR"] == str(tmp_path / "protenix")
-    assert _command_env({**core_class().config, "device": "cuda:1"})["CUDA_VISIBLE_DEVICES"] == "1"
-    assert _command_env({**core_class().config, "device": "cpu"})["CUDA_VISIBLE_DEVICES"] == ""
+    assert core._worker_env(core.config, None)["CUDA_VISIBLE_DEVICES"] == "7"
+    assert core._worker_env(core.config, None)["PROTENIX_ROOT_DIR"] == str(tmp_path / "protenix")
+    assert core._worker_env({**core.config, "device": "cuda:1"}, None)["CUDA_VISIBLE_DEVICES"] == "1"
+    assert core._worker_env({**core.config, "device": "cpu"}, None)["CUDA_VISIBLE_DEVICES"] == ""
 
 
 def test_protenix_command_env_routes_msa_search_to_configured_server(monkeypatch, core_class) -> None:
     """The Protenix MSA client must use the configured ColabFold-compatible server, not its own default."""
-    from boileroom.models.protenix.core import _command_env
-
+    core = core_class()
     monkeypatch.setenv("MMSEQS_SERVICE_HOST_URL", "https://stale.example")
-    assert _command_env(core_class().config)["MMSEQS_SERVICE_HOST_URL"] == "https://api.colabfold.com"
-    custom = {**core_class().config, "msa_server_url": "https://msa.example"}
-    assert _command_env(custom)["MMSEQS_SERVICE_HOST_URL"] == "https://msa.example"
+    assert core._worker_env(core.config, None)["MMSEQS_SERVICE_HOST_URL"] == "https://api.colabfold.com"
+    custom = {**core.config, "msa_server_url": "https://msa.example"}
+    assert core._worker_env(custom, None)["MMSEQS_SERVICE_HOST_URL"] == "https://msa.example"
 
 
 def test_target_only_msa_suppresses_binder_search(tmp_path, core_class) -> None:
     """Target alignment is transported as text, binder gets a query-only alignment."""
-    target = ">query\nAAAA\n>homolog\nAAcAA\n"
-    path = core_class()._write_input_json("AAAA:CCCC", tmp_path, [target, None])
+    target = ">query\nAAAAA\n>homolog\nAAcAAA\n"
+    path = core_class()._write_input_json("AAAAA:CCCC", tmp_path, [target, None])
     records = json.loads(path.read_text())[0]["sequences"]
     msa_files = [Path(record["proteinChain"]["unpairedMsaPath"]) for record in records]
     assert msa_files[0].read_text() == target
@@ -148,6 +150,85 @@ def test_invalid_msa_is_rejected_before_inference(tmp_path, core_class, msa) -> 
     """Wrong query/row length or chain count must not reach paid inference."""
     with pytest.raises(ValueError):
         core_class()._write_input_json("AAAA:CCCC", tmp_path, msa)
+
+
+def _upstream_features(text: str) -> list[tuple[str, list[int]]]:
+    """Mirror Protenix's ``parse_fasta`` and ``MSACore.sequences_to_array`` for protein rows (pinned 2.0 source).
+
+    Lines are stripped; blank and ``#`` lines are skipped. Uppercase letters and ``-`` are aligned; any other
+    character counts as an inserted residue before the next aligned column. Returns ``(aligned row, deletions)``.
+    """
+    rows: list[str] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith(">"):
+            rows.append("")
+        elif rows:
+            rows[-1] += line
+    features = []
+    for row in rows:
+        aligned, deletions, pending = "", [], 0
+        for char in row:
+            if char.isascii() and (char.isupper() or char == "-"):
+                aligned += char
+                deletions.append(pending)
+                pending = 0
+            else:
+                pending += 1
+        features.append((aligned, deletions))
+    return features
+
+
+def test_caller_a3m_is_rewritten_as_the_rows_upstream_parses(tmp_path, core_class) -> None:
+    """Wrapped rows, blank lines and ``.`` insert-state gaps reach Protenix as the validated rows.
+
+    Protenix counts every ``.`` as a deleted residue; the written file drops them, so upstream's deletion counts are
+    the lowercase insertions alone, and its aligned rows are the ones ``a3m_rows`` validated.
+    """
+    from boileroom.inputs import a3m_rows
+
+    caller = "\n>query\nMKTAY\n\n>hit one\n  MK..tA\nY-.\n>hit one\nM.Kaa-AY\n"
+    path = core_class()._write_input_json("MKTAY:CCCC", tmp_path, [caller, None])
+    written = Path(json.loads(path.read_text())[0]["sequences"][0]["proteinChain"]["unpairedMsaPath"]).read_text()
+
+    assert written == ">query\nMKTAY\n>hit one\nMKtAY-\n>hit one\nMKaa-AY\n"
+    features = _upstream_features(written)
+    assert [aligned for aligned, _ in features] == a3m_rows(caller, "MKTAY")
+    assert [deletions for _, deletions in features] == [[0] * 5, [0, 0, 1, 0, 0], [0, 0, 2, 0, 0]]
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        pytest.param("MKT A", id="space"),
+        pytest.param("MKT\tA", id="tab"),
+        pytest.param("MKTA*", id="terminator"),
+        pytest.param("MK1AY", id="digit"),
+        pytest.param("MKTA\n#", id="comment-line"),
+        pytest.param("MK\u00c4AY", id="non-ascii-upper"),
+        pytest.param("MK\u00e9TAY", id="non-ascii-lower"),
+    ],
+)
+def test_caller_a3m_rows_upstream_would_misread_are_refused(tmp_path, core_class, row) -> None:
+    """Rows the shared validator accepts but Protenix would read as other rows (or crash on) are refused."""
+    from boileroom.inputs import a3m_rows
+
+    caller = f">query\nMKTAY\n>hit\n{row}\n"
+    a3m_rows(caller, "MKTAY")  # the shared validator alone lets these through
+    with pytest.raises(ValueError, match="Protenix msa entry 0: A3M row 1 contains"):
+        core_class()._write_input_json("MKTAY:CCCC", tmp_path, [caller, None])
+    assert not (tmp_path / "chain_0.a3m").exists()
+
+
+def test_homolog_rows_for_a_chain_upstream_featurizes_without_msa_are_refused(tmp_path, core_class) -> None:
+    """Protenix drops the MSA of a chain of 4 or fewer residues, so its homolog rows would be silently unused."""
+    with pytest.raises(ValueError, match="Protenix msa entry 1: the chain has 4 residues"):
+        core_class()._write_input_json("MKTAY:CCCC", tmp_path, [None, ">query\nCCCC\n>hit\nCCaCC\n"])
+    path = core_class()._write_input_json("MKTAY:CCCC", tmp_path, [None, ">query\nCCCC\n"])
+    records = json.loads(path.read_text())[0]["sequences"]
+    assert Path(records[1]["proteinChain"]["unpairedMsaPath"]).read_text() == ">query\nCCCC\n"
 
 
 def test_missing_seed_fails_even_when_cli_exit_was_zero(sample_outputs, core_class) -> None:
@@ -181,3 +262,251 @@ def test_parse_seeds_rejects_malformed_values(seeds) -> None:
 
     with pytest.raises(ValueError, match="comma-separated unique nonnegative integers"):
         _parse_seeds(seeds)
+
+
+class FakeWorker:
+    """CPU stand-in for ``ModelWorker``: records calls, reports a ``describe()`` and a predict payload."""
+
+    def __init__(self, config: dict[str, Any], env: dict[str, str], **kwargs: Any) -> None:
+        self.env = env
+        self.info: dict[str, Any] = {}
+        self.calls: list[str] = []
+        self.predict_error: Exception | None = None
+
+    def start(self) -> dict[str, Any]:
+        self.calls.append("start")
+        self.info = {"python": "3.11.5", "layernorm": "openfold"}
+        return self.info
+
+    def predict(self, input_json: str, output_dir: str, config: dict[str, Any]) -> dict[str, Any]:
+        self.calls.append("predict")
+        if self.predict_error is not None:
+            raise self.predict_error
+        return {"kernel.resolved.trimul": "cuequivariance", "templates.staged": 0}
+
+    def close(self) -> None:
+        self.calls.append("close")
+        self.info = {}
+
+
+@pytest.fixture
+def fake_runtime(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> list[FakeWorker]:
+    """Patch the worker and the GPU probes; return the workers the core creates."""
+    import boileroom.models.protenix.core as core_module
+    from boileroom.optimization import GpuInfo
+
+    workers: list[FakeWorker] = []
+
+    def factory(*args: Any, **kwargs: Any) -> FakeWorker:
+        workers.append(FakeWorker(*args, **kwargs))
+        return workers[-1]
+
+    gpu = GpuInfo("NVIDIA H100 80GB HBM3", (9, 0))
+    monkeypatch.setenv("MODEL_DIR", str(tmp_path))
+    monkeypatch.setattr(core_module, "ModelWorker", factory)
+    monkeypatch.setattr(core_module, "describe_gpu", lambda device=None: gpu)
+    monkeypatch.setattr(core_module, "detect_gpu", lambda device=None: gpu)
+    return workers
+
+
+def _stub_outputs(core: Any) -> None:
+    core._collect_outputs = lambda output_dir, metadata, config: Mock(metadata=metadata)
+
+
+@pytest.mark.parametrize(
+    ("mode", "layernorm"), [("vanilla", "openfold"), ("exact", "fast_layernorm"), ("fast", "fast_layernorm")]
+)
+def test_layernorm_is_set_per_mode_over_the_inherited_value(
+    monkeypatch: pytest.MonkeyPatch, core_class, tmp_path: Path, mode: str, layernorm: str
+) -> None:
+    """The image ENV (or a caller's environment) cannot move a mode off its LayerNorm."""
+    from boileroom.models.protenix.core import PROTENIX_LAYERNORM
+
+    monkeypatch.setenv("MODEL_DIR", str(tmp_path))
+    assert PROTENIX_LAYERNORM[mode] == layernorm
+    core = core_class()
+    for inherited in ("fast_layernorm", "openfold", "torch"):
+        monkeypatch.setenv("LAYERNORM_TYPE", inherited)
+        assert core._worker_env({**core.config, "optimization": mode}, None)["LAYERNORM_TYPE"] == layernorm
+
+
+@pytest.mark.parametrize(
+    ("flat", "levers"),
+    [("none", []), (None, []), ("lnstream", ["lnstream"]), ("lnstream,blk2", ["lnstream", "blk2"])],
+)
+def test_split_levers_reads_the_none_sentinel_as_no_levers(flat: str | None, levers: list[str]) -> None:
+    """The worker reports an empty lever list as ``"none"``; it must not come back as a lever named "none"."""
+    from boileroom.models.protenix.core import _split_levers
+
+    assert _split_levers(flat) == levers
+
+
+def test_protenix_worker_env_adds_nothing_of_opendde(monkeypatch: pytest.MonkeyPatch, core_class, tmp_path) -> None:
+    """The family hook is OpenDDE's alone: a Protenix worker gets no JIT root, kit process env or venv paths."""
+    monkeypatch.setenv("MODEL_DIR", str(tmp_path))
+    monkeypatch.setenv("PATH", "/usr/bin")
+    for name in ("MODEL_OPT_JIT_ROOT", "PYTHONHASHSEED", "LD_LIBRARY_PATH"):
+        monkeypatch.delenv(name, raising=False)
+    core = core_class()
+    env = core._worker_env(core.config, None)
+    assert env["PATH"] == "/usr/bin"
+    assert not {"MODEL_OPT_JIT_ROOT", "PYTHONHASHSEED", "LD_LIBRARY_PATH"} & env.keys()
+
+
+def test_metadata_runtime_merges_provenance_worker_and_request(core_class, fake_runtime) -> None:
+    """One flat record: the core's provenance and GPU, ``worker.*`` from describe(), ``predict.*`` from the run."""
+    import platform
+
+    core = core_class()
+    _stub_outputs(core)
+    runtime = core.fold("AAAA").metadata.runtime
+    assert runtime["python"] == platform.python_version() and "boileroom" in runtime and "protenix" in runtime
+    assert runtime["gpu"] == "NVIDIA H100 80GB HBM3" and runtime["gpu_capability"] == "sm90"
+    assert runtime["worker.python"] == "3.11.5" and runtime["worker.layernorm"] == "openfold"
+    assert runtime["predict.kernel.resolved.trimul"] == "cuequivariance" and runtime["predict.templates.staged"] == "0"
+
+
+def test_vanilla_uses_the_lenient_gpu_probe_and_runs_without_a_card(
+    monkeypatch: pytest.MonkeyPatch, core_class, fake_runtime
+) -> None:
+    """Vanilla never calls the strict probe: without a readable GPU it still runs and records none."""
+    import boileroom.models.protenix.core as core_module
+
+    def strict(device: str | None = None) -> Any:
+        raise OptimizationUnavailableError("optimization exact/fast needs a CUDA GPU; none is visible")
+
+    monkeypatch.setattr(core_module, "detect_gpu", strict)
+    monkeypatch.setattr(core_module, "describe_gpu", lambda device=None: None)
+    core = core_class()
+    _stub_outputs(core)
+    runtime = core.fold("AAAA").metadata.runtime
+    assert runtime["gpu"] == "none" and runtime["gpu_capability"] == "none"
+    assert core._refusal is None and len(fake_runtime) == 1
+
+
+@pytest.mark.parametrize("mode", ["exact", "fast"])
+def test_kit_modes_use_the_strict_gpu_probe(monkeypatch: pytest.MonkeyPatch, core_class, fake_runtime, mode) -> None:
+    """A kit mode never falls back to the lenient probe: an unreadable GPU refuses before any worker starts."""
+    import boileroom.models.protenix.core as core_module
+
+    def strict(device: str | None = None) -> Any:
+        raise OptimizationUnavailableError("optimization exact/fast needs a CUDA GPU; none is visible")
+
+    monkeypatch.setattr(core_module, "describe_gpu", Mock(side_effect=AssertionError("lenient probe in a kit mode")))
+    core = core_class({"optimization": mode})
+    _stub_outputs(core)
+    assert core.fold("AAAA").metadata.runtime["gpu"] == "NVIDIA H100 80GB HBM3"
+    monkeypatch.setattr(core_module, "detect_gpu", strict)
+    with pytest.raises(OptimizationUnavailableError, match="none is visible"):
+        core_class({"optimization": mode}).fold("AAAA")
+    assert len(fake_runtime) == 1
+
+
+def test_refused_predict_closes_the_worker_and_the_refusal_stands(core_class, fake_runtime) -> None:
+    """A run the kit refused is not retried on a restarted worker: every later call raises the refusal."""
+    core = core_class({"optimization": "fast"})
+    _stub_outputs(core)
+    core._initialize()
+    worker = fake_runtime[0]
+    worker.predict_error = OptimizationUnavailableError("Protenix refused: the kit went inactive")
+    with pytest.raises(OptimizationUnavailableError, match="the kit went inactive"):
+        core.fold("AAAA")
+    assert worker.calls == ["start", "predict", "close"] and not core.ready
+    worker.predict_error = None
+    for call in (lambda: core.fold("AAAA"), core._initialize):
+        with pytest.raises(OptimizationUnavailableError, match="refused earlier in this runtime"):
+            call()
+    assert len(fake_runtime) == 1 and worker.calls == ["start", "predict", "close"]
+
+
+def test_failed_predict_that_is_not_a_refusal_does_not_stand(core_class, fake_runtime) -> None:
+    """Only a refusal stands; an ordinary worker failure leaves the next call free to restart it."""
+    core = core_class()
+    _stub_outputs(core)
+    core._initialize()
+    fake_runtime[0].predict_error = RuntimeError("worker crashed")
+    with pytest.raises(RuntimeError, match="worker crashed"):
+        core.fold("AAAA")
+    fake_runtime[0].predict_error = None
+    assert core.fold("AAAA").metadata.runtime["predict.templates.staged"] == "0"
+
+
+@pytest.mark.parametrize("options", [{"use_template": True}, {"templates": {"t": "data_t\n"}}])
+def test_templates_are_refused_on_a_checkpoint_without_a_template_embedder(core_class, fake_runtime, options) -> None:
+    """The mini checkpoints have no template embedder: a template would be ignored, so the request is refused."""
+    core = core_class({"model_name": "protenix_mini_default_v0.5.0", **options})
+    with pytest.raises(ValueError, match="has no template embedder"):
+        core._initialize()
+    with pytest.raises(ValueError, match="has no template embedder"):
+        core.fold("AAAA")
+    assert fake_runtime == []
+
+
+def test_templates_are_accepted_on_template_capable_checkpoints(core_class) -> None:
+    """Every checkpoint upstream lets search or take templates passes the check."""
+    from boileroom.models.protenix.core import PROTENIX_TEMPLATE_MODELS
+
+    assert core_class().config["model_name"] in PROTENIX_TEMPLATE_MODELS
+    for model_name in PROTENIX_TEMPLATE_MODELS:
+        core = core_class({"model_name": model_name})
+        core._validate_templates({**core.config, "use_template": True})
+        core._validate_templates({**core.config, "templates": {"t": "data_t\n"}})
+
+
+def test_use_template_with_caller_templates_is_refused_before_staging(core_class, fake_runtime) -> None:
+    """Caller templates replace the search; asking for both is refused before anything is staged or loaded."""
+    core = core_class({"use_template": True})
+    core._stage_templates = Mock(side_effect=AssertionError("staged"))
+    with pytest.raises(ValueError, match="cannot be combined with use_template=True"):
+        core.fold("AAAA", options={"templates": {"t": "data_t\n"}})
+    assert fake_runtime == []
+
+
+def test_other_chains_get_a_query_only_templates_path(core_class, tmp_path: Path) -> None:
+    """Only ``templates_chain`` reads the staged hits; the other chains read a query-only file and are not searched."""
+    from boileroom.models.protenix.templates import StagedTemplates
+
+    staged = StagedTemplates(
+        templates_path=str(tmp_path / "templates" / "hits.a3m"),
+        mmcif_dir=str(tmp_path / "templates" / "mmcif"),
+        release_dates_path=str(tmp_path / "templates" / "release_dates.json"),
+        obsolete_pdbs_path=str(tmp_path / "templates" / "obsolete.dat"),
+        cache_dir=str(tmp_path / "templates" / "cache"),
+        query="AAAA",
+        count=1,
+        names=("t",),
+    )
+    path = core_class()._write_input_json("AAAA:CCCC", tmp_path, [None, None], staged, 0)
+    records = [r["proteinChain"] for r in json.loads(path.read_text())[0]["sequences"]]
+    assert records[0]["templatesPath"] == staged.templates_path
+    assert Path(records[1]["templatesPath"]).read_text() == ">query\nCCCC\n"
+    assert records[1]["templatesPath"] != records[1]["unpairedMsaPath"]
+
+
+def test_unpaired_msa_is_an_unknown_key(core_class, fake_runtime) -> None:
+    """The unreleased ``unpaired_msa`` alias is gone: it is refused as an unknown key, before any load."""
+    with pytest.raises(ValueError, match=r"does not accept config keys \['unpaired_msa'\]"):
+        core_class().fold("AAAA", options={"unpaired_msa": [">q\nAAAA\n"]})
+    assert "unpaired_msa" not in core_class().config
+    assert fake_runtime == []
+
+
+def test_static_key_per_call_is_refused_by_the_wrapper_and_the_core(
+    monkeypatch: pytest.MonkeyPatch, core_class
+) -> None:
+    """The wrapper refuses before dispatch (no remote load); the core refuses the same key for direct callers."""
+    from boileroom.models.protenix.protenix import Protenix
+
+    backend = Mock()
+    wrapper = Protenix.__new__(Protenix)
+    wrapper._backend = backend
+    with pytest.raises(ValueError, match="can only be set at initialization.*model_name"):
+        wrapper.fold("AAAA", options={"model_name": "protenix_mini_default_v0.5.0"})
+    assert backend.mock_calls == []
+
+    core = core_class()
+    started = Mock()
+    monkeypatch.setattr(core, "_load", started)
+    with pytest.raises(ValueError, match="can only be set at initialization.*model_name"):
+        core.fold("AAAA", options={"model_name": "protenix_mini_default_v0.5.0"})
+    started.assert_not_called()

@@ -130,6 +130,9 @@ def test_server_route_maps_value_error_to_422_and_other_errors_to_500(monkeypatc
     assert "duplicates" in str(excinfo.value.detail)
 
     core.error = RuntimeError("CUDA out of memory")
-    with pytest.raises(HTTPException) as excinfo:
-        asyncio.run(server.inverse_fold(request))
-    assert excinfo.value.status_code == 500
+    response = asyncio.run(server.inverse_fold(request))
+    assert response.status_code == 500
+    assert json.loads(response.body) == {
+        "detail": "Inverse folding failed: CUDA out of memory",
+        "error_type": "RuntimeError",
+    }

@@ -5,27 +5,60 @@ from __future__ import annotations
 import dataclasses
 import json
 import logging
+import os
+import string
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any, ClassVar, cast
+from typing import Any, ClassVar, Final, NoReturn, cast
 
 from biotite.structure.io.pdb import PDBFile
 from biotite.structure.io.pdbx import CIFFile, get_structure
 
 from ...base import FoldingAlgorithm, PredictionMetadata
-from ...inputs import a3m_rows
-from ...optimization import OptimizationResolution, detect_gpu, resolve_optimization, validate_optimization
+from ...inputs import a3m_rows, parse_a3m
+from ...optimization import (
+    GpuInfo,
+    OptimizationResolution,
+    OptimizationUnavailableError,
+    describe_gpu,
+    detect_gpu,
+    resolve_optimization,
+)
+from ...provenance import kit_provenance, runtime_provenance
 from ...utils import Timer, get_model_cache_dir
 from .._runtime_utils import command_env, include_field
 from .._worker import ModelWorker
 from .outputs import read_json, read_token_confidence, sample_identity
-from .templates import stage_templates
+from .templates import StagedTemplates, stage_templates, write_query_only_hits
 from .types import ProtenixOutput
 
 logger = logging.getLogger(__name__)
+
+#: ``LAYERNORM_TYPE`` the Protenix worker runs with, per optimization mode. The worker environment sets it over any
+#: inherited value (an image ``ENV``, a caller's shell), so the mode alone decides it. Vanilla is ``openfold``, what the
+#: stock image has always run: upstream's unset default, ``fast_layernorm``, JIT-compiles a CUDA extension at first use
+#: that the stock image does not carry. The kit modes need ``fast_layernorm``, the fused LayerNorm their lever patches
+#: and the kit image ships compiled.
+PROTENIX_LAYERNORM: Final[Mapping[str, str]] = {
+    "vanilla": "openfold",
+    "exact": "fast_layernorm",
+    "fast": "fast_layernorm",
+}
+#: Checkpoints with a template embedder (``template_embedder.n_blocks > 0`` in upstream's model configs). Upstream's
+#: ``runner/batch_inference.py`` asserts the same list before template inference; on any other checkpoint a template
+#: would be featurized and then ignored by the network.
+PROTENIX_TEMPLATE_MODELS: Final[frozenset[str]] = frozenset(
+    {"protenix-v2", "protenix_base_default_v1.0.0", "protenix_base_20250630_v1.0.0"}
+)
+#: Characters a caller A3M row may hold. Upstream's featurizer (``MSACore.sequences_to_array``) aligns uppercase
+#: letters and ``-`` and counts every other character as an inserted residue, and its reader (``parse_fasta``) skips
+#: ``#`` lines, so any other character would be read differently from the validated row. ``.`` is removed on writing.
+_A3M_ROW_ALPHABET: Final[frozenset[str]] = frozenset(string.ascii_letters + "-.")
+#: Upstream's ``FeatureAssemblyLine.assemble`` drops the MSA of a chain shorter than this (``len(seq) <= 4``).
+_MIN_MSA_CHAIN_LENGTH: Final[int] = 5
 
 
 class ProtenixCore(FoldingAlgorithm):
@@ -51,7 +84,6 @@ class ProtenixCore(FoldingAlgorithm):
         "optimization": "vanilla",
         "use_seeds_in_json": False,
         "use_tfg_guidance": False,
-        "unpaired_msa": None,
         "msa": None,
         "templates": None,
         "templates_chain": 0,
@@ -85,15 +117,23 @@ class ProtenixCore(FoldingAlgorithm):
     #: refuse them: a prediction that quietly ignored a template is mislabelled.
     SUPPORTS_USER_MSA: ClassVar[bool] = True
     SUPPORTS_USER_TEMPLATES: ClassVar[bool] = True
+    #: ``LAYERNORM_TYPE`` per optimization mode, forced into the worker environment.
+    LAYERNORM_BY_MODE: ClassVar[Mapping[str, str]] = PROTENIX_LAYERNORM
+    #: Checkpoints that can take templates (searched with ``use_template`` or supplied as ``templates``).
+    TEMPLATE_MODELS: ClassVar[frozenset[str]] = PROTENIX_TEMPLATE_MODELS
+    #: Distributions of the core's own interpreter recorded in ``metadata.runtime`` (the worker reports its own).
+    RUNTIME_PACKAGES: ClassVar[tuple[str, ...]] = ("protenix",)
 
     def __init__(self, config: dict[str, Any] | None = None) -> None:
         """Create a Protenix core with one reusable model worker."""
         if config and "protenix_command" in config:
             raise ValueError("protenix_command is no longer supported; Protenix uses its Python runner")
         super().__init__(config or {})
-        validate_optimization(self.config["optimization"])
         self.optimization: OptimizationResolution | None = None
         self._worker: ModelWorker | None = None
+        self._gpu: GpuInfo | None = None
+        # A runtime refusal stands for the life of this core: the worker is closed and never silently restarted.
+        self._refusal: OptimizationUnavailableError | None = None
         self._metadata_template = self._initialize_metadata(
             model_name=self.DISPLAY_NAME,
             model_version=str(self.config["model_name"]),
@@ -104,11 +144,21 @@ class ProtenixCore(FoldingAlgorithm):
         self._load()
 
     def _load(self) -> None:
-        """Validate configuration and load model weights once per core."""
+        """Validate configuration and load model weights once per core.
+
+        Raises
+        ------
+        OptimizationUnavailableError
+            If the mode cannot run on this GPU, or the worker refused it now or earlier in this core's life.
+        """
+        self._raise_standing_refusal()
         _validate_config(self.config, self.DTYPES)
+        self._validate_templates(self.config)
         mode = str(self.config["optimization"])
-        gpu = None if mode == "vanilla" else detect_gpu(self.config.get("device"))
-        self.optimization = resolve_optimization(self.FAMILY, mode, gpu)
+        # Vanilla records the card for provenance when there is one; a kit mode needs it and refuses without.
+        device = self.config.get("device")
+        self._gpu = describe_gpu(device) if mode == "vanilla" else detect_gpu(device)
+        self.optimization = resolve_optimization(self.FAMILY, mode, self._gpu)
         if self._worker is None:
             self._worker = ModelWorker(
                 self.config,
@@ -118,16 +168,61 @@ class ProtenixCore(FoldingAlgorithm):
                 label=self.DISPLAY_NAME,
                 python_executable=self._worker_python(),
             )
-        self._worker.start()
+        try:
+            self._worker.start()
+        except OptimizationUnavailableError as error:
+            self._refuse(error)
         self.ready = True
+
+    def _refuse(self, error: OptimizationUnavailableError) -> NoReturn:
+        """Close the worker, keep the refusal for every later call, and raise it."""
+        if self._worker is not None:
+            self._worker.close()
+        self.ready = False
+        self._refusal = error
+        raise error
+
+    def _raise_standing_refusal(self) -> None:
+        """Raise the refusal recorded earlier, instead of restarting a worker that would refuse again."""
+        if self._refusal is not None:
+            raise OptimizationUnavailableError(
+                f"{self._refusal} (refused earlier in this runtime; the worker is not restarted)"
+            ) from self._refusal
 
     def _worker_python(self) -> str:
         """Return the interpreter that runs the model runtime."""
         return sys.executable
 
     def _worker_env(self, config: dict[str, Any], optimization: OptimizationResolution | None) -> dict[str, str]:
-        """Return the worker environment."""
-        return _command_env(config, optimization, self.FAMILY, self.ROOT_ENV)
+        """Return the worker environment for ``config``.
+
+        Parameters
+        ----------
+        config : dict[str, Any]
+            The core's configuration; ``optimization`` picks the LayerNorm and ``msa_server_url`` the MSA server.
+        optimization : OptimizationResolution | None
+            The resolved mode; a kit mode also names its kit config in ``MODEL_OPT_TARGET_GPU``.
+
+        Returns
+        -------
+        dict[str, str]
+            The inherited environment with the weights root (:attr:`ROOT_ENV`), ``LAYERNORM_TYPE`` for the mode
+            (:attr:`LAYERNORM_BY_MODE`, over any inherited value), the MSA server, and the family's additions
+            (:meth:`_extend_worker_env`).
+        """
+        env = command_env(config, {self.ROOT_ENV: str(get_model_cache_dir(self.FAMILY))})
+        if optimization is not None and optimization.kit:
+            env["MODEL_OPT_TARGET_GPU"] = str(optimization.kit_config).upper()
+        # Forced, not defaulted: an image ENV or a caller's shell must not pick the LayerNorm a mode runs.
+        env["LAYERNORM_TYPE"] = self.LAYERNORM_BY_MODE[str(config["optimization"])]
+        # Protenix's MSA client speaks the ColabFold MMseqs2 API but defaults to its own
+        # server, which can queue jobs for a long time; use the configured server instead.
+        env["MMSEQS_SERVICE_HOST_URL"] = str(config["msa_server_url"])
+        self._extend_worker_env(env, config)
+        return env
+
+    def _extend_worker_env(self, env: dict[str, str], config: dict[str, Any]) -> None:
+        """Add a family's own variables to the worker environment ``env`` in place (none for Protenix)."""
 
     def close(self) -> None:
         """Release the persistent worker and its model weights."""
@@ -142,6 +237,7 @@ class ProtenixCore(FoldingAlgorithm):
         """
         effective_config = self._merge_options(options)
         _validate_config(effective_config, self.DTYPES)
+        self._validate_templates(effective_config)
         validated_sequences = self._validate_sequences(sequences)
         if len(validated_sequences) != 1:
             raise ValueError(
@@ -169,18 +265,28 @@ class ProtenixCore(FoldingAlgorithm):
                 output_dir.mkdir(parents=True, exist_ok=True)
 
             with Timer(f"{self.DISPLAY_NAME} inference") as inference_timer:
+                self._raise_standing_refusal()
                 if not self.ready:
                     self._load()
                 assert self._worker is not None
-                self._worker.predict(
-                    str(input_json),
-                    str(output_dir),
-                    # The runtime gets staged paths, never the structures themselves.
-                    {**effective_config, "templates": None, "template_staging": staged},
-                )
+                try:
+                    payload = self._worker.predict(
+                        str(input_json),
+                        str(output_dir),
+                        # The runtime gets staged paths, never the structures themselves.
+                        {
+                            **effective_config,
+                            "templates": None,
+                            "template_staging": staged.to_dict() if staged is not None else None,
+                        },
+                    )
+                except OptimizationUnavailableError as error:
+                    # A kit that refused mid-run would refuse again: no silent restart, the refusal stands.
+                    self._refuse(error)
 
             # Resolved by the first load, so it is only known once inference has started the worker.
             metadata.optimization = self.optimization.to_dict() if self.optimization else None
+            metadata.runtime = self._runtime_record(payload)
             with Timer(f"{self.DISPLAY_NAME} postprocessing") as postprocess_timer:
                 output = self._collect_outputs(output_dir, metadata, effective_config)
 
@@ -189,21 +295,80 @@ class ProtenixCore(FoldingAlgorithm):
         output.metadata.postprocessing_time = postprocess_timer.duration
         return output
 
-    def _resolve_msa(self, config: dict[str, Any]) -> list[str | None] | None:
-        """Return the caller's per-chain MSA from ``msa`` (or its older name ``unpaired_msa``), if any.
+    def _runtime_record(self, payload: Mapping[str, Any] | None) -> dict[str, str]:
+        """Return ``metadata.runtime``: this interpreter's provenance, the worker's ``describe()`` and the request.
 
-        The two names are the same option; setting both is ambiguous, and an MSA the run would not read
-        (``use_msa=False``) is refused instead of silently ignored.
+        Parameters
+        ----------
+        payload : Mapping[str, Any] | None
+            What the worker's ``predict()`` reported for this request.
+
+        Returns
+        -------
+        dict[str, str]
+            One flat record: :func:`~boileroom.provenance.runtime_provenance` keys for the core's interpreter and the
+            GPU it resolved, then ``worker.<key>`` for each entry of the worker's ``describe()`` (its interpreter,
+            LayerNorm, kernels, kit report) and ``predict.<key>`` for each entry this request reported (resolved
+            kernels, template counts, late kit facts). The prefixes keep the three sources from overwriting each other.
+            In kit modes also the keys every kit family shares (:func:`~boileroom.provenance.kit_provenance`), from
+            this request's settled kit report where it has one, else from the worker's activation report.
         """
-        msa, unpaired = config.get("msa"), config.get("unpaired_msa")
-        if msa and unpaired:
-            raise ValueError("Pass either 'msa' or its older name 'unpaired_msa', not both")
-        supplied = msa or unpaired
-        if supplied and not config["use_msa"]:
-            raise ValueError("A caller-supplied MSA needs use_msa=True; it would be ignored")
-        return supplied
+        info = dict(self._worker.info) if self._worker is not None else {}
+        predicted = dict(payload or {})
+        extra = {f"worker.{key}": value for key, value in info.items()}
+        extra.update({f"predict.{key}": value for key, value in predicted.items()})
+        if self.optimization is not None and self.optimization.kit:
 
-    def _stage_templates(self, sequence_entry: str, buffer_path: Path, config: dict[str, Any]) -> dict[str, str] | None:
+            def latest(key: str) -> str | None:
+                value = predicted.get(f"kit.{key}", info.get(f"kit.{key}"))
+                return None if value is None else str(value)
+
+            extra.update(
+                kit_provenance(
+                    commit=info.get("kit.commit"),
+                    levers_applied=_split_levers(latest("levers_applied")),
+                    levers_fallback=_split_levers(latest("levers_fallback")),
+                    partial=latest("partial") == "true",
+                )
+            )
+        return runtime_provenance(self.RUNTIME_PACKAGES, gpu=self._gpu, extra=extra)
+
+    def _validate_templates(self, config: dict[str, Any]) -> None:
+        """Refuse template requests this checkpoint or this combination of options would not honour.
+
+        Raises
+        ------
+        ValueError
+            If ``templates`` are combined with ``use_template=True`` (caller templates replace the search), or if
+            templates of either kind are asked of a checkpoint without a template embedder.
+        """
+        supplied = bool(config.get("templates"))
+        if supplied and config["use_template"]:
+            raise ValueError(
+                "caller templates replace the template search for the request; they cannot be combined with "
+                "use_template=True"
+            )
+        if (supplied or config["use_template"]) and config["model_name"] not in self.TEMPLATE_MODELS:
+            raise ValueError(
+                f"{self.DISPLAY_NAME} checkpoint {config['model_name']!r} has no template embedder, so a template "
+                f"would be ignored; template-capable checkpoints: {sorted(self.TEMPLATE_MODELS)}"
+            )
+
+    def _resolve_msa(self, config: dict[str, Any]) -> list[str | None] | None:
+        """Return the caller's per-chain MSA (``msa``), if any.
+
+        Each entry is written as that chain's *unpaired* MSA (``unpairedMsaPath``); there is no paired input, so
+        for a heteromer the cross-chain pairing a server search would provide is lost when ``msa`` is given. An MSA
+        the run would not read (``use_msa=False``) is refused instead of silently ignored.
+        """
+        msa = config.get("msa")
+        if msa and not config["use_msa"]:
+            raise ValueError("A caller-supplied MSA needs use_msa=True; it would be ignored")
+        return msa
+
+    def _stage_templates(
+        self, sequence_entry: str, buffer_path: Path, config: dict[str, Any]
+    ) -> StagedTemplates | None:
         """Write caller-supplied template structures where Protenix reads them.
 
         ``templates`` maps a name to mmCIF text and applies to chain
@@ -213,8 +378,6 @@ class ProtenixCore(FoldingAlgorithm):
         templates = config.get("templates")
         if not templates:
             return None
-        if not self.SUPPORTS_USER_TEMPLATES:
-            raise ValueError(f"{self.DISPLAY_NAME} does not support user-supplied templates")
         chains = sequence_entry.split(":")
         index = config["templates_chain"]
         if not isinstance(index, int) or isinstance(index, bool) or not 0 <= index < len(chains):
@@ -226,9 +389,32 @@ class ProtenixCore(FoldingAlgorithm):
         sequence_entry: str,
         buffer_path: Path,
         msa: list[str | None] | None = None,
-        staged_templates: dict[str, str] | None = None,
+        staged_templates: StagedTemplates | None = None,
         templates_chain: int = 0,
     ) -> Path:
+        """Write the upstream input JSON for ``sequence_entry`` and return its path.
+
+        Parameters
+        ----------
+        sequence_entry : str
+            Protein chains joined by ``:``.
+        buffer_path : Path
+            Request scratch directory.
+        msa : list[str | None] | None
+            One A3M per chain, written as that chain's unpaired MSA; ``None`` entries get a query-only file so
+            upstream does not search for that chain. Pairing across chains is not represented. Each entry is
+            checked and rewritten by :func:`_model_a3m`, so upstream parses exactly the validated rows.
+        staged_templates : StagedTemplates | None
+            Caller templates for chain ``templates_chain``. Every other protein chain then gets a query-only hit
+            file as its ``templatesPath``, so upstream featurizes it without templates instead of searching for some.
+        templates_chain : int
+            Index of the chain the staged templates belong to.
+
+        Returns
+        -------
+        Path
+            The written ``input.json``.
+        """
         chains = sequence_entry.split(":")
         if not chains or any(not part for part in chains) or len(chains) > 26:
             raise ValueError(f"{self.DISPLAY_NAME} input requires 1 to 26 nonempty protein chains")
@@ -251,12 +437,18 @@ class ProtenixCore(FoldingAlgorithm):
                 # A query-only file for None suppresses upstream's automatic search
                 # for the binder while allowing an unpaired target alignment.
                 msa_text = msa[index] or f">query\n{sequence}\n"
-                a3m_rows(msa_text, sequence)
                 msa_path = buffer_path / f"chain_{index}.a3m"
-                msa_path.write_text(msa_text, encoding="utf-8")
+                msa_path.write_text(
+                    _model_a3m(msa_text, sequence, f"{self.DISPLAY_NAME} msa entry {index}"), encoding="utf-8"
+                )
                 sequence_records[-1]["proteinChain"]["unpairedMsaPath"] = str(msa_path)
-            if staged_templates is not None and index == templates_chain:
-                sequence_records[-1]["proteinChain"]["templatesPath"] = staged_templates["templates_path"]
+            if staged_templates is not None:
+                templates_path = (
+                    staged_templates.templates_path
+                    if index == templates_chain
+                    else str(write_query_only_hits(sequence, buffer_path / f"chain_{index}_no_templates.a3m"))
+                )
+                sequence_records[-1]["proteinChain"]["templatesPath"] = templates_path
 
         payload = [{"name": "boileroom_target", "sequences": sequence_records, "covalent_bonds": []}]
         input_json = buffer_path / "input.json"
@@ -326,19 +518,58 @@ class ProtenixCore(FoldingAlgorithm):
         return filtered
 
 
-def _command_env(
-    config: dict[str, Any],
-    optimization: OptimizationResolution | None = None,
-    family: str = "protenix",
-    root_env: str = "PROTENIX_ROOT_DIR",
-) -> dict[str, str]:
-    env = command_env(config, {root_env: str(get_model_cache_dir(family))})
-    if optimization is not None and optimization.active != "vanilla":
-        env["MODEL_OPT_TARGET_GPU"] = str(optimization.kit_config).upper()
-    # Protenix's MSA client speaks the ColabFold MMseqs2 API but defaults to its own
-    # server, which can queue jobs for a long time; use the configured server instead.
-    env["MMSEQS_SERVICE_HOST_URL"] = str(config["msa_server_url"])
-    return env
+def _model_a3m(text: str, sequence: str, label: str) -> str:
+    """Validate one chain's caller A3M and return the A3M upstream parses as exactly those rows.
+
+    Upstream's reader and featurizer differ from :func:`boileroom.inputs.a3m_rows` on some characters: they skip
+    ``#`` lines, count any character other than an uppercase letter or ``-`` (whitespace, ``*``, digits, ``.``)
+    as an inserted residue, and fail on non-ASCII text. Rows holding such a character, other than ``.``, are
+    refused. ``.``, an insert-state gap that the validator drops, is removed, so it does not count as a deletion.
+    Lowercase insertions are kept: upstream derives ``deletion_matrix`` from them. Wrapped rows are joined, blank
+    lines dropped, and headers kept as read. Upstream ignores the MSA of a chain shorter than
+    ``_MIN_MSA_CHAIN_LENGTH``, so homolog rows for one are refused rather than silently unused.
+
+    Parameters
+    ----------
+    text : str
+        The caller's A3M for one chain.
+    sequence : str
+        That chain's sequence.
+    label : str
+        Names the entry in error messages.
+
+    Returns
+    -------
+    str
+        One ``>header`` line and one row line per record, ``.`` removed.
+
+    Raises
+    ------
+    ValueError
+        If ``a3m_rows`` rejects the text, a row holds a character outside ASCII letters, ``-`` and ``.``, or a
+        chain shorter than ``_MIN_MSA_CHAIN_LENGTH`` gets more than its query row.
+    """
+    a3m_rows(text, sequence)
+    records = parse_a3m(text)
+    for row_index, (_, row) in enumerate(records):
+        invalid = sorted(set(row) - _A3M_ROW_ALPHABET)
+        if invalid:
+            raise ValueError(
+                f"{label}: A3M row {row_index} contains {', '.join(map(repr, invalid))}, which the model's A3M "
+                "reader would drop, count as an insertion or fail on; rows may hold only ASCII residue letters, "
+                "'-' gaps, lowercase insertions and '.' (no whitespace, comment lines or terminators)"
+            )
+    if len(records) > 1 and len(sequence) < _MIN_MSA_CHAIN_LENGTH:
+        raise ValueError(
+            f"{label}: the chain has {len(sequence)} residues and the model ignores the MSA of a chain shorter "
+            f"than {_MIN_MSA_CHAIN_LENGTH}; pass None (or the query row alone) for it"
+        )
+    return "".join(f">{header}\n{row.replace('.', '')}\n" for header, row in records)
+
+
+def _prepend_path(env: dict[str, str], variable: str, directory: str) -> None:
+    """Put ``directory`` first on the search-path ``variable`` of ``env``."""
+    env[variable] = os.pathsep.join(filter(None, [directory, env.get(variable, "")]))
 
 
 def _parse_seeds(value: str) -> list[int]:
@@ -352,6 +583,15 @@ def _parse_seeds(value: str) -> list[int]:
     if not seeds or len(set(seeds)) != len(seeds) or any(seed < 0 for seed in seeds):
         raise ValueError(error)
     return seeds
+
+
+def _split_levers(flat: str | None) -> list[str]:
+    """The lever names of a worker's comma-joined report entry.
+
+    ``"none"`` (the worker's empty list) and no entry at all (the worker's gate reads a missing key as no levers) are
+    both none.
+    """
+    return [] if flat is None or flat == "none" else flat.split(",")
 
 
 def _validate_config(config: dict[str, Any], dtypes: frozenset[str] = frozenset({"bf16", "fp16", "fp32"})) -> None:

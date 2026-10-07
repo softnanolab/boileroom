@@ -24,6 +24,9 @@ class ModelContract:
 
     task_method: TaskMethod
     task_kind: TaskKind
+    #: Copy of the core's ``STATIC_CONFIG_KEYS``, kept here so the client can route (``"optimization"`` selects the kit
+    #: image) and refuse per-call overrides without importing the core's model dependencies.
+    #: ``tests/contracts/test_static_config_keys.py`` holds the two copies equal for every family.
     static_config_keys: frozenset[str]
     minimal_output_fields: tuple[str, ...]
     optional_output_fields: tuple[str, ...] = ()
@@ -47,10 +50,9 @@ class ModelSpec:
     supported_backends: tuple[str, ...] = ("modal",)
     default_backend: str = "modal"
     # Families whose kit modes (optimization="exact" / "fast") need a different image than the default one run those
-    # modes there: the Modal class on the kit image, and the kit image key (see KIT_IMAGE_SPECS in images/metadata.py)
-    # for Apptainer. ``optimization="vanilla"`` never touches them.
+    # modes there: the Modal class on the kit image here, and for Apptainer the kit image of the same family (see
+    # KIT_IMAGE_SPECS in images/metadata.py). ``optimization="vanilla"`` never touches them.
     kit_modal_class_path: str | None = None
-    kit_image_key: str | None = None
 
 
 def resolve_object(dotted_path: str) -> Any:
@@ -182,7 +184,6 @@ ESMFOLD2_SPEC = ModelSpec(
     apptainer_image_name=ESMFOLD2_IMAGE_NAME,
     supported_backends=("modal", "apptainer"),
     kit_modal_class_path="boileroom.models.esmfold2.modal_kit.ModalESMFold2Kit",
-    kit_image_key="esmfold2",
     contract=ModelContract(
         task_method="fold",
         task_kind="structure",
@@ -269,7 +270,6 @@ PROTENIX_SPEC = ModelSpec(
     apptainer_image_name=PROTENIX_IMAGE_NAME,
     supported_backends=("modal", "apptainer"),
     kit_modal_class_path="boileroom.models.protenix.modal_kit.ModalProtenixKit",
-    kit_image_key="protenix",
     contract=ModelContract(
         task_method="fold",
         task_kind="structure",

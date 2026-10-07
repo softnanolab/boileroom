@@ -41,6 +41,53 @@ class MSAInput:
             raise TypeError("MSAInput remove_insertions must be a bool.")
 
 
+def parse_a3m(text: str) -> list[tuple[str, str]]:
+    """Parse A3M/FASTA text into ``(header, sequence)`` records.
+
+    This is the one A3M reader shared by every model family; family-specific rules
+    (aligned length, query row, allowed characters) are layered on its records.
+    Lines are stripped and blank lines skipped. A ``>`` line starts a record and
+    every other line is appended verbatim to the current record's sequence, so a
+    wrapped row is joined, while internal whitespace and ``#`` comment lines stay in
+    the sequence for the caller's checks to reject.
+
+    Parameters
+    ----------
+    text
+        A3M or FASTA text.
+
+    Returns
+    -------
+    list[tuple[str, str]]
+        The records in file order; repeated headers are kept.
+
+    Raises
+    ------
+    ValueError
+        If sequence data precedes the first ``>`` header or the text holds no records.
+    """
+    records: list[tuple[str, str]] = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith(">"):
+            records.append((line[1:], ""))
+        elif records:
+            header, sequence = records[-1]
+            records[-1] = (header, sequence + line)
+        else:
+            raise ValueError("A3M text has sequence data before the first '>' header")
+    if not records:
+        raise ValueError("A3M text contains no sequences")
+    return records
+
+
+def aligned_columns(row: str) -> str:
+    """Return the aligned (match-state) columns of an A3M row: lowercase insertions and ``.`` removed."""
+    return "".join(char for char in row if not char.islower() and char != ".")
+
+
 def a3m_rows(text: object, sequence: str) -> list[str]:
     """Parse A3M text into aligned rows (insertions dropped), checking them against the query chain.
 
@@ -53,17 +100,8 @@ def a3m_rows(text: object, sequence: str) -> list[str]:
     """
     if not isinstance(text, str) or not text.lstrip().startswith(">"):
         raise ValueError("MSA entries must be A3M text or None")
-    rows: list[str] = []
-    for line in text.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        if line.startswith(">"):
-            rows.append("")
-        elif rows:
-            rows[-1] += line
-    rows = ["".join(char for char in row if not char.islower() and char != ".") for row in rows]
-    if not rows or rows[0] != sequence:
+    rows = [aligned_columns(row) for _, row in parse_a3m(text)]
+    if rows[0] != sequence:
         raise ValueError("The first A3M row must match its input protein chain")
     if any(len(row) != len(sequence) for row in rows):
         raise ValueError("Every A3M row must have the input chain's aligned length")

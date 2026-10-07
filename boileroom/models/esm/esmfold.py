@@ -1,18 +1,22 @@
 """ESMFold implementation for protein structure prediction using Meta AI's ESM-2 model."""
 
-import json
 import logging
 from collections.abc import Sequence
+from typing import TYPE_CHECKING, Any
 
 import modal
 
 from ...backend.modal import get_modal_app
+from ...backend.modal_server import ModalFoldServer
 from ...base import ModelWrapper
 from ...images.volumes import model_weights
 from ...utils import MINUTES, MODAL_MODEL_DIR
 from ..registry import ESMFOLD_SPEC
 from .image import esm_image
 from .types import ESMFoldOutput
+
+if TYPE_CHECKING:
+    from .core import ESMFoldCore
 
 logger = logging.getLogger(__name__)
 app = get_modal_app("esmfold")
@@ -32,41 +36,15 @@ app = get_modal_app("esmfold")
     scaledown_window=10 * MINUTES,
     volumes={MODAL_MODEL_DIR: model_weights},
 )
-class ModalESMFold:
-    """
-    Modal-specific wrapper around `ESMFoldCore`.
-    """
+class ModalESMFold(ModalFoldServer):
+    """Modal-specific wrapper around `ESMFoldCore`."""
 
     config: bytes = modal.parameter(default=b"{}")
 
-    @modal.enter()
-    def _initialize(self) -> None:
-        """Create an ESMFoldCore from this object's JSON-encoded config and initialize it.
-
-        This sets the instance attribute `self._core` to the constructed ESMFoldCore and calls its initialization routine.
-        """
+    def _build_core(self, config: dict[str, Any]) -> "ESMFoldCore":
         from .core import ESMFoldCore
 
-        self._core = ESMFoldCore(json.loads(self.config.decode("utf-8")))
-        self._core._initialize()
-
-    @modal.method()
-    def fold(self, sequences: str | Sequence[str], options: dict | None = None) -> "ESMFoldOutput":
-        """Run structure prediction for one or more protein sequences using the configured backend.
-
-        Parameters
-        ----------
-        sequences : str | Sequence[str]
-            A single amino-acid sequence or a sequence of sequences to predict.
-        options : dict, optional
-            Per-call configuration overrides (for example, include_fields to select which output fields to include). Keys in this dict override non-static entries of the model config for this prediction.
-
-        Returns
-        -------
-        ESMFoldOutput
-            Prediction results and associated metadata for each input sequence.
-        """
-        return self._core.fold(sequences, options=options)
+        return ESMFoldCore(config)
 
 
 ############################################################
