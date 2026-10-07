@@ -1,0 +1,53 @@
+{
+  "references": {
+    "esmc_300m": {
+      "esmc_model_name": "esmc_300m",
+      "esmc_repo": "biohub/ESMC-300M",
+      "esmc_revision": "e4bac860f0c502cd80f3aeac3d0ce6524c6627cb",
+      "num_blocks": 30,
+      "sae_repo": "biohub/ESMC-300M-sae-k64-codebook16384",
+      "sae_revision": "f90be6655d7824b12ab1814603ad66214038fea4",
+      "layer": 22,
+      "d_model": 960,
+      "num_features": 16384,
+      "k": 64,
+      "features": "esmc_300m.layer22.npz",
+      "state_sequences": [
+        "ubiquitin"
+      ],
+      "min_topk_gap": 0.00031054019927978516,
+      "esm_version": "3.4.1.post1",
+      "torch_version": "2.11.0+cpu",
+      "dtype": "float32",
+      "device": "cpu",
+      "generated_at": "2026-10-07"
+    },
+    "esmc_600m": {
+      "esmc_model_name": "esmc_600m",
+      "esmc_repo": "biohub/ESMC-600M",
+      "esmc_revision": "fcc9d36f5fff97d9bb69a36e3252de61cc78c968",
+      "num_blocks": 36,
+      "sae_repo": "biohub/ESMC-600M-sae-k64-codebook16384",
+      "sae_revision": "8e903f96b76d6856041f4e8bcacb3c58a9c4da60",
+      "layer": 27,
+      "d_model": 1152,
+      "num_features": 16384,
+      "k": 64,
+      "features": "esmc_600m.layer27.npz",
+      "state_sequences": [
+        "ubiquitin"
+      ],
+      "min_topk_gap": 3.0279159545898438e-05,
+      "esm_version": "3.4.1.post1",
+      "torch_version": "2.11.0+cpu",
+      "dtype": "float32",
+      "device": "cpu",
+      "generated_at": "2026-10-07"
+    }
+  },
+  "generated_by": "scripts/testing/sae_biohub_reference.py",
+  "sequences": {
+    "ubiquitin": "MQIFVKTLTGKTITLEVEPSDTIENVKAKIQDKEGIPPDQQRLIFAGKQLEDGRTLSDYNIQKESTLHLVLRLRGG",
+    "short": "MLKNVHVLVLGAGDVGSVVVRLLEK"
+  }
+}
