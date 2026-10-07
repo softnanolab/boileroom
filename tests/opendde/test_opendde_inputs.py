@@ -58,3 +58,20 @@ def test_opendde_rejects_malformed_inputs(backend_option: str, device_option: st
             model.fold("MKTAYIAKQR", options={"msa": [">query\nAAAA\n"]})
         with pytest.raises(ValueError, match="templates_chain"):
             model.fold("MKTAYIAKQR", options={"templates": {"x": CIF.read_text()}, "templates_chain": 3})
+
+
+def test_opendde_folds_with_the_targets_own_structure(
+    backend_option: str, device_option: str | None, output_ctx
+) -> None:
+    """A template of the target itself survives upstream's duplicate prefilter.
+
+    The worker fails a request whose staged templates were not all featurized, so a successful fold means the
+    template was used rather than silently dropped.
+    """
+    query = _template_sequence()
+    options = {"include_fields": ["plddt"], "seeds": "7", "msa": [f">query\n{query}\n"]}
+    with output_ctx(), OpenDDE(backend=backend_option, device=device_option, config=FAST) as model:
+        templated = model.fold(query, options={**options, "templates": {"self": CIF.read_text()}})
+        with pytest.raises(ValueError, match="same SEQRES"):
+            model.fold(query, options={**options, "templates": {"a": CIF.read_text(), "b": CIF.read_text()}})
+    assert np.isfinite(templated.plddt[0]).all()

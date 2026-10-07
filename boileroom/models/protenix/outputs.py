@@ -56,7 +56,7 @@ def read_token_confidence(full: dict[str, Any], atoms: Any, label: str = "Proten
     if asym.shape != (n_tokens,) or atom_plddt.shape != (len(atoms),):
         raise RuntimeError(f"{label} confidence dimensions do not match structure and PAE")
     if not np.isfinite(atom_plddt).all() or (atom_plddt < 0).any() or (atom_plddt > 1).any():
-        raise RuntimeError(f"{label} 2.0 atom pLDDT must be in [0, 1]")
+        raise RuntimeError(f"{label} atom pLDDT must be in [0, 1]")
     chains: list[str] = []
     residues: list[int] = []
     for token in range(n_tokens):
