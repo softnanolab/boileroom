@@ -300,17 +300,19 @@ class FoldRuntime:
         count and replays it for later requests of that count, with the addresses of the native TriMul adapter's
         workspaces for that geometry baked in. The adapter keeps only its two most recent geometries (``_SHARED`` in
         ``opt_core.kernels.trimul.native``, kit commit ``f4f62fa``) and frees the rest, so a length that recurs after
-        two other lengths would replay its graph over memory other tensors now own (Protenix ``exact``: NaN PAE). This
-        runtime holds the caches that were live after the previous request, so none is freed before this check; when
-        one of them left ``_SHARED`` or was rebuilt, every stack graph goes (``reset_cache``), and each length
-        captures again on its next request. It assumes one request's own geometries fit the adapter's LRU.
+        others evicted its geometries would replay its graph over memory other tensors now own (Protenix ``exact``,
+        280 -> 320 -> 280 tokens: NaN PAE). This runtime holds the caches that were live after the previous request,
+        so none is freed before this check; when one of them left ``_SHARED`` or was rebuilt, every stack graph goes
+        (``reset_cache``), and each length captures again on its next request. It assumes one request's own
+        geometries fit the adapter's LRU.
 
         A no-op when the kit's modules are not loaded or lack these names; re-check this when the kit commit changes.
         """
         native = sys.modules.get(self.TRIMUL_NATIVE_MODULE)
         stack_graph = sys.modules.get(self.STACK_GRAPH_MODULE)
         shared = getattr(native, "_SHARED", None)
-        if not isinstance(shared, dict) or not callable(getattr(stack_graph, "reset_cache", None)):
+        reset_cache = getattr(stack_graph, "reset_cache", None)
+        if not isinstance(shared, dict) or not callable(reset_cache):
             return
         with getattr(native, "_LOCK", None) or contextlib.nullcontext():
             live = dict(shared)
@@ -318,7 +320,7 @@ class FoldRuntime:
             torch = sys.modules.get("torch")
             if torch is not None and torch.cuda.is_available():
                 torch.cuda.synchronize()  # no replay in flight while the graphs are released
-            stack_graph.reset_cache()
+            reset_cache()
             self.stack_graph_resets += 1
         self._trimul_caches = live
 
