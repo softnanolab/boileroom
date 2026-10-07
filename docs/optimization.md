@@ -263,6 +263,18 @@ Then each family adds its own entries:
   OpenDDE also records `worker.kernel.cc7_fallback` (`true` when `vanilla` ran upstream's compute-capability-7.x
   fallback) and `worker.jit.stack_key`.
 
+Every output a backend returns, for every model, also records the GPU memory in use right after the call
+(`boileroom.provenance.record_gpu_memory`; the Modal and Apptainer servers add it, a core called directly does not):
+
+| Key | Value |
+| --- | --- |
+| `gpu.mem.used_mib`, `gpu.mem.total_mib` | the device's used and total memory in MiB, every process on it counted (a model's worker child too) |
+| `gpu.mem.allocated_mib`, `gpu.mem.reserved_mib` | the serving process's live tensors and all the memory its torch caching allocator holds, in MiB; only when that process runs CUDA itself, so not for AlphaFold2-Multimer, Protenix and OpenDDE, which predict in a worker child |
+
+The entries are missing when no GPU memory can be read (a CPU run, no `nvidia-smi`). Within one runtime, calls of a
+repeating input size should leave `gpu.mem.used_mib` flat after the first few, since torch reuses the memory it
+reserved; growth from call to call is a leak.
+
 **Spotting a degraded run.** A kit mode never degrades silently: a missing kernel, a partial lever set or a fallen-back
 LayerNorm raises `OptimizationUnavailableError`. `vanilla` is not guarded, because it runs whatever the image provides,
 so compare `runtime` between runs before comparing their scores. In particular an ESMFold2 `vanilla` run with

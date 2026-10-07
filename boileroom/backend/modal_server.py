@@ -21,6 +21,7 @@ from typing import Any
 import modal
 
 from ..optimization import GuardedCore
+from ..provenance import record_gpu_memory
 
 
 class ModalCoreServer:
@@ -91,9 +92,12 @@ class ModalFoldServer(ModalCoreServer):
         Returns
         -------
         Any
-            The core's structure-prediction output.
+            The core's structure-prediction output, with the GPU memory in use after
+            the call in ``metadata.runtime`` (see :func:`~boileroom.provenance.record_gpu_memory`).
         """
-        return self._loaded_core().fold(sequences, options=options)
+        output = self._loaded_core().fold(sequences, options=options)
+        record_gpu_memory(output)
+        return output
 
 
 class ModalEmbedServer(ModalCoreServer):
@@ -113,6 +117,9 @@ class ModalEmbedServer(ModalCoreServer):
         Returns
         -------
         Any
-            The core's embedding output.
+            The core's embedding output, with the GPU memory in use after
+            the call in ``metadata.runtime`` (see :func:`~boileroom.provenance.record_gpu_memory`).
         """
-        return self._loaded_core().embed(sequences, options=options)
+        output = self._loaded_core().embed(sequences, options=options)
+        record_gpu_memory(output)
+        return output

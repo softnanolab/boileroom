@@ -40,6 +40,9 @@ class _FakeCore(Algorithm):
 
     embed = fold
 
+    def inverse_fold(self, sequence: str, backbone_coordinates: Any, positions: list[int]) -> tuple[str, Any]:
+        return ("inverse-folded", sequence)
+
     def close(self) -> None:
         self.closed = True
 
@@ -228,6 +231,33 @@ def test_modal_server_passes_the_decoded_config_to_the_core() -> None:
     server._initialize()
     assert seen == [{"device": "cpu"}]
     assert server.fold("MKV", options=None) == ("predicted", "MKV")
+
+
+@pytest.mark.parametrize(("spec", "modal_class_path"), _MODAL_CLASSES, ids=lambda item: getattr(item, "key", ""))
+def test_modal_server_records_gpu_memory_on_every_output(
+    spec: ModelSpec, modal_class_path: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every Modal method hands its output to ``record_gpu_memory`` (a memory leak shows across calls on any model)."""
+    from modal._partial_function import _PartialFunctionFlags as Flags
+
+    import boileroom.backend.modal_server as modal_server
+
+    _install_fake_core(spec, monkeypatch)
+    user_cls = resolve_object(modal_class_path)._get_user_cls()
+    recorded: list[Any] = []
+    # The shared body records fold / embed; a family's own extra method (ESM3's inverse_fold) records in its module.
+    for module in {modal_server, sys.modules[user_cls.__module__]}:
+        monkeypatch.setattr(module, "record_gpu_memory", recorded.append, raising=module is modal_server)
+    server = object.__new__(user_cls)
+    server.config = b"{}"
+    for hook in _bound_hooks(server, Flags.ENTER_POST_SNAPSHOT).values():
+        hook()
+    methods = _bound_hooks(server, Flags.interface_flags())
+
+    outputs = [methods[spec.contract.task_method]("MKV")]
+    outputs += [methods[name]("MKV", None, [0]) for name in sorted(_EXTRA_MODAL_METHODS.get(spec.key, set()))]
+
+    assert recorded == outputs and all(output is not None for output in outputs)
 
 
 def test_modal_server_keeps_a_malformed_config_for_the_first_call() -> None:

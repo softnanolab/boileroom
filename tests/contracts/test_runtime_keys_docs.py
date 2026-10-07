@@ -2,7 +2,8 @@
 
 Every kit family records its kit facts under the shared ``kit.`` prefix: the shared table must list exactly
 :data:`boileroom.provenance.KIT_RUNTIME_KEYS`, and the ESMFold2 kit-mode bullet must name each kernel word of
-``ESMFold2Core`` as ``kit.attn.<word>`` and document no kit key outside the ``kit.`` namespace.
+``ESMFold2Core`` as ``kit.attn.<word>`` and document no kit key outside the ``kit.`` namespace. The GPU-memory table must
+list exactly :data:`boileroom.provenance.GPU_MEMORY_KEYS`.
 """
 
 from __future__ import annotations
@@ -21,20 +22,30 @@ _BACKTICKED = re.compile(r"`([^`]+)`")
 _SENTENCE_END = re.compile(r"\.\s+(?=[A-Z])")
 
 
-def shared_kit_table(text: str) -> list[str]:
-    """Return the keys of the table that follows the shared kit-entries paragraph of ``text``.
+def _table_keys(text: str, paragraph: str, name: str) -> list[str]:
+    """Return the keys of the table that follows the paragraph of ``text`` containing ``paragraph``.
 
     Raises
     ------
     ValueError
         If the paragraph or its table is missing.
     """
-    match = re.search(r"also records the same kit entries.*?\n\n((?:\|.*\n)+)", text, flags=re.DOTALL)
+    match = re.search(rf"{re.escape(paragraph)}.*?\n\n((?:\|[^\n]*\n)+)", text, flags=re.DOTALL)
     if match is None:
-        raise ValueError("no shared kit-entries table")
+        raise ValueError(f"no {name} table")
     rows = [line for line in match.group(1).splitlines() if line.startswith("|")][2:]
     keys = [_BACKTICKED.findall(row.split("|")[1]) for row in rows]
     return [key for cell in keys for key in cell]
+
+
+def shared_kit_table(text: str) -> list[str]:
+    """Return the keys of the table that follows the shared kit-entries paragraph of ``text``."""
+    return _table_keys(text, "also records the same kit entries", "shared kit-entries")
+
+
+def gpu_memory_table(text: str) -> list[str]:
+    """Return the keys of the table that follows the GPU-memory paragraph of ``text``."""
+    return _table_keys(text, "also records the GPU memory in use", "GPU-memory")
 
 
 def esmfold2_kit_bullet(text: str) -> str:
@@ -93,6 +104,12 @@ def test_shared_kit_table_lists_the_shared_keys() -> None:
     assert shared_kit_table(OPTIMIZATION_DOC.read_text()) == list(KIT_RUNTIME_KEYS)
 
 
+def test_gpu_memory_table_lists_the_memory_keys() -> None:
+    from boileroom.provenance import GPU_MEMORY_KEYS
+
+    assert gpu_memory_table(OPTIMIZATION_DOC.read_text()) == list(GPU_MEMORY_KEYS)
+
+
 def test_esmfold2_kit_bullet_names_kernel_words_under_kit_attn() -> None:
     check_esmfold2_bullet(esmfold2_kit_bullet(OPTIMIZATION_DOC.read_text()), kernel_words())
 
@@ -138,6 +155,8 @@ def test_missing_sections_are_reported() -> None:
         esmfold2_kit_bullet("- Protenix and OpenDDE: `worker.<key>`.\n")
     with pytest.raises(ValueError, match="shared kit-entries"):
         shared_kit_table("no table here\n")
+    with pytest.raises(ValueError, match="GPU-memory"):
+        gpu_memory_table("also records the same kit entries:\n\n| Key |\n| --- |\n| `kit.commit` |\n")
 
 
 def test_shared_kit_table_parses_rows() -> None:
@@ -147,3 +166,7 @@ def test_shared_kit_table_parses_rows() -> None:
         "After.\n"
     )
     assert shared_kit_table(text) == ["kit.commit", "kit.partial"]
+    # A row ends at its line: a later table is not part of this one.
+    later = "Then every output also records the GPU memory in use:\n\n| Key | Value |\n| --- | --- |\n| `gpu.mem.used_mib` | MiB |\n"
+    assert shared_kit_table(text + later) == ["kit.commit", "kit.partial"]
+    assert gpu_memory_table(text + later) == ["gpu.mem.used_mib"]

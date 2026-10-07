@@ -84,6 +84,23 @@ class LoadsCore(_Core):
     pass
 
 
+class ServesCore(_Core):
+    def _output(self):
+        from types import SimpleNamespace
+
+        from boileroom.base import PredictionMetadata
+
+        return SimpleNamespace(metadata=PredictionMetadata('m', 'v', None, runtime={'python': '3.12'}))
+
+    def fold(self, sequences, options=None):
+        return self._output()
+
+    embed = fold
+
+    def inverse_fold(self, sequence, coordinates, positions):
+        return self._output()
+
+
 class KitExitsCore(_Core):
     def _initialize(self):
         sys.exit(3)
@@ -208,3 +225,47 @@ def test_a_failed_call_names_the_exception_type(stubs: Path, tmp_path: Path) -> 
     assert embed["status"] == 500
     assert embed["content"]["error_type"] == "MemoryError"
     assert embed["content"]["detail"] == "Embedding failed: CUDA out of memory"
+
+
+_MEMORY_SCRIPT = """
+import asyncio
+import json
+import sys
+
+sys.argv = ['server.py']
+sys.path.insert(0, {server_dir!r})
+import server
+from boileroom.backend.transport import deserialize_transport_payload
+
+server._load_model()
+requests = (
+    ('fold', server.FoldRequest(sequences='MKV')),
+    ('embed', server.EmbedRequest(sequences='MKV')),
+    ('inverse_fold', server.InverseFoldRequest(sequence='MK', backbone_coordinates=[[[0.0] * 3] * 3] * 2, positions=[0])),
+)
+for name, request in requests:
+    response = asyncio.run(getattr(server, name)(request))
+    print(json.dumps({{'call': name, 'runtime': deserialize_transport_payload(response.content, 'secret').metadata.runtime}}))
+"""
+
+
+def test_every_served_output_records_the_gpu_memory(stubs: Path, tmp_path: Path) -> None:
+    """The server adds the device's memory to each output, read here from a stand-in ``nvidia-smi``."""
+    smi = stubs / "bin" / "nvidia-smi"
+    smi.parent.mkdir()
+    smi.write_text('#!/bin/sh\necho "2048, 81920"\n')
+    smi.chmod(0o755)
+    env = _env(stubs, tmp_path, "ServesCore", BOILEROOM_TRANSPORT_HMAC_KEY="secret", CUDA_VISIBLE_DEVICES="0")
+    env["PATH"] = os.pathsep.join([str(smi.parent), env.get("PATH", "")])
+    result = subprocess.run(
+        [sys.executable, "-c", _MEMORY_SCRIPT.format(server_dir=str(SERVER_PATH.parent))],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stderr
+    calls = [json.loads(line) for line in result.stdout.splitlines()]
+    assert [call["call"] for call in calls] == ["fold", "embed", "inverse_fold"]
+    for call in calls:
+        assert call["runtime"] == {"python": "3.12", "gpu.mem.used_mib": "2048", "gpu.mem.total_mib": "81920"}

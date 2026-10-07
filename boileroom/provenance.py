@@ -5,9 +5,12 @@ Standard library only, so any core (and the lightweight wrappers) can call it wi
 
 from __future__ import annotations
 
+import dataclasses
 import importlib.metadata
+import logging
 import os
 import platform
+import subprocess
 import sys
 import tomllib
 from collections.abc import Iterable, Mapping
@@ -17,6 +20,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .optimization import GpuInfo
 
+logger = logging.getLogger(__name__)
+
 #: Environment variable a runtime image sets to its own reference (e.g. ``docker.io/org/boileroom-x:cuda12.6-0.3.1``).
 IMAGE_REF_ENV = "BOILEROOM_IMAGE_REF"
 _UNKNOWN = "unknown"
@@ -25,6 +30,14 @@ _ABSENT = "absent"
 _NONE = "none"
 #: ``metadata.runtime`` keys every kit family records in a kit mode (see :func:`kit_provenance`).
 KIT_RUNTIME_KEYS: tuple[str, ...] = ("kit.commit", "kit.levers_applied", "kit.levers_fallback", "kit.partial")
+#: ``metadata.runtime`` keys of the GPU memory a backend records after every call (see :func:`gpu_memory_facts`).
+GPU_MEMORY_KEYS: tuple[str, ...] = (
+    "gpu.mem.used_mib",
+    "gpu.mem.total_mib",
+    "gpu.mem.allocated_mib",
+    "gpu.mem.reserved_mib",
+)
+_MIB = 2**20
 
 
 def runtime_provenance(
@@ -112,6 +125,79 @@ def kit_provenance(
         "kit.levers_fallback": _joined(levers_fallback),
         "kit.partial": "true" if partial else "false",
     }
+
+
+def gpu_memory_facts() -> dict[str, str]:
+    """Return the GPU memory in use now, as ``metadata.runtime`` entries in whole MiB.
+
+    Best effort: never raises and never imports torch.
+
+    Returns
+    -------
+    dict[str, str]
+        ``gpu.mem.used_mib`` and ``gpu.mem.total_mib`` for the whole device, every process on it included (a model
+        worker child's too): from torch's current device when this process has initialised CUDA, else from
+        ``nvidia-smi`` for the first device in ``CUDA_VISIBLE_DEVICES`` (device 0 without it). When this process has
+        initialised CUDA, also ``gpu.mem.allocated_mib`` and ``gpu.mem.reserved_mib``: the memory of its live tensors and
+        all the memory its torch caching allocator holds. Empty when no GPU memory can be read.
+    """
+    cuda = getattr(sys.modules.get("torch"), "cuda", None)
+    try:
+        if cuda is not None and cuda.is_initialized():
+            free, total = cuda.mem_get_info()
+            return {
+                "gpu.mem.used_mib": str((total - free) // _MIB),
+                "gpu.mem.total_mib": str(total // _MIB),
+                "gpu.mem.allocated_mib": str(cuda.memory_allocated() // _MIB),
+                "gpu.mem.reserved_mib": str(cuda.memory_reserved() // _MIB),
+            }
+    except Exception:  # a CUDA context that cannot answer: nvidia-smi still can
+        pass
+    return _nvidia_smi_memory()
+
+
+def _nvidia_smi_memory() -> dict[str, str]:
+    """Read ``gpu.mem.used_mib`` and ``gpu.mem.total_mib`` of the first visible device through ``nvidia-smi``."""
+    visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+    selector = "0" if visible is None else visible.split(",")[0].strip()
+    # "" and "-1" hide every GPU.
+    if not selector or selector.startswith("-"):
+        return {}
+    try:
+        line = subprocess.run(
+            ["nvidia-smi", f"--id={selector}", "--query-gpu=memory.used,memory.total", "--format=csv,noheader,nounits"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10,
+        ).stdout.strip()
+        used, total = (int(value) for value in line.splitlines()[0].split(","))
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError):
+        return {}
+    return {"gpu.mem.used_mib": str(used), "gpu.mem.total_mib": str(total)}
+
+
+def record_gpu_memory(output: object) -> None:
+    """Add :func:`gpu_memory_facts` to ``output.metadata.runtime``.
+
+    The metadata is replaced, not changed in place, since a core may hand the same metadata object to several outputs.
+    Nothing changes when no GPU memory can be read or ``output`` carries no metadata with a ``runtime`` field.
+
+    Parameters
+    ----------
+    output : object
+        A core's output, normally with a ``metadata`` :class:`~boileroom.base.PredictionMetadata`.
+    """
+    metadata = getattr(output, "metadata", None)
+    if not dataclasses.is_dataclass(metadata) or isinstance(metadata, type) or not hasattr(metadata, "runtime"):
+        return
+    facts = gpu_memory_facts()
+    if not facts:
+        return
+    try:
+        output.metadata = dataclasses.replace(metadata, runtime={**(metadata.runtime or {}), **facts})  # type: ignore[attr-defined]
+    except (AttributeError, TypeError, ValueError) as error:  # a frozen output: its prediction still stands
+        logger.warning(f"GPU memory not recorded on {type(output).__name__}: {error}")
 
 
 def _joined(levers: Iterable[object], separator: str = ",") -> str:

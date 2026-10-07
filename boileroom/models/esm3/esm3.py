@@ -8,6 +8,7 @@ from ...backend.modal import get_modal_app
 from ...backend.modal_server import ModalEmbedServer
 from ...base import ModelWrapper
 from ...images.volumes import model_weights
+from ...provenance import record_gpu_memory
 from ...utils import MINUTES, MODAL_MODEL_DIR
 from ..registry import ESM3_SPEC
 from .image import esm3_image
@@ -43,8 +44,14 @@ class ModalESM3(ModalEmbedServer):
     def inverse_fold(
         self, sequence: str, backbone_coordinates: "np.ndarray", positions: Sequence[int]
     ) -> "ESM3InverseFoldingOutput":
-        """Run :meth:`ESM3Core.inverse_fold` on the Modal worker (see that method for parameters)."""
-        return self._loaded_core().inverse_fold(sequence, backbone_coordinates, positions)
+        """Run :meth:`ESM3Core.inverse_fold` on the Modal worker (see that method for parameters).
+
+        Like ``embed``, the output records the GPU memory in use after the call (see
+        :func:`~boileroom.provenance.record_gpu_memory`).
+        """
+        output = self._loaded_core().inverse_fold(sequence, backbone_coordinates, positions)
+        record_gpu_memory(output)
+        return output
 
 
 class ESM3(ModelWrapper):

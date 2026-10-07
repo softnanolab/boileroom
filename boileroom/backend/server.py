@@ -87,6 +87,7 @@ from boileroom.backend.transport import (  # noqa: E402
     serialize_transport_payload,
 )
 from boileroom.optimization import REFUSAL_PROCESS_EXIT_CODE, initialize_core, is_refusal  # noqa: E402
+from boileroom.provenance import record_gpu_memory  # noqa: E402
 
 # Set up logging to stderr so it gets captured in the log file
 logging.basicConfig(
@@ -262,6 +263,7 @@ async def embed(request: EmbedRequest) -> JSONResponse:
 
     try:
         output = _model_instance.embed(request.sequences, options=request.options)
+        record_gpu_memory(output)
         serialized = _serialize_output(output)
         return JSONResponse(content=serialized)
     except Exception as e:
@@ -298,6 +300,7 @@ async def inverse_fold(request: InverseFoldRequest) -> JSONResponse:
         # ``dtype=float32`` turns JSON null entries back into NaN.
         coordinates = np.asarray(request.backbone_coordinates, dtype=np.float32)
         output = _model_instance.inverse_fold(request.sequence, coordinates, request.positions)
+        record_gpu_memory(output)
         serialized = _serialize_output(output)
         return JSONResponse(content=serialized)
     except ValueError as e:
@@ -328,6 +331,7 @@ async def fold(request: FoldRequest) -> JSONResponse:
 
     try:
         output = _model_instance.fold(request.sequences, options=request.options)
+        record_gpu_memory(output)
         serialized = _serialize_output(output)
         return JSONResponse(content=serialized)
     except Exception as e:

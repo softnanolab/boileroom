@@ -1,7 +1,9 @@
 """Contract tests for runtime provenance recorded in prediction metadata."""
 
 import platform
+import subprocess
 import sys
+from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -9,7 +11,15 @@ import pytest
 
 from boileroom.base import PredictionMetadata
 from boileroom.optimization import GpuInfo
-from boileroom.provenance import IMAGE_REF_ENV, KIT_RUNTIME_KEYS, kit_provenance, runtime_provenance
+from boileroom.provenance import (
+    GPU_MEMORY_KEYS,
+    IMAGE_REF_ENV,
+    KIT_RUNTIME_KEYS,
+    gpu_memory_facts,
+    kit_provenance,
+    record_gpu_memory,
+    runtime_provenance,
+)
 
 BASE_KEYS = ["boileroom", "python", "image_ref", "torch", "cuda", "gpu", "gpu_capability"]
 
@@ -140,3 +150,167 @@ def test_every_kit_family_records_one_report_under_the_same_keys(monkeypatch: py
     # ESMFold2's own detail uses the same dotted scheme; the old underscore keys are gone.
     assert {"kit.levers_gated", "kit.gated", "kit.scope"} <= set(esmfold2)
     assert not any(key.startswith("kit_") for key in esmfold2), sorted(esmfold2)
+
+
+GIB = 2**30
+
+
+def _cuda(initialized: bool = True, *, free: int = 70 * GIB, total: int = 80 * GIB) -> SimpleNamespace:
+    """A stand-in for ``torch.cuda`` in a process holding 3 GiB of tensors in a 4 GiB cache."""
+    return SimpleNamespace(
+        is_initialized=lambda: initialized,
+        mem_get_info=lambda: (free, total),
+        memory_allocated=lambda: 3 * GIB + 1,
+        memory_reserved=lambda: 4 * GIB,
+    )
+
+
+class _NvidiaSmi:
+    """A stand-in for ``subprocess.run`` that records ``nvidia-smi`` calls and answers with ``reply``."""
+
+    def __init__(self) -> None:
+        self.calls: list[list[str]] = []
+        self.reply: str | BaseException = "12345, 81920\n"
+
+    def __call__(self, command: list[str], **kwargs: Any) -> SimpleNamespace:
+        self.calls.append(command)
+        if isinstance(self.reply, BaseException):
+            raise self.reply
+        return SimpleNamespace(stdout=self.reply)
+
+
+@pytest.fixture
+def smi(monkeypatch: pytest.MonkeyPatch) -> _NvidiaSmi:
+    """Fake ``nvidia-smi`` with every GPU visible."""
+    fake = _NvidiaSmi()
+    monkeypatch.setattr(subprocess, "run", fake)
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    return fake
+
+
+def test_gpu_memory_of_a_process_using_cuda(monkeypatch: pytest.MonkeyPatch, smi: _NvidiaSmi) -> None:
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(cuda=_cuda()))
+    facts = gpu_memory_facts()
+    assert tuple(facts) == GPU_MEMORY_KEYS
+    assert facts == {
+        "gpu.mem.used_mib": "10240",
+        "gpu.mem.total_mib": "81920",
+        "gpu.mem.allocated_mib": "3072",
+        "gpu.mem.reserved_mib": "4096",
+    }
+    assert smi.calls == []
+
+
+@pytest.mark.parametrize(
+    ("torch", "visible", "device"),
+    [
+        (None, None, "0"),
+        (SimpleNamespace(cuda=_cuda(initialized=False)), "3,1", "3"),
+        (SimpleNamespace(cuda=SimpleNamespace(is_initialized=lambda: True, mem_get_info=None)), "GPU-ab12", "GPU-ab12"),
+    ],
+    ids=["no-torch", "cuda-not-initialized", "cuda-errors"],
+)
+def test_gpu_memory_of_the_visible_device_through_nvidia_smi(
+    monkeypatch: pytest.MonkeyPatch, smi: _NvidiaSmi, torch: Any, visible: str | None, device: str
+) -> None:
+    """A parent whose model runs in a worker child has no CUDA context; the device total still counts the child."""
+    if torch is None:
+        monkeypatch.delitem(sys.modules, "torch", raising=False)
+    else:
+        monkeypatch.setitem(sys.modules, "torch", torch)
+    if visible is not None:
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", visible)
+
+    assert gpu_memory_facts() == {"gpu.mem.used_mib": "12345", "gpu.mem.total_mib": "81920"}
+    (command,) = smi.calls
+    assert command[:2] == ["nvidia-smi", f"--id={device}"]
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [FileNotFoundError("nvidia-smi"), subprocess.TimeoutExpired("nvidia-smi", 10), "", "N/A, N/A\n", "12345\n"],
+    ids=["no-nvidia-smi", "timeout", "no-output", "not-a-number", "one-column"],
+)
+def test_gpu_memory_is_empty_when_nvidia_smi_cannot_answer(
+    monkeypatch: pytest.MonkeyPatch, smi: _NvidiaSmi, reply: Any
+) -> None:
+    monkeypatch.delitem(sys.modules, "torch", raising=False)
+    smi.reply = reply
+    assert gpu_memory_facts() == {}
+
+
+@pytest.mark.parametrize("visible", ["", "-1"])
+def test_gpu_memory_is_empty_when_no_gpu_is_visible(
+    monkeypatch: pytest.MonkeyPatch, smi: _NvidiaSmi, visible: str
+) -> None:
+    monkeypatch.delitem(sys.modules, "torch", raising=False)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", visible)
+    assert gpu_memory_facts() == {}
+    assert smi.calls == []
+
+
+@dataclass
+class _Output:
+    metadata: Any
+    extra: list[int] = field(default_factory=list)
+
+
+def test_record_gpu_memory_adds_the_facts_without_touching_shared_metadata(
+    monkeypatch: pytest.MonkeyPatch, smi: _NvidiaSmi
+) -> None:
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(cuda=_cuda()))
+    shared = PredictionMetadata(model_name="m", model_version="v", sequence_lengths=[3], runtime={"python": "3.12"})
+    first, second = _Output(shared), _Output(shared)
+
+    record_gpu_memory(first)
+
+    assert first.metadata.runtime == {"python": "3.12", **gpu_memory_facts()}
+    assert first.metadata.sequence_lengths == [3] and first.metadata.model_name == "m"
+    assert second.metadata is shared and shared.runtime == {"python": "3.12"}
+    bare = _Output(PredictionMetadata(model_name="m", model_version="v", sequence_lengths=None))
+    record_gpu_memory(bare)
+    assert bare.metadata.runtime == gpu_memory_facts()
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        SimpleNamespace(),
+        SimpleNamespace(metadata=None),
+        SimpleNamespace(metadata={"runtime": {}}),
+        SimpleNamespace(metadata=PredictionMetadata),
+    ],
+    ids=["no-metadata", "none", "mapping", "class"],
+)
+def test_record_gpu_memory_skips_outputs_without_runtime_metadata(
+    monkeypatch: pytest.MonkeyPatch, smi: _NvidiaSmi, output: Any
+) -> None:
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(cuda=_cuda()))
+    before = dict(vars(output))
+    record_gpu_memory(output)
+    assert vars(output) == before
+
+
+def test_record_gpu_memory_on_a_frozen_output_keeps_the_output(
+    monkeypatch: pytest.MonkeyPatch, smi: _NvidiaSmi, caplog: pytest.LogCaptureFixture
+) -> None:
+    @dataclass(frozen=True)
+    class Frozen:
+        metadata: PredictionMetadata
+
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(cuda=_cuda()))
+    output = Frozen(PredictionMetadata(model_name="m", model_version="v", sequence_lengths=None))
+    record_gpu_memory(output)
+    assert output.metadata.runtime is None
+    assert "GPU memory not recorded on Frozen" in caplog.text
+
+
+def test_record_gpu_memory_leaves_metadata_alone_without_a_gpu(
+    monkeypatch: pytest.MonkeyPatch, smi: _NvidiaSmi
+) -> None:
+    monkeypatch.delitem(sys.modules, "torch", raising=False)
+    smi.reply = FileNotFoundError("nvidia-smi")
+    metadata = PredictionMetadata(model_name="m", model_version="v", sequence_lengths=None)
+    output = _Output(metadata)
+    record_gpu_memory(output)
+    assert output.metadata is metadata and metadata.runtime is None
