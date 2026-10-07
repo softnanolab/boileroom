@@ -218,7 +218,9 @@ measured. boileroom frees the evicted caches after every fold (`boileroom.models
 called by the ESMFold2 core and by every worker child), which kept the same 16 folds flat. The release reads the
 adapter's private state, so re-check it when the kit commit changes; the upstream fix is for the kit to hold the cache
 weakly or to detach its finalizers on eviction. `gpu.mem.used_mib` in each output shows whether a runtime's memory
-grows.
+grows. The opt-in GPU test `tests/test_memory_stability.py` checks this for every model and mode: four cycles over
+three lengths on one live model, and the peak of the last cycle may not exceed that of the second by 256 MiB. Its module
+docstring has the command and cost.
 
 ## What a prediction records
 
