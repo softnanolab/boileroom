@@ -172,7 +172,11 @@ def test_cli_keeps_the_pinned_kit_tag_and_prunes_other_stale_kit_tags(monkeypatc
     kit_name = "boileroom-protenix-kit"
     tags = {
         kit_name: [
-            cleanup_dockerhub_tags.TagInfo("sha-dc652b0", OLD, digests=(KIT_IMAGE_DIGESTS[kit_name],)),
+            cleanup_dockerhub_tags.TagInfo("sha-d3e1d62", OLD, digests=(KIT_IMAGE_DIGESTS[kit_name],)),
+            *(
+                cleanup_dockerhub_tags.TagInfo(f"0.4.{index}", OLD, digests=(digest,))
+                for index, digest in enumerate(KIT_IMAGE_DIGEST_HISTORY[kit_name][:-1])
+            ),
             cleanup_dockerhub_tags.TagInfo("sha-0000000", OLD, digests=("sha256:" + "2" * 64,)),
         ],
         "boileroom-esmfold2-kit": _http_error(404),

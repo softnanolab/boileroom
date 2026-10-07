@@ -36,14 +36,14 @@ KIT_COMMIT: Final = "f4f62fa6592ae4938d49b1757bea0cfeff9f468e"
 
 # Content digests of the published kit images under DEFAULT_DOCKER_REPOSITORY, keyed by image name. Pulling by digest
 # makes a kit run reproducible: a re-pushed tag cannot change what ``optimization="exact"`` / ``"fast"`` executes.
-# Both images were built from KIT_COMMIT f4f62fa. Refresh these digests whenever the kit images are re-pushed (and
-# re-run the GPU validation for both kit modes). They predate the in-image REQUIRE_FAST environment variable and smoke
-# step of the kit Dockerfiles; the code-level guards (boileroom.optimization) still refuse a run whose fast path is
-# missing. BOILEROOM_KIT_IMAGE_TAG overrides the digest with a tag.
+# Both images were built from KIT_COMMIT f4f62fa with the kit Dockerfiles of commit d3e1d62 (pushed as tag
+# sha-d3e1d62), so they carry the in-image REQUIRE_FAST environment variable and pass the build-time smoke step. Refresh
+# these digests whenever the kit images are re-pushed (and re-run the GPU validation for both kit modes).
+# BOILEROOM_KIT_IMAGE_TAG overrides the digest with a tag.
 KIT_IMAGE_DIGESTS: Final[Mapping[str, str]] = MappingProxyType(
     {
-        "boileroom-esmfold2-kit": "sha256:b6111c000142945e83ae2ceaef90d12857a315ed037286d6e3a1ad23d2518e3b",
-        "boileroom-protenix-kit": "sha256:779a2040a2ffa3c4c05c801b44a776896073a0633d72a9a578beece694638436",
+        "boileroom-esmfold2-kit": "sha256:2598b7ab9019c2d63a6bdb09ca5177f37304e15377a49a1a97bff58f51b8a5b7",
+        "boileroom-protenix-kit": "sha256:f2e08c50a2fc6fd7ee6e4ac955207ff3b97be031ccb8d5c9384f89aa91f07da6",
     }
 )
 
@@ -54,8 +54,14 @@ KIT_IMAGE_DIGESTS: Final[Mapping[str, str]] = MappingProxyType(
 # git history of this file.
 KIT_IMAGE_DIGEST_HISTORY: Final[Mapping[str, tuple[str, ...]]] = MappingProxyType(
     {
-        "boileroom-esmfold2-kit": ("sha256:b6111c000142945e83ae2ceaef90d12857a315ed037286d6e3a1ad23d2518e3b",),
-        "boileroom-protenix-kit": ("sha256:779a2040a2ffa3c4c05c801b44a776896073a0633d72a9a578beece694638436",),
+        "boileroom-esmfold2-kit": (
+            "sha256:b6111c000142945e83ae2ceaef90d12857a315ed037286d6e3a1ad23d2518e3b",
+            "sha256:2598b7ab9019c2d63a6bdb09ca5177f37304e15377a49a1a97bff58f51b8a5b7",
+        ),
+        "boileroom-protenix-kit": (
+            "sha256:779a2040a2ffa3c4c05c801b44a776896073a0633d72a9a578beece694638436",
+            "sha256:f2e08c50a2fc6fd7ee6e4ac955207ff3b97be031ccb8d5c9384f89aa91f07da6",
+        ),
     }
 )
 

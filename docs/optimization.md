@@ -119,12 +119,12 @@ Protenix `A100-40GB`); pass `device="H100"` (or `H200`) to run on those.
 
 | Image | Pinned digest (kit `f4f62fa`) |
 | --- | --- |
-| `docker.io/jakublala/boileroom-esmfold2-kit` | `sha256:b6111c000142945e83ae2ceaef90d12857a315ed037286d6e3a1ad23d2518e3b` |
-| `docker.io/jakublala/boileroom-protenix-kit` | `sha256:779a2040a2ffa3c4c05c801b44a776896073a0633d72a9a578beece694638436` |
+| `docker.io/jakublala/boileroom-esmfold2-kit` | `sha256:2598b7ab9019c2d63a6bdb09ca5177f37304e15377a49a1a97bff58f51b8a5b7` |
+| `docker.io/jakublala/boileroom-protenix-kit` | `sha256:f2e08c50a2fc6fd7ee6e4ac955207ff3b97be031ccb8d5c9384f89aa91f07da6` |
 
-These two images were built before the in-image `ESMFOLD2_OPT_REQUIRE_FAST_ENV` and the build-time smoke checks were added
-to the Dockerfiles. boileroom's own guards still refuse a run whose fast path is missing; a re-push of the images must
-update the digests and repeat the GPU validation of both kit modes.
+Both images were built from the kit Dockerfiles in this repository (tag `sha-d3e1d62`), so they carry the in-image
+`ESMFOLD2_OPT_REQUIRE_FAST_ENV` and passed the build-time smoke checks. A re-push of the images must update the digests
+(adding the new ones to the append-only `KIT_IMAGE_DIGEST_HISTORY`) and repeat the GPU validation of both kit modes.
 
 - Modal, `BOILEROOM_KIT_IMAGE_SOURCE=build` (default): Modal builds the image from the Dockerfile in your installed
   boileroom. The first kit-mode use pays the build and Modal caches it afterwards. Protenix compiles its fused LayerNorm
