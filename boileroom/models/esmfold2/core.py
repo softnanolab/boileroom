@@ -31,6 +31,7 @@ from ...optimization import (
 )
 from ...provenance import _ABSENT, _UNKNOWN, _joined, kit_provenance, runtime_provenance
 from ...utils import MODAL_MODEL_DIR, Timer, safe_mkdir, validate_sequence
+from .._worker import release_evicted_kit_caches
 from .payloads import decode_structure_input
 from .types import (
     CovalentBond,
@@ -1003,8 +1004,12 @@ class ESMFold2Core(FoldingAlgorithm):
                 f"optimization={self._mode()!r}: the kit's kernels were not confirmed on the loaded model; "
                 "load the core (which runs the kernel gate) before folding"
             )
-        with Timer("ESMFold2 inference") as inference_timer:
-            decoded = self.input_builder.fold(self.model, esm_input, **self._kit_fold_kwargs(config, complex_id))
+        try:
+            with Timer("ESMFold2 inference") as inference_timer:
+                decoded = self.input_builder.fold(self.model, esm_input, **self._kit_fold_kwargs(config, complex_id))
+        finally:
+            # fast's TriMul keeps every geometry its LRU evicted alive; folds of varied lengths would grow until OOM.
+            release_evicted_kit_caches()
         results = decoded if isinstance(decoded, list) else [decoded]
         return results, {
             "preprocessing": 0.0,

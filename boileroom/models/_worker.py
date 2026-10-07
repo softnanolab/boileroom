@@ -7,6 +7,10 @@ A runtime implements ``__init__(config, work_dir)`` and ``predict(input, output,
 ``work_dir`` belongs to the parent, which removes it only after the child exited, so a kit's interpreter-exit hooks
 (Protenix's lever report) still find it.
 
+After every request the child frees the optimization kit's evicted TriMul caches
+(:func:`release_evicted_kit_caches`; a no-op without the kit), which the kit would otherwise keep for the life of the
+process.
+
 Child-to-parent messages are ``("ok", payload)`` and ``("error", kind, text)``. ``kind`` is ``"refused"`` for a
 kit's refusal ``SystemExit`` (code 3 or 5) or an exception whose class is named ``OptimizationUnavailableError`` (a
 runtime cannot import boileroom, so it defines a local class of that name), and ``"failed"`` for anything else (other
@@ -26,6 +30,7 @@ if __name__ == "__main__":
 
 import atexit  # noqa: E402
 import contextlib  # noqa: E402
+import gc  # noqa: E402
 import multiprocessing  # noqa: E402
 import runpy  # noqa: E402
 import shutil  # noqa: E402
@@ -33,6 +38,7 @@ import subprocess  # noqa: E402
 import tempfile  # noqa: E402
 import threading  # noqa: E402
 import traceback  # noqa: E402
+import weakref  # noqa: E402
 from multiprocessing.connection import Connection  # noqa: E402
 from pathlib import Path  # noqa: E402
 from typing import Any  # noqa: E402
@@ -60,6 +66,54 @@ _REFUSAL_PROCESS_EXIT_CODE = 3
 _KIT_REFUSAL_EXIT_CODES = frozenset({3, 5})
 # What _recv returns once the parent closed its end of the pipe.
 _CLOSED = object()
+# Module-name suffix of the optimization kit's native TriMul adapter (opt_core.kernels.trimul.native).
+_KIT_TRIMUL_NATIVE_SUFFIX = ".kernels.trimul.native"
+
+
+def release_evicted_kit_caches() -> int:
+    """Free the kit TriMul geometry caches that the kit's LRU evicted but its weight finalizers still hold.
+
+    The kit's native TriMul keeps the caches of its two most recent geometries ``(device, N, c_z, c_hidden)`` in
+    ``_SHARED`` (workspaces, launch plans, weight packs) and ties every weight pack it creates to the owning weight
+    tensor with ``weakref.finalize(owner, _evict_key, cache, ...)``. A finalizer holds its ``cache`` until the owner
+    dies, and the owners are the model's weights, so a geometry the LRU dropped is never freed: about 0.3 GB per new
+    sequence length on an A100 (opt_core ``kernels/trimul/native/__init__.py``, ``payload_cache`` and ``after_call``,
+    kit commit ``f4f62fa``). This detaches the finalizers whose cache left ``_SHARED``; nothing reads those caches
+    again (the next call of that geometry builds a new one).
+
+    Reads only modules that are already loaded, so it never imports the kit or torch, and returns ``0`` when the kit is
+    not loaded or does not have these names. A cache handed in by the caller (the adapter's ``cache="caller"``, which no
+    kit face uses) would look evicted too; re-check this when the kit commit changes.
+
+    Returns
+    -------
+    int
+        How many evicted caches were released.
+    """
+    native = next(
+        (
+            module
+            for name, module in list(sys.modules.items())
+            if name.endswith(_KIT_TRIMUL_NATIVE_SUFFIX) and isinstance(getattr(module, "_SHARED", None), dict)
+        ),
+        None,
+    )
+    evict = getattr(native, "_evict_key", None)
+    registry = getattr(weakref.finalize, "_registry", None)
+    if native is None or evict is None or not isinstance(registry, dict):
+        return 0
+    released: set[int] = set()
+    # Under the adapter's own lock no geometry is created between reading _SHARED and reading the finalizers.
+    with getattr(native, "_LOCK", None) or contextlib.nullcontext():
+        live = {id(cache) for cache in list(native._SHARED.values())}
+        for finalizer, info in list(registry.items()):
+            args = getattr(info, "args", None)
+            if getattr(info, "func", None) is evict and args and isinstance(args[0], dict) and id(args[0]) not in live:
+                finalizer.detach()
+                released.add(id(args[0]))
+    if released:
+        gc.collect()
+    return len(released)
 
 
 def _is_refusal(error: BaseException) -> bool:
@@ -101,7 +155,9 @@ def _serve(connection: Connection, runtime_path: str, runtime_class: str, work_d
             request = _recv(connection)
             if request is None or request is _CLOSED:
                 break
-            connection.send(("ok", runtime.predict(*request)))
+            payload = runtime.predict(*request)
+            release_evicted_kit_caches()
+            connection.send(("ok", payload))
     except KeyboardInterrupt:
         raise
     except BaseException as error:

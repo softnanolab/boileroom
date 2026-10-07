@@ -1280,6 +1280,34 @@ def test_esmfold2_kit_fold_kwargs(monkeypatch: pytest.MonkeyPatch) -> None:
     assert timing["preprocessing"] == timing["postprocessing"] == 0.0 and timing["inference"] >= 0.0
 
 
+@pytest.mark.parametrize("fails", [False, True], ids=["served", "failed"])
+def test_esmfold2_kit_fold_releases_evicted_trimul_caches(monkeypatch: pytest.MonkeyPatch, fails: bool) -> None:
+    """Every kit fold, a failed one too, frees the TriMul geometries the kit's LRU evicted (see ``_worker``)."""
+    core_module = pytest.importorskip("boileroom.models.esmfold2.core")
+    core, builder = _kit_fold_core(monkeypatch)
+    released: list[int] = []
+
+    def release() -> int:
+        released.append(len(builder.calls))
+        return 0
+
+    monkeypatch.setattr(core_module, "release_evicted_kit_caches", release)
+    core._kernel_gate_passed = True
+    prediction_input = StructurePredictionInput(sequences=[ProteinInput(id="A", sequence="ACD")])
+    if fails:
+
+        def out_of_memory(model: Any, esm_input: Any, **kwargs: Any) -> list[str]:
+            builder.calls.append((model, esm_input, kwargs))
+            raise RuntimeError("CUDA out of memory")
+
+        monkeypatch.setattr(builder, "fold", out_of_memory)
+
+    with pytest.raises(RuntimeError, match="out of memory") if fails else nullcontext():
+        core._fold_one(prediction_input, dict(core.config), request_index=0)
+
+    assert released == [1]
+
+
 def test_esmfold2_kit_fold_needs_the_kernel_gate(monkeypatch: pytest.MonkeyPatch) -> None:
     """A kit runtime whose levers were never confirmed on the loaded model must not fold."""
     from boileroom.optimization import OptimizationUnavailableError

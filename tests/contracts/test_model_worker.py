@@ -30,6 +30,19 @@ def worker(monkeypatch, tmp_path):
         "def _exit_report(work_dir, note):\n"
         "    with open(os.path.join(work_dir, 'report.jsonl'), 'a') as report: report.write('{}\\n')\n"
         "    Path(note).write_text('report written')\n"
+        "import weakref, types\n"
+        "class _Weight: pass\n"
+        "def _evict_key(cache, key, w_ptr, reason): cache.pop(key, None)\n"
+        "def _evicted_kit_cache():\n"
+        "    native = types.ModuleType('kit.kernels.trimul.native')\n"
+        "    native._SHARED, native._evict_key = {}, _evict_key\n"
+        "    sys.modules[native.__name__] = native\n"
+        "    global _WEIGHT\n"
+        "    _WEIGHT = _Weight()\n"
+        "    weakref.finalize(_WEIGHT, _evict_key, {'pack': 1}, 'pack', 1, 'gc')\n"
+        "    return _kit_finalizers()\n"
+        "def _kit_finalizers():\n"
+        "    return sum(info.func is _evict_key for info in weakref.finalize._registry.values())\n"
         "class Runtime:\n"
         "    def __init__(self, config, work_dir):\n"
         "        with open(config['load_log'], 'a') as log: log.write(str(os.getpid()) + '\\n')\n"
@@ -54,6 +67,8 @@ def worker(monkeypatch, tmp_path):
         "        if action == 'os_exit5': os._exit(5)\n"
         "        if action == 'exit1': sys.exit(1)\n"
         "        if action == 'eof': raise EOFError('Ran out of input')\n"
+        "        if action == 'kit_cache': return _evicted_kit_cache()\n"
+        "        if action == 'kit_finalizers': return _kit_finalizers()\n"
         "        Path(output).write_text(str(os.getpid()))\n"
         "        return {'pid': os.getpid(), 'output': output}\n"
     )
@@ -150,6 +165,13 @@ def test_start_returns_and_keeps_the_runtime_description(worker) -> None:
     assert instance.info == {"stack": "test", "levers": "7"}
     instance.close()
     assert instance.info == {}
+
+
+def test_evicted_kit_caches_are_released_after_every_request(worker, tmp_path) -> None:
+    """The kit's TriMul LRU keeps evicted geometries alive through weight finalizers; the child frees them per call."""
+    instance, config = worker
+    assert instance.predict("kit_cache", str(tmp_path / "out"), config) == 1
+    assert instance.predict("kit_finalizers", str(tmp_path / "out"), config) == 0
 
 
 def test_predict_returns_the_runtime_payload(worker, tmp_path) -> None:

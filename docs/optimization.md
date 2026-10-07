@@ -206,6 +206,20 @@ card each time. Their timings were single runs and are not benchmark data.
 Not exercised: the Apptainer kit path, `kit_msa` for ESMFold2, a Protenix or OpenDDE kit fold with a caller-supplied MSA,
 OpenDDE kit modes on H100 with the current OpenDDE image, and any kit mode with the code of this round of fixes on a GPU.
 
+### Memory across calls
+
+The kit's native TriMul adapter keeps the packed weights of the last two input lengths per device and evicts older
+ones, but the finalizer it registers on each model weight still holds every evicted cache until the model is freed. A
+runtime that folds many different lengths then grows by about 0.3 GB per new length until it runs out of memory. This
+was measured with ESMFold2 `fast` on A100-80GB at kit commit `f4f62fa`: allocated memory rose from 15.4 to 19.3 GB
+over 16 folds cycling four lengths, while `exact` and `vanilla` stayed flat. `fast` uses the native adapter on A100 at
+every length and on H100 only at the lengths it serves natively; OpenDDE `fast` loads the same adapter and was not
+measured. boileroom frees the evicted caches after every fold (`boileroom.models._worker.release_evicted_kit_caches`,
+called by the ESMFold2 core and by every worker child), which kept the same 16 folds flat. The release reads the
+adapter's private state, so re-check it when the kit commit changes; the upstream fix is for the kit to hold the cache
+weakly or to detach its finalizers on eviction. `gpu.mem.used_mib` in each output shows whether a runtime's memory
+grows.
+
 ## What a prediction records
 
 `PredictionMetadata.optimization` records `mode`, `kit_config` (`a100`, `h100` or `null` for vanilla), `gpu_name` and
@@ -273,7 +287,7 @@ Every output a backend returns, for every model, also records the GPU memory in 
 
 The entries are missing when no GPU memory can be read (a CPU run, no `nvidia-smi`). Within one runtime, calls of a
 repeating input size should leave `gpu.mem.used_mib` flat after the first few, since torch reuses the memory it
-reserved; growth from call to call is a leak.
+reserved; growth from call to call is a leak (see [Memory across calls](#memory-across-calls)).
 
 **Spotting a degraded run.** A kit mode never degrades silently: a missing kernel, a partial lever set or a fallen-back
 LayerNorm raises `OptimizationUnavailableError`. `vanilla` is not guarded, because it runs whatever the image provides,
