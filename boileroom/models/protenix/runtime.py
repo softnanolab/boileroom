@@ -19,6 +19,8 @@ Every degradation is loud or visible:
   requested ones; OpenDDE's own compute-capability-7.x fallback (torch kernels, fp32) is served in ``vanilla`` only,
   and recorded (``kernel.cc7_fallback``);
 - caller templates are counted after featurization, and a staged template the featurizer dropped fails the request;
+- in kit modes, the forward kit's PairformerStack CUDA graphs are dropped once the native TriMul adapter frees a
+  workspace they read, and recaptured on demand (``kit.stack_graph_resets`` counts the resets);
 - :meth:`FoldRuntime.describe` and every prediction's payload are flat ``str -> str`` provenance records.
 """
 
@@ -139,12 +141,19 @@ class FoldRuntime:
     LAYERNORM_BY_MODE: dict[str, str] = {}
     #: Whether staged requests get a per-request template cache directory (else the cache is switched off).
     TEMPLATE_CACHE_PER_REQUEST = False
+    #: The forward kit's PairformerStack CUDA graphs, and the native TriMul adapter whose per-geometry workspaces
+    #: those graphs read (see :meth:`_drop_stale_stack_graphs`).
+    STACK_GRAPH_MODULE = "fpf_stackgraph.stackgraph"
+    TRIMUL_NATIVE_MODULE = "opt_core.kernels.trimul.native"
 
     def __init__(self, config: dict[str, Any], work_dir: str) -> None:
         self.mode = str(config.get("optimization") or "vanilla")
         self.work_dir = work_dir
         self.kit: Any = None
         self.report: dict[str, Any] | None = None
+        #: The TriMul geometry caches live after the previous request, held so none is freed before the next check.
+        self._trimul_caches: dict[Any, Any] = {}
+        self.stack_graph_resets = 0
         self.requested_kernels = {
             "triangle_attention": str(config["triatt_kernel"]),
             "triangle_multiplicative": str(config["trimul_kernel"]),
@@ -270,6 +279,8 @@ class FoldRuntime:
         self.runner.init_dumper(need_atom_confidence=True, sorted_by_ranking_score=configs.sorted_by_ranking_score)
         with self._count_templates(staging is not None) as featurized:
             _guard(self.LABEL, "the prediction", infer_predict, self.runner, configs)
+        if self.kit is not None:
+            self._drop_stale_stack_graphs()
         errors = sorted(Path(self.runner.error_dir).glob("*.txt"))
         if errors:
             details = "\n".join(path.read_text(encoding="utf-8") for path in errors)
@@ -279,7 +290,37 @@ class FoldRuntime:
             payload.update(_check_template_counts(self.LABEL, staging, featurized))
         if self.kit is not None:
             payload.update(self._late_kit_facts(input_json))
+            payload["kit.stack_graph_resets"] = str(self.stack_graph_resets)
         return payload
+
+    def _drop_stale_stack_graphs(self) -> None:
+        """Drop the kit's PairformerStack CUDA graphs once a TriMul workspace they read may be freed.
+
+        The forward kit's stack graph (``fpf_stackgraph.stackgraph``) captures the PairformerStack once per token
+        count and replays it for later requests of that count, with the addresses of the native TriMul adapter's
+        workspaces for that geometry baked in. The adapter keeps only its two most recent geometries (``_SHARED`` in
+        ``opt_core.kernels.trimul.native``, kit commit ``f4f62fa``) and frees the rest, so a length that recurs after
+        two other lengths would replay its graph over memory other tensors now own (Protenix ``exact``: NaN PAE). This
+        runtime holds the caches that were live after the previous request, so none is freed before this check; when
+        one of them left ``_SHARED`` or was rebuilt, every stack graph goes (``reset_cache``), and each length
+        captures again on its next request. It assumes one request's own geometries fit the adapter's LRU.
+
+        A no-op when the kit's modules are not loaded or lack these names; re-check this when the kit commit changes.
+        """
+        native = sys.modules.get(self.TRIMUL_NATIVE_MODULE)
+        stack_graph = sys.modules.get(self.STACK_GRAPH_MODULE)
+        shared = getattr(native, "_SHARED", None)
+        if not isinstance(shared, dict) or not callable(getattr(stack_graph, "reset_cache", None)):
+            return
+        with getattr(native, "_LOCK", None) or contextlib.nullcontext():
+            live = dict(shared)
+        if any(live.get(key) is not cache for key, cache in self._trimul_caches.items()):
+            torch = sys.modules.get("torch")
+            if torch is not None and torch.cuda.is_available():
+                torch.cuda.synchronize()  # no replay in flight while the graphs are released
+            stack_graph.reset_cache()
+            self.stack_graph_resets += 1
+        self._trimul_caches = live
 
     def _point_at_staged_templates(self, configs: Any, staging: dict[str, Any]) -> None:
         # Caller templates: point the featurizer at the staged directory and forbid it from fetching

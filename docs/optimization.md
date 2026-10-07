@@ -217,10 +217,23 @@ every length and on H100 only at the lengths it serves natively; OpenDDE `fast` 
 measured. boileroom frees the evicted caches after every fold (`boileroom.models._worker.release_evicted_kit_caches`,
 called by the ESMFold2 core and by every worker child), which kept the same 16 folds flat. The release reads the
 adapter's private state, so re-check it when the kit commit changes; the upstream fix is for the kit to hold the cache
-weakly or to detach its finalizers on eviction. `gpu.mem.used_mib` in each output shows whether a runtime's memory
-grows. The opt-in GPU test `tests/test_memory_stability.py` checks this for every model and mode: four cycles over
-three lengths on one live model, and the peak of the last cycle may not exceed that of the second by 256 MiB. Its module
-docstring has the command and cost.
+weakly or to detach its finalizers on eviction.
+
+Freeing an evicted cache is safe only if no CUDA graph still reads it. The ESMFold2 kit drops every graph on a new trunk
+shape. The Protenix forward kit, however, keeps one PairformerStack graph per token count (up to 448 tokens) and
+replays it on the next fold of that length, with the TriMul workspaces of its capture baked in. Protenix frees evicted
+TriMul caches even without boileroom's release, so a length that recurs after another one has evicted its workspaces
+replays a graph over freed memory. With `exact` at kit commit `f4f62fa`, folding 280 → 320 → 280 tokens returned NaN on
+the second 280-token fold. Disabling the stack graph (`PTX_BLK_GRAPH_MAXTOK=0`) or raising the LRU to 64 entries
+avoided it. The Protenix runtime therefore resets the kit's stack graphs once a TriMul geometry they may have read
+leaves the LRU, and the next fold recaptures them; `predict.kit.stack_graph_resets` in each output counts the resets
+(OpenDDE's kit has no stack graph, so it stays `0` there). The upstream fix is for the stack graph to keep the TriMul
+workspaces of its live graphs alive.
+
+`gpu.mem.used_mib` in each output shows whether a runtime's memory grows. The opt-in GPU test
+`tests/test_memory_stability.py` checks this for every model and mode: four cycles over three lengths on one live model,
+and the peak of the last cycle may not exceed that of the second by 256 MiB. Its module docstring has the command and
+cost.
 
 ## What a prediction records
 
@@ -274,8 +287,9 @@ Then each family adds its own entries:
 - Protenix and OpenDDE: `worker.<key>` for what the worker reported when it loaded (its interpreter, `layernorm_type`,
   requested and resolved triangle kernels, and in kit modes the kit's full activation report as `worker.kit.<field>`)
   and `predict.<key>` for what this request reported (resolved kernels, templates, the settled kit report as
-  `predict.kit.<field>`, and for OpenDDE kit modes `kit.lnstream` and `kit.kernels`). Inside these prefixed entries a
-  missing fact uses the same words as above (`not-loaded`, `absent`, `none`, `unknown`; an empty list is `none`).
+  `predict.kit.<field>`, `predict.kit.stack_graph_resets` in kit modes, and for OpenDDE kit modes `kit.lnstream` and
+  `kit.kernels`). Inside these prefixed entries a missing fact uses the same words as above (`not-loaded`, `absent`,
+  `none`, `unknown`; an empty list is `none`).
   OpenDDE also records `worker.kernel.cc7_fallback` (`true` when `vanilla` ran upstream's compute-capability-7.x
   fallback) and `worker.jit.stack_key`.
 

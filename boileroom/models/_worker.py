@@ -9,7 +9,7 @@ A runtime implements ``__init__(config, work_dir)`` and ``predict(input, output,
 
 After every request the child frees the optimization kit's evicted TriMul caches
 (:func:`release_evicted_kit_caches`; a no-op without the kit), which the kit would otherwise keep for the life of the
-process.
+process. A runtime whose kit captures CUDA graphs over those caches must drop such graphs first, within ``predict``.
 
 Child-to-parent messages are ``("ok", payload)`` and ``("error", kind, text)``. ``kind`` is ``"refused"`` for a
 kit's refusal ``SystemExit`` (code 3 or 5) or an exception whose class is named ``OptimizationUnavailableError`` (a
@@ -78,8 +78,11 @@ def release_evicted_kit_caches() -> int:
     tensor with ``weakref.finalize(owner, _evict_key, cache, ...)``. A finalizer holds its ``cache`` until the owner
     dies, and the owners are the model's weights, so a geometry the LRU dropped is never freed: about 0.3 GB per new
     sequence length on an A100 (opt_core ``kernels/trimul/native/__init__.py``, ``payload_cache`` and ``after_call``,
-    kit commit ``f4f62fa``). This detaches the finalizers whose cache left ``_SHARED``; nothing reads those caches
-    again (the next call of that geometry builds a new one).
+    kit commit ``f4f62fa``). This detaches the finalizers whose cache left ``_SHARED``; the next call of that geometry
+    builds a new one. A CUDA graph captured over an evicted cache would still read it, so this is safe only where no
+    graph outlives its geometry: the ESMFold2 kit clears every graph on a new trunk shape, and the Protenix runtime
+    resets the kit's stack graphs once a geometry they read leaves ``_SHARED`` (``_drop_stale_stack_graphs``), which
+    it does inside ``predict()``, before this runs.
 
     Reads only modules that are already loaded, so it never imports the kit or torch, and returns ``0`` when the kit is
     not loaded or does not have these names. A cache handed in by the caller (the adapter's ``cache="caller"``, which no

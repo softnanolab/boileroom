@@ -8,6 +8,7 @@ import ast
 import copy
 import importlib.util
 import sys
+import threading
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any
@@ -455,6 +456,58 @@ def test_blk2_module_never_loaded_is_recorded_when_none_of_its_levers_apply(rt, 
     monkeypatch.delitem(sys.modules, "ptx_trunk2_levers")
     payload = runtime.predict("a.json", "a", _config(optimization="exact"))
     assert payload["kit.blk2"] == "not-loaded" and "kit.blk2.portability" not in payload
+
+
+def _fake_stack_graph_kit(monkeypatch) -> tuple[ModuleType, Mock]:
+    """Fake native TriMul adapter (its geometry LRU) and stack-graph module; returns the adapter and ``reset_cache``."""
+    native = ModuleType("opt_core.kernels.trimul.native")
+    native._SHARED = {}  # type: ignore[attr-defined]
+    native._LOCK = threading.Lock()  # type: ignore[attr-defined]
+    stack_graph = ModuleType("fpf_stackgraph.stackgraph")
+    reset = Mock()
+    stack_graph.reset_cache = reset  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "opt_core.kernels.trimul.native", native)
+    monkeypatch.setitem(sys.modules, "fpf_stackgraph.stackgraph", stack_graph)
+    return native, reset
+
+
+def test_stack_graphs_reset_once_a_trimul_geometry_they_read_is_dropped(rt, fake, monkeypatch, tmp_path) -> None:
+    """A length recurring after two others must not replay its graph over a freed TriMul workspace."""
+    FakeKit(monkeypatch, fake)
+    native, reset = _fake_stack_graph_kit(monkeypatch)
+    runtime = rt.ProtenixRuntime(_config(optimization="exact"), str(tmp_path))
+    a, b, c = (0, 280, 128, 128), (0, 320, 128, 128), (0, 360, 128, 128)
+    cache_a, cache_b, cache_c = {"ws": "a"}, {"ws": "b"}, {"ws": "c"}
+    resets = []
+    for shared in (
+        {a: cache_a},
+        {a: cache_a, b: cache_b},  # a new geometry: nothing dropped
+        {b: cache_b, c: cache_c},  # a dropped: its graph would read freed memory
+        {b: cache_b, c: cache_c},
+        {b: {"ws": "b again"}, c: cache_c},  # b rebuilt after an eviction within the request
+    ):
+        native._SHARED = shared  # type: ignore[attr-defined]
+        payload = runtime.predict("a.json", "a", _config(optimization="exact"))
+        resets.append(payload["kit.stack_graph_resets"])
+    assert resets == ["0", "0", "1", "1", "2"]
+    assert reset.call_count == 2
+
+
+def test_stack_graph_reset_is_a_no_op_without_the_kit_modules(rt, fake, monkeypatch, tmp_path) -> None:
+    FakeKit(monkeypatch, fake)
+    runtime = rt.ProtenixRuntime(_config(optimization="exact"), str(tmp_path))
+    for _ in range(2):
+        assert runtime.predict("a.json", "a", _config(optimization="exact"))["kit.stack_graph_resets"] == "0"
+
+
+def test_vanilla_never_touches_the_stack_graphs(rt, fake, monkeypatch, tmp_path) -> None:
+    native, reset = _fake_stack_graph_kit(monkeypatch)
+    runtime = rt.ProtenixRuntime(_config(), str(tmp_path))
+    native._SHARED = {(0, 280, 128, 128): {}}  # type: ignore[attr-defined]
+    runtime.predict("a.json", "a", _config())
+    native._SHARED = {}  # type: ignore[attr-defined]
+    payload = runtime.predict("a.json", "a", _config())
+    assert "kit.stack_graph_resets" not in payload and reset.call_count == 0
 
 
 def test_kit_named_gaps_land_in_the_payload(rt, fake, monkeypatch, tmp_path) -> None:
