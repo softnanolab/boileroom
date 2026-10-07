@@ -49,11 +49,12 @@
 - Canonical published tags are CUDA-qualified, for example `cuda12.6-0.3.0` or `cuda12.6-0.3.1-alpha.1`.
 - The default CUDA line `12.6` also gets an unqualified alias for the same version, for example `0.3.0` or `0.3.1-alpha.1`.
 - Temporary validation tags such as `sha-<commit>` are allowed and should be deleted after use.
+- Kit images (`*-kit`, `optimization="exact"`/`"fast"`) are hand-built: Modal builds them from the repo Dockerfile by default; registry/Apptainer pulls use the digests in `KIT_IMAGE_DIGESTS` unless `BOILEROOM_KIT_IMAGE_TAG` / `--kit-image-tag` / `apptainer:<tag>` names a tag. `BOILEROOM_IMAGE_TAG` never applies to them; update the digest after pushing a new build.
 - Renames of runtime-facing env vars (e.g. `BOILEROOM_*`) bake into Modal images at build time. After such a rename, Modal images may need to be rebuilt before consumers can rely on the new name; verify before assuming the override propagates.
 
 ## Release Flow
 - Merging to `main` publishes Docker Hub images for an automatically derived alpha prerelease tag such as `0.3.1-alpha.1`.
-- Promoted `main` and full-release workflow runs build and validate the final alpha or stable image tag directly.
+- Promoted `main` and full-release workflow runs build and validate a `sha-<commit>` candidate tag, then retag each verified image to the final alpha or stable tag; a full release also tags the pinned kit image digests with `X.Y.Z`.
 - Validation-only manual workflow runs may still publish temporary `sha-<commit>` tags.
 - Alpha numbers are counted from the latest reachable stable release tag; before the first stable release tag, they use the configured CI baseline.
 - Publishing a full GitHub release from a `vX.Y.Z` tag publishes verified Docker images with the stable `X.Y.Z` tag.

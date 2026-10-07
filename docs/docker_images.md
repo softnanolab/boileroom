@@ -6,11 +6,11 @@
 - **boltz**: `boileroom/models/boltz/Dockerfile` → installs Boltz runtime dependencies from `requirements.txt`. Tag: `docker.io/jakublala/boileroom-boltz`.
 - **chai1**: `boileroom/models/chai/Dockerfile` → installs Chai runtime dependencies from `requirements.txt`, sets HF env vars. Tag: `docker.io/jakublala/boileroom-chai1`.
 - **esm**: `boileroom/models/esm/Dockerfile` → installs ESM runtime dependencies from `requirements.txt` shared by esm2/esmfold. Tag: `docker.io/jakublala/boileroom-esm`.
-- **opendde**: `boileroom/models/opendde/Dockerfile` → OpenDDE 1.1.1 and the Anthropic kit stack (Python 3.11, torch 2.7.1+cu126, cuequivariance 0.10.0) in `/opt/opendde`, CUDA 12.6 `nvcc` for the Triton JIT, GCC 13 libstdc++ for `exact`, HMMER/Kalign. `LAYERNORM_TYPE=fast_layernorm` is set but `ninja` is not installed, so the fused LayerNorm extension cannot build and torch's `layer_norm` is used in every mode. Tag: `docker.io/jakublala/boileroom-opendde`. Platform: `linux/amd64`.
+- **opendde**: `boileroom/models/opendde/Dockerfile` → OpenDDE 1.1.1 and the Anthropic kit stack (Python 3.11, torch 2.7.1+cu126, cuequivariance 0.10.0) in `/opt/opendde`, CUDA 12.6 `nvcc` for the Triton JIT, GCC 13 libstdc++ for `exact`, HMMER/Kalign. No `LAYERNORM_TYPE` is set image-wide: the worker sets it per mode (torch LayerNorm for `vanilla`, upstream's fused `fast_layernorm` for `exact` and `fast`, JIT-built at first use with the venv's `ninja`; see [optimization.md](optimization.md#layernorm-per-mode)). Python 3.11.5 there is python-build-standalone; the boileroom server runs on the base image's Python 3.12. Tag: `docker.io/jakublala/boileroom-opendde`. Platform: `linux/amd64`.
 - **protenix**: `boileroom/models/protenix/Dockerfile` → installs Protenix plus HMMER/Kalign CLI dependencies. Tag: `docker.io/jakublala/boileroom-protenix`. Platform: `linux/amd64`.
 - **esmfold2**: `boileroom/models/esmfold2/Dockerfile` → installs the MIT-licensed 2026 Chan Zuckerberg Biohub `esm` package (`esm==3.4.1.post1`, torch 2.11, CUDA 12.6 only) from `requirements.txt`. Tag: `docker.io/jakublala/boileroom-esmfold2`. **Shared by ESMFold2, ESM-C, and ESM3** — all three use the same Biohub `esm` package, so ESM-C/ESM3 run on this image instead of a separate one.
 
-- **esmfold2-kit** and **protenix-kit** (opt-in, published by hand rather than by CI): `boileroom/models/esmfold2/kit/Dockerfile` and `boileroom/models/protenix/kit/Dockerfile` → the stack of the Anthropic optimization kit (torch 2.13+cu130, kit commit `f4f62fa`) behind `optimization="exact"` and `"fast"`. Names: `boileroom-esmfold2-kit` and `boileroom-protenix-kit`. Used only when a kit mode is requested; `optimization="vanilla"` (the default) keeps using the stock images above. Not part of the build/smoke/publish scripts or CI: see [Kit images](#kit-images-optimizationexact-and-fast).
+- **esmfold2-kit** and **protenix-kit** (opt-in, built by hand rather than by CI): `boileroom/models/esmfold2/kit/Dockerfile` and `boileroom/models/protenix/kit/Dockerfile` → the stack of the Anthropic optimization kit (torch 2.13+cu130, kit commit `f4f62fa`) behind `optimization="exact"` and `"fast"`. Names: `boileroom-esmfold2-kit` and `boileroom-protenix-kit`. Used only when a kit mode is requested; `optimization="vanilla"` (the default) keeps using the stock images above. Registry pulls name them by the digest pinned in `KIT_IMAGE_DIGESTS`, not by the release tag, and `BOILEROOM_IMAGE_TAG` does not apply to them. They are not built or smoke-tested by `build_model_images.py` or CI; a full release tags their pinned digests with `X.Y.Z` (`promote_image_tags.py --kit-images-only`) and the tag cleanup keeps every digest ever pinned: see [Kit images](#kit-images-optimizationexact-and-fast).
 
 Dockerfiles are the canonical image definition for all runtimes. Docker/Apptainer images are built from these Dockerfiles, and Modal pulls the corresponding published model image from Docker Hub instead of maintaining a separate handwritten dependency stack. CUDA variants select the PyTorch wheel index; the runtime images rely on PyTorch/NVIDIA wheels for user-space CUDA libraries and on Docker/Apptainer GPU integration for host driver libraries.
 
@@ -18,7 +18,7 @@ Dockerfiles are the canonical image definition for all runtimes. Docker/Apptaine
 - Canonical published tags are CUDA-qualified, for example `cuda12.6-0.3.0`, `cuda11.8-0.3.0`, `cuda12.6-0.3.1-alpha.1`, or `cuda12.6-sha-abc1234`.
 - The default CUDA line is `12.6`. That line also gets an unqualified alias for the exact package version, alpha prerelease, or temporary validation tag, for example `0.3.0`, `0.3.1-alpha.1`, or `sha-abc1234`.
 - `latest` is not published.
-- Runtime shorthands such as `backend="apptainer"` resolve through `BOILEROOM_IMAGE_TAG` when set, otherwise through the installed boileroom package version on the default `12.6` CUDA line.
+- Runtime shorthands such as `backend="apptainer"` resolve through `BOILEROOM_IMAGE_TAG` when set, otherwise through the installed boileroom package version on the default `12.6` CUDA line. This applies to the stock images only; the kit images follow their own rules (see [Kit images](#kit-images-optimizationexact-and-fast)).
 
 ### Using prebuilt images when your checkout is ahead of the last release
 The default tag is the `version` in `pyproject.toml` (or the installed package version). Between releases that stable tag, for example `0.4.3`, is **not published**: `main` only publishes alpha tags such as `0.4.3-alpha.8`. A default lookup then fails to find the image, and the only way forward looks like building it locally (30–45 minutes). You do not need to build anything. Point the runtime at an existing published tag instead.
@@ -83,13 +83,13 @@ uv run pytest -v -m integration --docker-user=my-dockerhub-user --image-tag=0.3.
 
 `--image-tag` is honored by both the Modal and Apptainer test backends. The Apptainer backend additionally accepts an inline tag via `--backend apptainer:<tag>`, which wins over `--image-tag`.
 
-For lower-level runtime configuration outside pytest, `BOILEROOM_IMAGE_TAG` is the shared image-tag override used by both Modal image lookup and Apptainer's default image tag. An explicit Apptainer suffix such as `backend="apptainer:<tag>"` wins over the env override. Prefer pytest's `--image-tag` option for test runs so the selected image is explicit in the test command and report header.
+For lower-level runtime configuration outside pytest, `BOILEROOM_IMAGE_TAG` is the shared image-tag override used by both Modal image lookup and Apptainer's default image tag. An explicit Apptainer suffix such as `backend="apptainer:<tag>"` wins over the env override. Prefer pytest's `--image-tag` option for test runs so the selected image is explicit in the test command and report header. Neither `--image-tag` nor `BOILEROOM_IMAGE_TAG` selects a kit image; use `--kit-image-tag` or `BOILEROOM_KIT_IMAGE_TAG` for those.
 
 Single-platform non-push builds auto-load into the local Docker daemon. Multi-platform builds should generally be paired with `--push`.
 Pushed buildx builds import and export stable per-image registry caches such as `boileroom-chai1:buildcache-cuda12.6`, so GitHub Actions runners can reuse dependency layers across validation tags and releases. Pass `--no-cache` to bypass those caches.
 Model Dockerfiles also mount a BuildKit uv cache scoped to the active CUDA line, for example `boileroom-uv-cu12.6`, so repeated builds can reuse downloaded wheels even when a full dependency-install layer has to run again.
 Pass `--verbose` to stream Docker build output and plain BuildKit progress while still writing per-image log files.
-In CI, the release workflow first publishes one AMD64 base image per CUDA line, then builds each model/CUDA pair on a fresh runner with `--max-workers=1`. Model jobs push directly from BuildKit, prune the build cache, and pull only their own image for smoke checks. This isolates disk usage so one large model cannot exhaust a runner used by the others.
+In CI, the release workflow first publishes one AMD64 base image per CUDA line, then builds each model/CUDA pair on a fresh runner with `--max-workers=1`. AMD64 base and model jobs push directly from BuildKit under the run's candidate tag (`sha-<12 hex>`, or the full commit SHA on a release), model jobs prune the build cache and pull only their own image for smoke checks, and only after every smoke check passed does `promote_image_tags.promote_one` point the final alpha or stable tags at the verified manifest (the base gets its final tags once it is built; it is smoked through the models). A validation-only run's candidate is its final tag, so it skips that retag. This isolates disk usage so one large model cannot exhaust a runner used by the others, and a model that fails its smoke checks never gets a public version tag.
 ARM64 validation also uses one fresh runner per model. A dedicated ARM64 runner builds the base once, exports it as a one-day run artifact, and each model runner loads that exact base locally; the published base tag remains AMD64-only.
 For single-platform publishing, pass `--local-base` to build and tag images with `buildx --load` before pushing. This keeps dependent model builds from waiting on Docker Hub to receive and then re-serve the base image. Model builds also receive the loaded base tag as a named `docker-image://` build context so their `FROM` instruction resolves locally while preserving BuildKit registry cache import/export.
 
@@ -123,6 +123,8 @@ uv run python scripts/images/build_model_images.py --cuda-version=12.6 --tag=sha
 - Short-lived validation tags such as `sha-<shortsha>` are fine when you need to test a branch through Docker Hub or Modal before promoting a version tag.
 - Validation tags should be deleted once the validation pass is complete.
 - The `.github/workflows/cleanup-dockerhub-tags.yml` workflow enforces retention weekly by keeping the latest 3 alpha versions, deleting `sha-*` tags older than 7 days, and preserving stable and `buildcache-*` tags.
+- In the kit repositories it also keeps every tag that points at any digest listed in `KIT_IMAGE_DIGEST_HISTORY` (every digest `KIT_IMAGE_DIGESTS` has ever pinned; append-only), so the image an installed release pulls is never left untagged. A kit repository in which no tag points at its current pin is not pruned at all, and the command then exits non-zero naming it; tag the digest again (`promote_image_tags.py --kit-images-only`) or update `KIT_IMAGE_DIGESTS`. An earlier pin that no tag holds is only reported as a warning.
+- A full GitHub release runs `promote_image_tags.py --kit-images-only` (job `publish-kit-image-tags`), which gives each kit image's pinned digest the stable `X.Y.Z` tag. A manual promotion does the same after the stock images unless `--skip-kit-images` is passed. Kit tags carry no CUDA qualifier, since the kit stack is CUDA 13.0, and the kit images are never rebuilt per release. The script refuses to run while `BOILEROOM_KIT_IMAGE_TAG` is set, refuses before pushing anything if a kit target tag already names another digest (`--force-kit-tags` moves it), and checks after each push that every target tag serves the source digest.
 
 For example, a temporary validation push on the default CUDA line:
 ```bash
@@ -185,10 +187,15 @@ docker build \
 > ESM-C and ESM3 do not have their own image — they run on the `esmfold2` image above (same Biohub `esm` package).
 
 ### Kit images (`optimization="exact"` and `"fast"`)
-The kit modes need a different stack from the stock images (see [optimization.md](optimization.md)), so ESMFold2 and Protenix have a second, opt-in image each, defined next to their stock Dockerfile in a `kit/` directory. They are not built by `scripts/images/` and not smoke-tested or published by CI: the ESMFold2 image compiles flash-attn, TransformerEngine and xformers from source (about 30 minutes on a 48-64 core builder, hours on a GitHub-hosted runner). Both images were built locally and pushed to `docker.io/jakublala` under the temporary tag `sha-dc652b0` (kit commit `f4f62fa`); once the PR merges they are retagged to the release version, with no rebuild. Until then, pull them with `BOILEROOM_KIT_IMAGE_SOURCE=registry BOILEROOM_DOCKER_REPOSITORY=docker.io/jakublala BOILEROOM_IMAGE_TAG=sha-dc652b0`.
+The kit modes need a different stack from the stock images (see [optimization.md](optimization.md)), so ESMFold2 and Protenix have a second, opt-in image each, defined next to their stock Dockerfile in a `kit/` directory. They are not built by `scripts/images/build_model_images.py` and not built or smoke-tested by CI (a full release only tags their pinned digests): the ESMFold2 image compiles flash-attn, TransformerEngine and xformers from source (about 30 minutes on a 48-64 core builder, hours on a GitHub-hosted runner). Each Dockerfile runs a CPU-only import check of its stack at build time, so a kit image whose kernels fail to import does not build.
 
-- **Modal** builds the image from the Dockerfile in your installed boileroom the first time a kit mode is used, and caches it. This is the default (`BOILEROOM_KIT_IMAGE_SOURCE=build`).
-- **Docker/Apptainer, or your own registry**: build and push the image, then point the runtime at it:
+Where a runtime gets the kit image:
+
+- **Modal** builds the image from the Dockerfile in your installed boileroom the first time a kit mode is used, and caches it. This is the default (`BOILEROOM_KIT_IMAGE_SOURCE=build`). `BOILEROOM_IMAGE_REF` then reads `build:<Dockerfile path>@<hash>`, where the hash covers the Dockerfile, its build context and (for ESMFold2) the build arguments and the compile and finish steps, so it changes whenever the built image would.
+- **Modal with `BOILEROOM_KIT_IMAGE_SOURCE=registry`**, and **Apptainer always**, pull the published image from `BOILEROOM_DOCKER_REPOSITORY` (default `docker.io/jakublala`) by the digest pinned in `KIT_IMAGE_DIGESTS` (`boileroom/images/metadata.py`; the digests are listed in [optimization.md](optimization.md#kit-images)).
+- To pull a tag instead of the pinned digest, set `BOILEROOM_KIT_IMAGE_TAG=<tag>` (pytest: `--kit-image-tag <tag>`); with Apptainer, `backend="apptainer:<tag>"` names the kit tag too and wins over the env var. `BOILEROOM_IMAGE_TAG` and `--image-tag` never apply to kit images. Pytest refuses `--kit-image-tag` while Modal builds the image from source, since the tag would be ignored.
+
+To use your own build, build and push it, then point the runtime at it:
 
 ```bash
 docker build -f boileroom/models/protenix/kit/Dockerfile boileroom/models/protenix/kit -t <repository>/boileroom-protenix-kit:<tag>
@@ -196,12 +203,12 @@ docker build -f boileroom/models/esmfold2/kit/Dockerfile boileroom/models/esmfol
 docker push <repository>/boileroom-protenix-kit:<tag>
 docker push <repository>/boileroom-esmfold2-kit:<tag>
 
-export BOILEROOM_KIT_IMAGE_SOURCE=registry BOILEROOM_DOCKER_REPOSITORY=<repository> BOILEROOM_IMAGE_TAG=<tag>
+export BOILEROOM_KIT_IMAGE_SOURCE=registry BOILEROOM_DOCKER_REPOSITORY=<repository> BOILEROOM_KIT_IMAGE_TAG=<tag>
 ```
 
-  With `backend="apptainer"` the kit image is pulled as `docker://<repository>/boileroom-<family>-kit:<tag>` (the interpreter is `/usr/local/bin/python3.11` in the Protenix kit image, `python3.12` in the ESMFold2 one).
+With `backend="apptainer"` the kit image is pulled as `docker://<repository>/boileroom-<family>-kit@sha256:<digest>` (or `:<tag>`); the interpreter is `/usr/local/bin/python3.11` in the Protenix kit image and `python3.12` in the ESMFold2 one.
 
-The Dockerfile pins the kit commit; `KIT_COMMIT` in `boileroom/images/metadata.py` must match it (`tests/contracts/test_kit_images.py` checks this).
+The Dockerfiles pin the kit commit; `KIT_COMMIT` in `boileroom/images/metadata.py` must match it (`tests/contracts/test_kit_images.py` checks this). After rebuilding and pushing a kit image, update its digest in `KIT_IMAGE_DIGESTS` and append it to `KIT_IMAGE_DIGEST_HISTORY` (never remove the old entry); until then installations keep pulling the old one.
 
 ### ☁️ Push local tags to Docker Hub
 Use the helper script with `--push` to push all images after building. Authenticate first:
@@ -285,6 +292,14 @@ Either approach yields an Apptainer image `chai1.sif` that you can run with:
 ```bash
 apptainer exec chai1.sif python -c "import torch; print(torch.cuda.is_available())"
 ```
+
+#### How `backend="apptainer"` caches images
+You do not need to pull by hand for `backend="apptainer"`; the backend pulls on first use and reuses the file afterwards.
+
+- The cache directory is the `cache_dir` argument, else `MODEL_DIR`, else `~/.cache/boileroom`. Images go to `<cache>/images/<repository with / replaced by ->_<tag>.sif`, for example `jakublala-boileroom-chai1_0.3.0.sif`, or `..._sha256-<hex>.sif` for a digest reference such as a kit image. A registry other than `docker.io` is prefixed to the name.
+- A tag is resolved to its digest through the registry first and that digest is pulled, then recorded beside the image as `<name>.sif.digest`. Inside the container `BOILEROOM_IMAGE_REF` is `<repository>/<image>:<tag>@sha256:<hex>` when the digest was recorded, and the reference as given otherwise; it reaches `metadata.runtime["image_ref"]`.
+- A cached `.sif` is reused as is, even if the tag has since moved. Delete the `.sif` (and its `.digest`) to pull again.
+- The server must answer its health check within `BOILEROOM_APPTAINER_STARTUP_TIMEOUT` seconds (default 1800, which covers a first kit run downloading its weights); the value must be a positive, finite number. If the server exits with code 3 during startup, the requested optimization mode was refused and `OptimizationUnavailableError` is raised; any other early exit raises `RuntimeError` with the tail of the log.
 
 ### 📂 Configure model storage location (MODEL_DIR)
 Set `MODEL_DIR` at runtime to the host-mounted path that should store model weights. Model-specific directories are automatically derived under `MODEL_DIR` (e.g., `MODEL_DIR/chai` for Chai, `MODEL_DIR/boltz` for Boltz). The runtime automatically sets `CHAI_DOWNLOADS_DIR=$MODEL_DIR/chai` when `MODEL_DIR` is defined.

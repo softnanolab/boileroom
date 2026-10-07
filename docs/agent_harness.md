@@ -27,6 +27,8 @@ uv run python scripts/harness/check_repo.py --json-output /tmp/boileroom-harness
 
 An agent adding a model family should update the family files, registry metadata, image metadata, public exports, contract tests, and user-facing docs. The harness catches missing structural links, but it does not replace model behavior tests or Docker/Modal/Apptainer smoke validation.
 
+The Modal class in the family's `modal.py` subclasses `ModalFoldServer` or `ModalEmbedServer` from `boileroom/backend/modal_server.py`, declares `config: bytes = modal.parameter(default=b"{}")` on itself (Modal reads parameters only from the decorated class), and implements `_build_core()`, importing the core inside the method so the module stays importable without the model's libraries. Do not add your own `@modal.enter()` that loads the model: an exception there sends the container into a silent restart loop, which the shared enter hook avoids.
+
 Use the normal verification path after the harness passes:
 
 ```bash
@@ -40,7 +42,7 @@ For Modal integration tests, prefer grouped parallel execution:
 uv run pytest -v -n 4 --dist loadgroup -m integration
 ```
 
-The integration test modules are marked with model-family `xdist_group`s, so `--dist loadgroup` keeps Boltz, Chai, ESM2, ESMFold2, ESMFold, Protenix, and AlphaFold2-Multimer on separate workers and separate Modal apps. To run the same integration tests in series, use:
+The integration test modules are marked with model-family `xdist_group`s, so `--dist loadgroup` keeps Boltz, Chai, ESM2, ESMFold2, ESMFold, Protenix, OpenDDE, and AlphaFold2-Multimer on separate workers and separate Modal apps. To run the same integration tests in series, use:
 
 ```bash
 uv run pytest -v -m integration
