@@ -65,6 +65,8 @@ class MemoryCase:
         Options of every call.
     mode : str
         ``optimization`` mode; ``exact`` / ``fast`` cases run only with ``--run-kit``.
+    xfail : str | None
+        Reason of a known failure the case runs into before it can measure anything (a strict ``xfail``).
     """
 
     model: str
@@ -72,6 +74,7 @@ class MemoryCase:
     config: Mapping[str, Any] = field(default_factory=dict)
     options: Mapping[str, Any] = field(default_factory=dict)
     mode: str = "vanilla"
+    xfail: str | None = None
 
     @property
     def id(self) -> str:
@@ -89,7 +92,12 @@ CASES: tuple[MemoryCase, ...] = (
     MemoryCase("esm2", SHORT),
     MemoryCase("esmc", SHORT),
     MemoryCase("esm3", SHORT),
-    MemoryCase("sae", SHORT, config={"feature_source": "local"}),
+    MemoryCase(
+        "sae",
+        SHORT,
+        config={"feature_source": "local"},
+        xfail="the local SAE checkpoint has no b_enc, so the model fails to load (softnanolab/boileroom#115)",
+    ),
     *(
         MemoryCase("esmfold2", KIT, config={"optimization": mode}, options=_ESMFOLD2_OPTIONS, mode=mode)
         for mode in _MODES
@@ -120,6 +128,8 @@ CASES: tuple[MemoryCase, ...] = (
 
 def _param(case: MemoryCase) -> Any:
     marks = [pytest.mark.kit] if case.mode != "vanilla" else []
+    if case.xfail is not None:
+        marks.append(pytest.mark.xfail(reason=case.xfail, strict=True))
     return pytest.param(case, id=case.id, marks=marks)
 
 
