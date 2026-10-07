@@ -37,6 +37,7 @@ class Chai1Core(FoldingAlgorithm):
         "use_esm_embeddings": False,
         "use_msa_server": False,
         "use_templates_server": False,
+        "constraint_path": None,  # optional per-call restraints: a CSV path or a sequence of restraint mappings
         "include_fields": None,  # Optional[List[str]] - controls which fields to include in output
     }
     # Static config keys that can only be set at initialization
