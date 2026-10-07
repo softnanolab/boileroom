@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any
 
-OPTIMIZATION_MODES = ("vanilla", "exact", "fast")
+OPTIMIZATION_MODES = ("vanilla", "exact")
 DEFAULT_OPTIMIZATION = "vanilla"
 
 # Compute capabilities on which each kit family was benchmarked here; the kit's configs exist per card.
