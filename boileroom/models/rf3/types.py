@@ -14,8 +14,9 @@ class RF3Output(StructurePrediction):
     """Output from RoseTTAFold 3 structure prediction.
 
     Samples are listed best first: ``sample_ranks`` is the position by ``ranking_score``
-    (``0.8 * ipTM + 0.2 * pTM - 100 * has_clash``, ipTM falling back to pTM for one chain),
-    and ``sample_indices`` is the index RF3 gave the sample within its diffusion batch.
+    (``0.8 * ipTM + 0.2 * pTM - 100 * has_clash``; RF3 reports ipTM 0 for a single chain, so a
+    monomer ranks by ``0.2 * pTM``), and ``sample_indices`` is the index RF3 gave the sample within
+    its diffusion batch.
     """
 
     metadata: PredictionMetadata
