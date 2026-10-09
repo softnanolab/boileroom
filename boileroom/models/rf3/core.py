@@ -70,7 +70,7 @@ class RF3Core(FoldingAlgorithm):
     def __init__(self, config: dict[str, Any] | None = None) -> None:
         """Create an RF3 core with one reusable model worker."""
         super().__init__(config or {})
-        validate_optimization(self.config["optimization"])
+        validate_optimization(self.config["optimization"], self.FAMILY)
         self.optimization: OptimizationResolution | None = None
         self._worker: ModelWorker | None = None
         self._metadata_template = self._initialize_metadata(
@@ -146,7 +146,16 @@ class RF3Core(FoldingAlgorithm):
                     self._load()
                 assert self._worker is not None
                 # The alignments are already staged as files the input JSON names.
-                self._worker.predict(str(input_json), str(output_dir), {**effective_config, "msa": None})
+                try:
+                    self._worker.predict(str(input_json), str(output_dir), {**effective_config, "msa": None})
+                except RuntimeError as error:
+                    if self._is_fast_out_of_memory(error):
+                        raise RuntimeError(
+                            f"{self.DISPLAY_NAME} ran out of GPU memory under optimization='fast'; "
+                            "initialize with optimization='big' (lowest memory, slower) or a larger GPU\n"
+                            f"{error}"
+                        ) from error
+                    raise
 
             # Resolved by the first load, so it is only known once inference has started the worker.
             metadata.optimization = self.optimization.to_dict() if self.optimization else None
@@ -157,6 +166,10 @@ class RF3Core(FoldingAlgorithm):
         output.metadata.inference_time = inference_timer.duration
         output.metadata.postprocessing_time = postprocess_timer.duration
         return output
+
+    def _is_fast_out_of_memory(self, error: RuntimeError) -> bool:
+        """Whether the worker failed with CUDA out-of-memory while running the kit's ``fast`` mode."""
+        return self.optimization is not None and self.optimization.active == "fast" and "OutOfMemoryError" in str(error)
 
     def _write_input_json(self, sequence_entry: str, buffer_path: Path, msa: list[str | None] | None = None) -> Path:
         """Write the RF3 input file for ``sequence_entry``, staging caller-supplied alignments next to it.
@@ -309,4 +322,4 @@ def _validate_config(config: dict[str, Any]) -> None:
         raise ValueError("checkpoint_path must be None or a nonempty path string")
     if not isinstance(config["rf3_python"], str) or not config["rf3_python"]:
         raise ValueError("rf3_python must be a nonempty path string")
-    validate_optimization(config["optimization"])
+    validate_optimization(config["optimization"], RF3Core.FAMILY)

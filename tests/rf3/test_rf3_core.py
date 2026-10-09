@@ -170,6 +170,14 @@ def test_unknown_optimization_fails_at_construction(module: ModuleType) -> None:
         module.RF3Core({"optimization": "turbo"})
 
 
+@pytest.mark.parametrize("mode", ["vanilla", "exact", "fast", "big"])
+def test_every_listed_optimization_is_accepted(module: ModuleType, mode: str) -> None:
+    """RF3 offers ``fast`` (the other families do not, see #125); the mode is checked again when the config changes."""
+    core = module.RF3Core({"optimization": mode})
+    module._validate_config(core.config)
+    assert core.config["optimization"] == mode
+
+
 def test_static_options_cannot_change_per_call(module: ModuleType) -> None:
     with pytest.raises(ValueError, match="can only be set at initialization"):
         module.RF3Core().fold("AAAA", options={"n_recycles": 3})
@@ -493,54 +501,89 @@ def test_vanilla_never_probes_the_gpu(module: ModuleType, fake_worker: Mock, mon
     assert fake_worker.factory.call_args.kwargs["python_executable"] == module.DEFAULT_RF3_PYTHON
 
 
-def test_exact_mode_runs_in_the_kit_interpreter(
-    module: ModuleType, fake_worker: Mock, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("mode", ["exact", "fast", "big"])
+def test_kit_modes_run_in_the_kit_interpreter(
+    module: ModuleType, fake_worker: Mock, monkeypatch: pytest.MonkeyPatch, mode: str
 ) -> None:
     monkeypatch.setattr(module, "detect_gpu", lambda device=None: A100)
 
-    core = module.RF3Core({"optimization": "exact"})
+    core = module.RF3Core({"optimization": mode})
     core._initialize()
 
     assert fake_worker.factory.call_args.kwargs["python_executable"] == module.KIT_RF3_PYTHON
+    # The worker receives the mode itself: it is what the runtime hands to the kit.
+    assert fake_worker.factory.call_args.args[0]["optimization"] == mode
     assert core.optimization is not None
-    assert core.optimization.active == "exact" and core.optimization.kit_config == "a100"
+    assert core.optimization.active == mode and core.optimization.kit_config == "a100"
 
 
-def test_exact_mode_keeps_an_explicit_interpreter(
-    module: ModuleType, fake_worker: Mock, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("mode", ["exact", "fast", "big"])
+def test_kit_modes_keep_an_explicit_interpreter(
+    module: ModuleType, fake_worker: Mock, monkeypatch: pytest.MonkeyPatch, mode: str
 ) -> None:
     monkeypatch.setattr(module, "detect_gpu", lambda device=None: A100)
 
-    module.RF3Core({"optimization": "exact", "rf3_python": "/custom/python"})._initialize()
+    module.RF3Core({"optimization": mode, "rf3_python": "/custom/python"})._initialize()
 
     assert fake_worker.factory.call_args.kwargs["python_executable"] == "/custom/python"
 
 
-def test_exact_mode_is_refused_on_an_unserved_gpu_before_the_worker(
-    module: ModuleType, fake_worker: Mock, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("mode", ["exact", "fast", "big"])
+def test_kit_modes_are_refused_on_an_unserved_gpu_before_the_worker(
+    module: ModuleType, fake_worker: Mock, monkeypatch: pytest.MonkeyPatch, mode: str
 ) -> None:
-    """An L4 cannot run the kit; the refusal names the card and no worker starts."""
+    """An L4 cannot run the kit; the refusal names the card and the mode, and no worker starts."""
     monkeypatch.setattr(module, "detect_gpu", lambda device=None: GpuInfo("NVIDIA L4", (8, 9)))
 
     with pytest.raises(
-        OptimizationUnavailableError, match=r"optimization='exact' cannot run rf3 on NVIDIA L4 \(sm89\)"
+        OptimizationUnavailableError, match=rf"optimization='{mode}' cannot run rf3 on NVIDIA L4 \(sm89\)"
     ):
-        module.RF3Core({"optimization": "exact"})._initialize()
+        module.RF3Core({"optimization": mode})._initialize()
 
     fake_worker.factory.assert_not_called()
 
 
+@pytest.mark.parametrize("mode", ["exact", "fast", "big"])
 def test_fold_records_the_resolved_optimization(
-    module: ModuleType, fake_worker: Mock, monkeypatch: pytest.MonkeyPatch, real_sequence: str
+    module: ModuleType, fake_worker: Mock, monkeypatch: pytest.MonkeyPatch, real_sequence: str, mode: str
 ) -> None:
     monkeypatch.setattr(module, "detect_gpu", lambda device=None: A100)
 
-    output = module.RF3Core({"optimization": "exact", "diffusion_batch_size": 1}).fold(real_sequence)
+    output = module.RF3Core({"optimization": mode, "diffusion_batch_size": 1}).fold(real_sequence)
 
     assert output.metadata.optimization is not None
-    assert output.metadata.optimization["requested"] == "exact" and output.metadata.optimization["active"] == "exact"
+    assert output.metadata.optimization["requested"] == mode and output.metadata.optimization["active"] == mode
     assert output.metadata.optimization["kit_config"] == "a100"
     assert output.metadata.optimization["capability"] == "sm80"
+
+
+@pytest.mark.parametrize(
+    ("mode", "message", "hinted"),
+    [
+        ("fast", "RF3 worker failed:\ntorch.OutOfMemoryError: CUDA out of memory", True),
+        ("fast", "RF3 worker failed:\nValueError: bad input", False),
+        ("exact", "RF3 worker failed:\ntorch.OutOfMemoryError: CUDA out of memory", False),
+    ],
+)
+def test_fast_out_of_memory_points_to_big(
+    module: ModuleType,
+    fake_worker: Mock,
+    monkeypatch: pytest.MonkeyPatch,
+    real_sequence: str,
+    mode: str,
+    message: str,
+    hinted: bool,
+) -> None:
+    """Only a CUDA out-of-memory under ``fast`` is rewritten to name the lower-memory mode; the cause stays attached."""
+    monkeypatch.setattr(module, "detect_gpu", lambda device=None: A100)
+    fake_worker.predict.side_effect = RuntimeError(message)
+
+    with pytest.raises(RuntimeError) as raised:
+        module.RF3Core({"optimization": mode}).fold(real_sequence)
+
+    assert ("optimization='big'" in str(raised.value)) is hinted
+    assert message in str(raised.value)
+    assert (raised.value.__cause__ is not None) is hinted
 
 
 def test_vanilla_environment_has_no_kit_variables(module: ModuleType, weights_root: Path) -> None:
@@ -551,15 +594,16 @@ def test_vanilla_environment_has_no_kit_variables(module: ModuleType, weights_ro
     assert "TRITON_CACHE_DIR" not in env
 
 
+@pytest.mark.parametrize("mode", ["exact", "fast", "big"])
 @pytest.mark.parametrize(
     "gpu,config,capability",
     [(A100, "A100", "sm80"), (GpuInfo("NVIDIA H100 80GB HBM3", (9, 0)), "H100", "sm90")],
 )
 def test_kit_environment_names_gpu_and_caches(
-    module: ModuleType, weights_root: Path, gpu: GpuInfo, config: str, capability: str
+    module: ModuleType, weights_root: Path, gpu: GpuInfo, config: str, capability: str, mode: str
 ) -> None:
     """The kit modes get their target GPU and per-stack JIT caches next to the weights."""
-    resolution = resolve_optimization("rf3", "exact", gpu)
+    resolution = resolve_optimization("rf3", mode, gpu)
 
     env = module._command_env(module.RF3Core().config, resolution)
 

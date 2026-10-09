@@ -72,8 +72,9 @@ class RF3(ModelWrapper):
         best first by ``ranking_score``; ``seed`` and
         ``early_stopping_plddt_threshold`` may be set per call. Request ``pae``,
         ``token_chain_ids`` and ``token_res_ids`` to compute interface scores.
-        Set ``config={"optimization": "exact"}`` at initialization to run the
-        Anthropic kit kernels (A100/H100/H200 only).
+        Set ``config={"optimization": "exact" | "fast" | "big"}`` at
+        initialization to run the Anthropic kit kernels (A100/H100/H200 only);
+        ``big`` uses the least memory, for inputs that run ``fast`` out of memory.
         """
         validated_sequences = [sequences] if isinstance(sequences, str) else list(sequences)
         if len(validated_sequences) != 1:

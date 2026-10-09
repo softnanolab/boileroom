@@ -140,6 +140,7 @@ def test_vanilla_never_touches_the_kit(
 # -- Kit activation --------------------------------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("mode", ["exact", "fast", "big"])
 def test_kit_is_enabled_before_rf3_is_imported(
     runtime: ModuleType,
     fake_rf3: SimpleNamespace,
@@ -147,16 +148,17 @@ def test_kit_is_enabled_before_rf3_is_imported(
     tmp_path: Path,
     events: list[str],
     monkeypatch: pytest.MonkeyPatch,
+    mode: str,
 ) -> None:
     """The kit refuses late activation: it has to run, strictly, before the engine module is imported."""
     monkeypatch.setenv("ROSETTAFOLD3_OPT_CKPT", "")
     fake_kit(monkeypatch, events)
 
-    runtime.RF3Runtime({**CONFIG, "optimization": "exact", "checkpoint_path": str(checkpoint)}, str(tmp_path))
+    runtime.RF3Runtime({**CONFIG, "optimization": mode, "checkpoint_path": str(checkpoint)}, str(tmp_path))
 
     import os
 
-    assert events == ["enable exact strict=True", "import rf3 engine"]
+    assert events == [f"enable {mode} strict=True", "import rf3 engine"]
     assert os.environ["ROSETTAFOLD3_OPT_CKPT"] == str(checkpoint)
 
 

@@ -69,7 +69,7 @@ In `0.3.1`, this replaces ESMFold's old padded pLDDT batch array and moves Boltz
 
 Protenix, OpenDDE, RF3 and AlphaFold2-Multimer keep their model runners loaded between `fold()` calls. Create one model instance and reuse it for successive jobs, just like the other wrappers. Protenix, OpenDDE and AlphaFold2-Multimer fetch MSAs from the ColabFold MMseqs2 server by default; none needs local genetic databases. RF3 runs no MSA search at all and folds each chain from its sequence unless you pass alignments. Callers can supply their own alignment with `options={"msa": ...}` (Protenix, OpenDDE, RF3, ESMFold2 and AlphaFold2-Multimer) and mmCIF structure templates with `options={"templates": {...}}` (Protenix and OpenDDE only). See [docs/models.md](docs/models.md) for examples, configuration and Modal GPU defaults.
 
-ESMFold2, Protenix, OpenDDE and RF3 also accept `config={"optimization": "vanilla" | "exact"}` (default `"vanilla"`), which runs the Anthropic kit kernels on A100 or H100/H200 GPUs for a per-fold speedup. See [docs/optimization.md](docs/optimization.md).
+ESMFold2, Protenix, OpenDDE and RF3 also accept `config={"optimization": "vanilla" | "exact"}` (default `"vanilla"`), which runs the Anthropic kit kernels on A100 or H100/H200 GPUs for a per-fold speedup; RF3 also accepts `"fast"` and `"big"` (a lower-memory mode). See [docs/optimization.md](docs/optimization.md).
 
 ## Available Models
 

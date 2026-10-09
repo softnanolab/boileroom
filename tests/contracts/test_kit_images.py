@@ -202,6 +202,31 @@ def test_kit_modes_run_on_the_kit_modal_class(monkeypatch: pytest.MonkeyPatch, s
     assert records["started"] is True
 
 
+@pytest.mark.parametrize("mode", ["fast", "big"])
+@pytest.mark.parametrize("backend", ["modal", "apptainer:dev"])
+def test_rf3_fast_and_big_run_on_the_kit_image(monkeypatch: pytest.MonkeyPatch, backend: str, mode: str) -> None:
+    """``fast`` and ``big`` are offered for RF3 only, and are served by the same kit image as ``exact``."""
+    records = _install_fake_backends(monkeypatch)
+    _initialize(RF3_SPEC, backend, {"optimization": mode})
+    assert records["started"] is True
+    if backend == "modal":
+        assert records["modal_cls"] is resolve_object(RF3_SPEC.kit_modal_class_path)  # type: ignore[arg-type]
+    else:
+        kit_spec = get_kit_image_spec("rf3")
+        assert records["image_uri"] == f"docker://{format_image_reference(kit_spec.image_name, 'dev')}"
+
+
+@pytest.mark.parametrize("mode", ["fast", "big"])
+@pytest.mark.parametrize("spec", [s for s in KIT_SPECS if s is not RF3_SPEC], ids=lambda spec: spec.key)
+def test_fast_and_big_are_refused_before_a_backend_starts_for_the_other_families(
+    monkeypatch: pytest.MonkeyPatch, spec: ModelSpec, mode: str
+) -> None:
+    records = _install_fake_backends(monkeypatch)
+    with pytest.raises(ValueError, match="optimization must be one of"):
+        _initialize(spec, "modal", {"optimization": mode})
+    assert "started" not in records
+
+
 @pytest.mark.parametrize("spec", KIT_SPECS, ids=lambda spec: spec.key)
 def test_unknown_optimization_is_refused_before_a_backend_starts(
     monkeypatch: pytest.MonkeyPatch, spec: ModelSpec

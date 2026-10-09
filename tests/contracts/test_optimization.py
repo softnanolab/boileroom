@@ -5,9 +5,11 @@ import pytest
 from boileroom.models.registry import ESMFOLD2_SPEC, OPENDDE_SPEC, PROTENIX_SPEC, ModelSpec
 from boileroom.optimization import (
     DEFAULT_OPTIMIZATION,
+    OPTIMIZATION_MODES,
     GpuInfo,
     OptimizationUnavailableError,
     initialize_core,
+    optimization_modes,
     resolve_optimization,
     retry_initialize,
     validate_optimization,
@@ -39,11 +41,50 @@ def test_optimization_is_a_static_option(spec: ModelSpec) -> None:
     assert "optimization" in spec.contract.static_config_keys
 
 
-@pytest.mark.parametrize("mode", ["turbo", "fast"])
+@pytest.mark.parametrize("mode", ["turbo", "fast", "big"])
 def test_unknown_mode_is_rejected(mode: str) -> None:
-    """``fast`` was removed (#125): it is refused like any other unknown mode."""
+    """``fast`` was withdrawn for every family (#125) and is only offered where a family lists it."""
     with pytest.raises(ValueError, match="optimization must be one of"):
         validate_optimization(mode)
+
+
+@pytest.mark.parametrize("mode", ["fast", "big"])
+@pytest.mark.parametrize("family", ["esmfold2", "protenix", "opendde", "boltz2", None])
+def test_fast_and_big_are_refused_outside_the_families_that_list_them(family: str | None, mode: str) -> None:
+    assert optimization_modes(family) == OPTIMIZATION_MODES
+    with pytest.raises(ValueError, match=rf"optimization must be one of \['vanilla', 'exact'\], got '{mode}'"):
+        validate_optimization(mode, family)
+    if family is not None:
+        with pytest.raises(ValueError, match="optimization must be one of"):
+            resolve_optimization(family, mode, A100)
+
+
+def test_rf3_lists_fast_and_big_next_to_the_shared_modes() -> None:
+    assert optimization_modes("rf3") == (*OPTIMIZATION_MODES, "fast", "big")
+    assert [validate_optimization(mode, "rf3") for mode in optimization_modes("rf3")] == list(optimization_modes("rf3"))
+    with pytest.raises(ValueError, match="optimization must be one of"):
+        validate_optimization("turbo", "rf3")
+
+
+@pytest.mark.parametrize("mode", ["fast", "big"])
+@pytest.mark.parametrize("gpu", [A100, H100, H200])
+def test_rf3_kit_modes_resolve_on_a100_and_h100(gpu: GpuInfo, mode: str) -> None:
+    resolution = resolve_optimization("rf3", mode, gpu)
+    assert (resolution.requested, resolution.active) == (mode, mode)
+    assert resolution.kit_config == ("a100" if gpu is A100 else "h100")
+
+
+@pytest.mark.parametrize("mode", ["fast", "big"])
+@pytest.mark.parametrize("gpu", [L4, L40S])
+def test_rf3_kit_modes_are_refused_by_name_on_sm89(gpu: GpuInfo, mode: str) -> None:
+    with pytest.raises(OptimizationUnavailableError, match=rf"'{mode}' cannot run rf3 on {gpu.name} \(sm89\)"):
+        resolve_optimization("rf3", mode, gpu)
+
+
+@pytest.mark.parametrize("mode", ["fast", "big"])
+def test_rf3_kit_modes_are_refused_on_another_sm80_card(mode: str) -> None:
+    with pytest.raises(OptimizationUnavailableError, match="NVIDIA A30"):
+        resolve_optimization("rf3", mode, A30)
 
 
 @pytest.mark.parametrize("family", ["esmfold2", "protenix", "opendde"])
