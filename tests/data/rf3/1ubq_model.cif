@@ -6,13 +6,13 @@ _entry.date     2026-10-09
 _entry.time     16:25:28
 #
 loop_
-_chem_comp_bond.pdbx_ordinal 
-_chem_comp_bond.comp_id 
-_chem_comp_bond.atom_id_1 
-_chem_comp_bond.atom_id_2 
-_chem_comp_bond.value_order 
-_chem_comp_bond.pdbx_aromatic_flag 
-_chem_comp_bond.pdbx_stereo_config 
+_chem_comp_bond.pdbx_ordinal
+_chem_comp_bond.comp_id
+_chem_comp_bond.atom_id_1
+_chem_comp_bond.atom_id_2
+_chem_comp_bond.value_order
+_chem_comp_bond.pdbx_aromatic_flag
+_chem_comp_bond.pdbx_stereo_config
 1   MET N   CA  SING N ?
 2   MET CA  C   SING N ?
 3   MET CA  CB  SING N ?
@@ -148,27 +148,27 @@ _chem_comp_bond.pdbx_stereo_config
 133 HIS CE1 NE2 SING Y ?
 #
 loop_
-_atom_site.group_PDB 
-_atom_site.type_symbol 
-_atom_site.label_atom_id 
-_atom_site.label_alt_id 
-_atom_site.label_comp_id 
-_atom_site.label_asym_id 
-_atom_site.label_entity_id 
-_atom_site.label_seq_id 
-_atom_site.pdbx_PDB_ins_code 
-_atom_site.auth_seq_id 
-_atom_site.auth_comp_id 
-_atom_site.auth_asym_id 
-_atom_site.auth_atom_id 
-_atom_site.id 
-_atom_site.B_iso_or_equiv 
-_atom_site.occupancy 
-_atom_site.pdbx_formal_charge 
-_atom_site.Cartn_x 
-_atom_site.Cartn_y 
-_atom_site.Cartn_z 
-_atom_site.pdbx_PDB_model_num 
+_atom_site.group_PDB
+_atom_site.type_symbol
+_atom_site.label_atom_id
+_atom_site.label_alt_id
+_atom_site.label_comp_id
+_atom_site.label_asym_id
+_atom_site.label_entity_id
+_atom_site.label_seq_id
+_atom_site.pdbx_PDB_ins_code
+_atom_site.auth_seq_id
+_atom_site.auth_comp_id
+_atom_site.auth_asym_id
+_atom_site.auth_atom_id
+_atom_site.id
+_atom_site.B_iso_or_equiv
+_atom_site.occupancy
+_atom_site.pdbx_formal_charge
+_atom_site.Cartn_x
+_atom_site.Cartn_y
+_atom_site.Cartn_z
+_atom_site.pdbx_PDB_model_num
 ATOM N N   . MET A 0 1  . 1  MET A N   0   0.8786076307296753 1.0 ?  4.7035494    8.599555     -9.030551    1
 ATOM C CA  . MET A 0 1  . 1  MET A CA  1   0.8841114640235901 1.0 ?  5.6628957    7.6576834    -8.453672    1
 ATOM C C   . MET A 0 1  . 1  MET A C   2   0.8881367444992065 1.0 ?  5.006134     6.3415494    -8.10198     1

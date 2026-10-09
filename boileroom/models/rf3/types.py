@@ -2,7 +2,7 @@
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 
@@ -41,7 +41,7 @@ class RF3Output(StructurePrediction):
         self.ptm = _normalize_scalar_scores(self.ptm, "RF3 pTM") or _extract_scalar(self.confidence, "ptm")
         self.iptm = _normalize_scalar_scores(self.iptm, "RF3 ipTM") or _extract_scalar(self.confidence, "iptm")
         self.plddt = _normalize_plddt(self.plddt)
-        self.atom_plddt = _normalize_plddt(self.atom_plddt)  # type: ignore[assignment]
+        self.atom_plddt = cast(list[np.ndarray] | None, _normalize_plddt(self.atom_plddt))
 
 
 def _normalize_plddt(values: Sequence[np.ndarray | None] | None) -> list[np.ndarray | None] | None:
