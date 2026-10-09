@@ -24,7 +24,7 @@ A30 = GpuInfo("NVIDIA A30", (8, 0))
 
 
 @pytest.mark.parametrize("family", ["esmfold2", "protenix", "opendde"])
-@pytest.mark.parametrize("mode", ["exact", "fast"])
+@pytest.mark.parametrize("mode", ["exact"])
 def test_same_capability_other_card_is_refused(family: str, mode: str) -> None:
     with pytest.raises(OptimizationUnavailableError, match="NVIDIA A30"):
         resolve_optimization(family, mode, A30)
@@ -39,9 +39,11 @@ def test_optimization_is_a_static_option(spec: ModelSpec) -> None:
     assert "optimization" in spec.contract.static_config_keys
 
 
-def test_unknown_mode_is_rejected() -> None:
+@pytest.mark.parametrize("mode", ["turbo", "fast"])
+def test_unknown_mode_is_rejected(mode: str) -> None:
+    """``fast`` was removed (#125): it is refused like any other unknown mode."""
     with pytest.raises(ValueError, match="optimization must be one of"):
-        validate_optimization("turbo")
+        validate_optimization(mode)
 
 
 @pytest.mark.parametrize("family", ["esmfold2", "protenix", "opendde"])
@@ -53,7 +55,7 @@ def test_vanilla_resolves_on_any_gpu(family: str, gpu: GpuInfo | None) -> None:
 
 
 @pytest.mark.parametrize("family", ["esmfold2", "protenix", "opendde"])
-@pytest.mark.parametrize("mode", ["exact", "fast"])
+@pytest.mark.parametrize("mode", ["exact"])
 @pytest.mark.parametrize("gpu", [A100, H100, H200])
 def test_kit_modes_resolve_on_a100_and_h100(family: str, mode: str, gpu: GpuInfo) -> None:
     resolution = resolve_optimization(family, mode, gpu)
@@ -62,7 +64,7 @@ def test_kit_modes_resolve_on_a100_and_h100(family: str, mode: str, gpu: GpuInfo
 
 
 @pytest.mark.parametrize("family", ["esmfold2", "protenix", "opendde"])
-@pytest.mark.parametrize("mode", ["exact", "fast"])
+@pytest.mark.parametrize("mode", ["exact"])
 @pytest.mark.parametrize("gpu", [L4, L40S])
 def test_kit_modes_refused_by_name_on_sm89(family: str, mode: str, gpu: GpuInfo) -> None:
     with pytest.raises(OptimizationUnavailableError, match=rf"{mode!r} cannot run {family} on {gpu.name} \(sm89\)"):
@@ -97,7 +99,7 @@ def test_esmfold2_core_refuses_before_loading_weights(monkeypatch: pytest.Monkey
     from boileroom.models.esmfold2 import core as esmfold2_core
 
     monkeypatch.setattr(esmfold2_core, "detect_gpu", lambda device=None: L4)
-    core = esmfold2_core.ESMFold2Core({"optimization": "fast"})
+    core = esmfold2_core.ESMFold2Core({"optimization": "exact"})
     with pytest.raises(OptimizationUnavailableError, match="cannot run esmfold2 on NVIDIA L4"):
         core._activate_optimization()
     assert core.model is None
@@ -173,7 +175,7 @@ class _FailingCore:
             raise self.error
 
 
-@pytest.mark.parametrize("mode", ["vanilla", "exact", "fast"])
+@pytest.mark.parametrize("mode", ["vanilla", "exact"])
 @pytest.mark.parametrize(
     "error", [OptimizationUnavailableError("needs the kit image"), ValueError("bad config"), TypeError("boom")]
 )

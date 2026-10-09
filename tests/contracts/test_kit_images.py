@@ -1,4 +1,4 @@
-"""Contract tests for the optimization-kit images (ESMFold2 and Protenix ``exact`` / ``fast``)."""
+"""Contract tests for the optimization-kit images (ESMFold2, Protenix and RF3 ``exact``)."""
 
 import re
 from pathlib import Path
@@ -194,7 +194,7 @@ def test_vanilla_runs_on_the_stock_modal_class(monkeypatch: pytest.MonkeyPatch, 
 
 
 @pytest.mark.parametrize("spec", KIT_SPECS, ids=lambda spec: spec.key)
-@pytest.mark.parametrize("mode", ["exact", "fast"])
+@pytest.mark.parametrize("mode", ["exact"])
 def test_kit_modes_run_on_the_kit_modal_class(monkeypatch: pytest.MonkeyPatch, spec: ModelSpec, mode: str) -> None:
     records = _install_fake_backends(monkeypatch)
     _initialize(spec, "modal", {"optimization": mode})
@@ -227,7 +227,7 @@ def test_vanilla_apptainer_keeps_the_stock_image_and_interpreter(
 def test_kit_apptainer_uses_the_kit_image_and_its_interpreter(monkeypatch: pytest.MonkeyPatch, spec: ModelSpec) -> None:
     records = _install_fake_backends(monkeypatch)
     kit_spec = get_kit_image_spec(spec.key)
-    _initialize(spec, "apptainer:dev", {"optimization": "fast"})
+    _initialize(spec, "apptainer:dev", {"optimization": "exact"})
     assert records["image_uri"] == f"docker://{format_image_reference(kit_spec.image_name, 'dev')}"
     assert records["kwargs"]["python_version"] == kit_spec.python_version
 
@@ -250,7 +250,7 @@ def test_opendde_checks_optimization_in_the_caller_and_keeps_its_one_image(monke
     with pytest.raises(ValueError, match="optimization must be one of"):
         _initialize(OPENDDE_SPEC, "modal", {"optimization": "turbo"})
     assert "started" not in records
-    _initialize(OPENDDE_SPEC, "modal", {"optimization": "fast"})
+    _initialize(OPENDDE_SPEC, "modal", {"optimization": "exact"})
     assert records["modal_cls"] is resolve_object(OPENDDE_SPEC.modal_class_path)  # type: ignore[arg-type]
 
 
