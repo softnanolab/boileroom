@@ -63,7 +63,7 @@ def _resolve_checkpoint(config: dict[str, Any]) -> Path:
         return path
     root = Path(os.environ["RF3_ROOT_DIR"])
     path = root / CHECKPOINT_NAME
-    if path.is_file() and path.stat().st_size == CHECKPOINT_BYTES:
+    if path.is_file() and path.stat().st_size == CHECKPOINT_BYTES and _sha256(path) == CHECKPOINT_SHA256:
         return path
     root.mkdir(parents=True, exist_ok=True)
     partial = path.with_name(f"{path.name}.{os.getpid()}.part")
@@ -81,6 +81,11 @@ def _resolve_checkpoint(config: dict[str, Any]) -> Path:
     finally:
         partial.unlink(missing_ok=True)
     return path
+
+
+def _sha256(path: Path) -> str:
+    with path.open("rb") as handle:
+        return hashlib.file_digest(handle, "sha256").hexdigest()
 
 
 def _enable_kit(mode: str) -> None:

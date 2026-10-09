@@ -23,8 +23,9 @@ rf3_kit_image = get_modal_kit_image("rf3")
 
 @app.cls(
     image=rf3_kit_image,
-    # The kit serves A100 and H100/H200; the checkpoint downloads on the first call.
-    gpu="A100-40GB",
+    # The kit serves A100 and H100/H200 (its A100 configuration targets the 80 GB card); the checkpoint downloads on the
+    # first call.
+    gpu="A100-80GB",
     timeout=1 * HOURS,
     scaledown_window=10 * MINUTES,
     volumes={MODAL_MODEL_DIR: model_weights},

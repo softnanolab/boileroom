@@ -32,6 +32,11 @@ from boileroom.utils import HOURS, MODAL_MODEL_DIR
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 DATA_DIR = REPO_ROOT / "tests" / "data" / "rf3"
 FOUNDRY_COMMIT = "4010e3e2e7350edada3e25a45c908c6bf407df4d"
+#: Each entry's output must contain all of these; a fold that writes a different layout fails instead of a partial reference.
+#: Checked in this order because ``_summary_confidences.json`` also ends with ``_confidences.json``.
+ARTIFACT_SUFFIXES = ("_model.cif", "_summary_confidences.json", "_confidences.json")
+#: Below the one-hour Modal deadline, so one stalled fold names itself instead of the whole job timing out.
+FOLD_TIMEOUT_SECONDS = 20 * 60
 #: The stock settings the integration test mirrors; ``seed`` and the rest match the test's fold options.
 SETTINGS: dict[str, int | float] = {
     "n_recycles": 10,
@@ -49,6 +54,11 @@ RF3_BIN = "/opt/rf3/bin/rf3"
 GPU = "A100-40GB"
 
 app = modal.App("boileroom-rf3-stock-reference")
+
+
+def _artifact_suffix(name: str) -> str:
+    """Return the entry of ``ARTIFACT_SUFFIXES`` that names this file, preferring the most specific one."""
+    return next(suffix for suffix in ARTIFACT_SUFFIXES if name.endswith(suffix))
 
 
 @app.function(
@@ -80,16 +90,31 @@ def run_stock(settings: dict[str, int | float], entries: dict[str, list[str]]) -
             with open(input_json, "w", encoding="utf-8") as handle:
                 json.dump(spec, handle)
             out_dir = os.path.join(work, f"out_{entry}")
-            subprocess.run(
-                [RF3_BIN, "fold", f"inputs={input_json}", f"ckpt_path={checkpoint}", f"out_dir={out_dir}", *overrides],
-                check=True,
-            )
+            try:
+                subprocess.run(
+                    [
+                        RF3_BIN,
+                        "fold",
+                        f"inputs={input_json}",
+                        f"ckpt_path={checkpoint}",
+                        f"out_dir={out_dir}",
+                        *overrides,
+                    ],
+                    check=True,
+                    timeout=FOLD_TIMEOUT_SECONDS,
+                )
+            except subprocess.TimeoutExpired as error:
+                raise SystemExit(f"rf3 fold for {entry} did not finish within {FOLD_TIMEOUT_SECONDS} s") from error
             sample_dir = pathlib.Path(out_dir) / entry
-            written[entry] = {
+            files = {
                 path.name: path.read_bytes()
                 for path in sample_dir.glob(f"{entry}_*")
-                if path.name.endswith(("_model.cif", "_summary_confidences.json", "_confidences.json"))
+                if path.name.endswith(ARTIFACT_SUFFIXES)
             }
+            kinds = {_artifact_suffix(name) for name in files}
+            if missing := [suffix for suffix in ARTIFACT_SUFFIXES if suffix not in kinds]:
+                raise SystemExit(f"rf3 fold wrote no file ending {missing} for {entry} under {sample_dir}")
+            written[entry] = files
     return written
 
 

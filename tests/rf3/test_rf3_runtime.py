@@ -244,6 +244,22 @@ def test_checkpoint_is_downloaded_verified_and_cached(
     assert list(first.parent.glob("*.part")) == []
 
 
+def test_cached_checkpoint_with_the_right_size_but_other_bytes_is_downloaded_again(
+    runtime: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A file of the pinned size is not trusted on size alone: its digest must match before it is loaded."""
+    root = tmp_path / "root"
+    root.mkdir()
+    monkeypatch.setenv("RF3_ROOT_DIR", str(root))
+    urlopen = serve(monkeypatch, runtime, b"released weights")
+    (root / runtime.CHECKPOINT_NAME).write_bytes(b"corrupted weight")  # the same 16 bytes
+
+    resolved = runtime._resolve_checkpoint({})
+
+    assert resolved.read_bytes() == b"released weights"
+    urlopen.assert_called_once()
+
+
 def test_corrupted_download_is_rejected_and_leaves_nothing_behind(
     runtime: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

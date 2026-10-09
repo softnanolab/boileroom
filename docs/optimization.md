@@ -1,14 +1,15 @@
 # Kit optimization modes (`optimization`)
 
-ESMFold2 (including ESMFold2-Fast), Protenix and OpenDDE accept a static init option
-`optimization = "vanilla" | "exact" | "fast"` (default `"vanilla"`); RF3 accepts `"vanilla" | "exact"` (the kit has no `fast`
-recipe for it). `exact` and `fast` drive the
+ESMFold2 (including ESMFold2-Fast), Protenix, OpenDDE and RF3 accept a static init option
+`optimization = "vanilla" | "exact"` (default `"vanilla"`). Boileroom exposes only these two modes (#125 removed `fast`; the pinned
+kits themselves also have `fast`, and RF3's has `big`, none of which boileroom selects). The kit modes drive the
 prebuilt kernels of [anthropics/uplifting-biomolecular-modeling](https://github.com/anthropics/uplifting-biomolecular-modeling)
 (Apache-2.0, kit commit `f4f62fa`).
 
 - `vanilla`: unchanged behavior.
 - `exact`: byte-identical to the unoptimized path when the kit's `--det 1` recipe is applied.
-- `fast`: numerically different, within seed-to-seed spread.
+- `fast`: numerically different, within seed-to-seed spread. No longer selectable in boileroom (see above); the tables below
+  keep the numbers measured with it.
 
 A mode is all of its levers on a GPU class. The mode is resolved against the visible GPU before any
 weights load, and a GPU or stack the kit cannot serve fails by name with `OptimizationUnavailableError`.
@@ -169,7 +170,7 @@ Same GPU, vanilla vs kit (median warm wall time per fold and cost; speedup equal
 
 RF3 rows are a different, smaller measurement: one 328-residue T4 lysozyme homodimer (no MSA), the defaults (10 recycles, 50 steps,
 5 samples), `seed=0`, and the mean of the two warm calls after a cold first call (n = 2, so treat the ratios as indicative; the
-cold first call took 26-38 s). The H100 vanilla figure is from a separate run. RF3 has no `fast` recipe.
+cold first call took 26-38 s). The H100 vanilla figure is from a separate run. RF3 was measured in `vanilla` and `exact` only.
 
 OpenDDE rows use the same 3 complexes but boileroom's default sampler settings (10 cycles, 200 steps, 5 samples per
 seed, A100-80GB SXM4 / H100), so their absolute seconds are not comparable with the Protenix rows above, which used the

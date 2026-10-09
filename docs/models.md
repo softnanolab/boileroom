@@ -138,7 +138,7 @@ from boileroom import RF3
 
 with RF3(backend="modal", config={"diffusion_batch_size": 5, "optimization": "exact"}) as model:
     result = model.fold(
-        "SEQ_A:SEQ_B",
+        "MKQLEDKVEELLSKNYHLENEVARLKKLVGER:MKQLEDKVEELLSKNYHLENEVARLKKLVGER",
         options={"seed": 0, "include_fields": ["pae", "token_chain_ids", "token_res_ids", "ptm", "iptm", "cif"]},
     )
 
