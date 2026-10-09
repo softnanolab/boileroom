@@ -57,15 +57,19 @@ def _stock_config() -> dict[str, Any]:
 
 
 def _assert_ran_on(result: Any, device: str) -> None:
-    """Check the card the kit reported belongs to ``device``'s family, so a claim about a fold names the right GPU.
+    """Check the card the kit reported is the one ``device`` asked for, so a claim about a fold names the right GPU.
 
     Modal can serve a request from a container started for another card when several wrappers with different devices
     live in one process, so the requested ``device`` alone does not say where a fold ran. An H100 request may be served
-    by an H200, as Modal documents.
+    by an H200, as Modal documents. An A100 request names its memory size (``A100-80GB``), which the card name carries
+    too (``NVIDIA A100-SXM4-80GB``, ``NVIDIA A100 80GB PCIe``).
     """
-    card = str((result.metadata.optimization or {}).get("gpu_name")).upper()
-    family = ("H100", "H200") if device.upper().startswith("H") else (device.upper().split("-")[0],)
-    assert any(name in card for name in family), f"asked for {device}, ran on {card}"
+    card = str((result.metadata.optimization or {}).get("gpu_name")).upper().replace(" ", "")
+    model, _, memory = device.upper().partition("-")
+    if model.startswith("H"):
+        assert any(name in card for name in ("H100", "H200")), f"asked for {device}, ran on {card}"
+    else:
+        assert model in card and memory in card, f"asked for {device}, ran on {card}"
 
 
 def _kit_device(mode: str, device_option: str | None) -> str:
