@@ -1,7 +1,8 @@
 # Kit optimization modes (`optimization`)
 
 ESMFold2 (including ESMFold2-Fast), Protenix and OpenDDE accept a static init option
-`optimization = "vanilla" | "exact" | "fast"` (default `"vanilla"`). `exact` and `fast` drive the
+`optimization = "vanilla" | "exact" | "fast"` (default `"vanilla"`); RF3 accepts `"vanilla" | "exact"` (the kit has no `fast`
+recipe for it). `exact` and `fast` drive the
 prebuilt kernels of [anthropics/uplifting-biomolecular-modeling](https://github.com/anthropics/uplifting-biomolecular-modeling)
 (Apache-2.0, kit commit `f4f62fa`).
 
@@ -16,7 +17,7 @@ weights load, and a GPU or stack the kit cannot serve fails by name with `Optimi
 | --- | --- | --- |
 | A100 | sm80 | served (kit config `a100`) |
 | H100, H200 | sm90 | served (kit config `h100`; Modal may schedule an H100 request onto an H200) |
-| L4, L40S | sm89 | refused by name (ESMFold2: kit levers need more shared memory or have no tile table; Protenix: no BLK2 launch cells) |
+| L4, L40S | sm89 | refused by name (ESMFold2: kit levers need more shared memory or have no tile table; Protenix: no BLK2 launch cells; RF3: the kit serves A100 and H100/H200 only) |
 
 ## Requirements
 
@@ -30,14 +31,19 @@ The kit ships its own pinned stack, so `exact` and `fast` need a kit image, not 
 - OpenDDE: python 3.11, torch 2.7.1+cu126, cuequivariance 0.10.0, opendde 1.1.1, CUDA 12.6 `nvcc` and gcc at run time
   (Triton JIT), libstdc++ from GCC 13 for `exact`, driver 560+. Unlike the other two families it has no separate kit image: the
   stock `boileroom-opendde` image installs the pinned kit commit, and the kit is enabled in the worker before `runner` is imported.
+- RF3: python 3.12, torch 2.13.0+cu130, cuequivariance 0.11.1, rc-foundry (RF3 `4010e3e`), driver 580+. The kit is enabled
+  (`rosettafold3_opt.enable("exact", strict=True)`) before the first `rf3` import, in the kit image's patched interpreter
+  `/kit/rosettafold3/opt/venv/bin/python`. `vanilla` runs in the stock `boileroom-rf3` image (torch 2.7.1+cu126,
+  cuequivariance 0.10.0, `/opt/rf3` virtualenv), which the kit image does not replace.
 
-For ESMFold2 and Protenix the repository carries the definition of that separate kit image, and `optimization="vanilla"` never
+For ESMFold2, Protenix and RF3 the repository carries the definition of that separate kit image, and `optimization="vanilla"` never
 touches it:
 
 | Family | Dockerfile | Image name | Base |
 | --- | --- | --- | --- |
 | ESMFold2 | [`boileroom/models/esmfold2/kit/Dockerfile`](../boileroom/models/esmfold2/kit/Dockerfile) (+ `kit_wheels.sh`, `kit_finish.sh`) | `boileroom-esmfold2-kit` | `python:3.12.10-slim-bookworm` |
 | Protenix | [`boileroom/models/protenix/kit/Dockerfile`](../boileroom/models/protenix/kit/Dockerfile) | `boileroom-protenix-kit` | `nvidia/cuda:13.0.1-cudnn-devel-ubuntu24.04` |
+| RF3 | [`boileroom/models/rf3/kit/Dockerfile`](../boileroom/models/rf3/kit/Dockerfile) | `boileroom-rf3-kit` | `nvidia/cuda:12.6.3-runtime-ubuntu22.04` (the kit's CUDA 13 stack is installed from wheels) |
 
 Both Dockerfiles fetch the kit at the pinned commit `f4f62fa6592ae4938d49b1757bea0cfeff9f468e` and follow the kit's own
 `<family>/environment/Dockerfile` at that commit: the same lock, versions, checksums and compile recipe. The changes are the
@@ -48,10 +54,10 @@ were made from; the benchmark recipe itself lived outside the repository, so wha
 the original files.
 
 **Routing.** The wrapper picks the image from `optimization`: `vanilla` (the default) runs the stock `boileroom-esmfold2` /
-`boileroom-protenix` image and Modal class as before, and `exact` / `fast` run `ModalESMFold2Kit` / `ModalProtenixKit` (Modal)
-or the kit image (Apptainer). The kit classes live on their own Modal apps (`boileroom-esmfold2-kit`,
-`boileroom-protenix-kit`), so using vanilla never builds a kit image. A kit class asks for an A100 (ESMFold2 `A100-80GB`,
-Protenix `A100-40GB`); pass `device="H100"` (or `H200`) to run on those.
+`boileroom-protenix` / `boileroom-rf3` image and Modal class as before, and `exact` / `fast` run `ModalESMFold2Kit` /
+`ModalProtenixKit` / `ModalRF3Kit` (Modal) or the kit image (Apptainer). The kit classes live on their own Modal apps
+(`boileroom-esmfold2-kit`, `boileroom-protenix-kit`, `boileroom-rf3-kit`), so using vanilla never builds a kit image. A kit
+class asks for an A100 (ESMFold2 and RF3 `A100-80GB`, Protenix `A100-40GB`); pass `device="H100"` (or `H200`) to run on those.
 
 **Where the image comes from.** `BOILEROOM_KIT_IMAGE_SOURCE` selects it:
 
@@ -65,6 +71,7 @@ Protenix `A100-40GB`); pass `device="H100"` (or `H200`) to run on those.
   images. This repository's CI does not build the kit images (the ESMFold2 compile takes hours on a GitHub-hosted
   runner); they are built locally and pushed by hand. Both are on `docker.io/jakublala` as `boileroom-esmfold2-kit` and
   `boileroom-protenix-kit` under the temporary tag `sha-dc652b0`, to be retagged to the release version after merge.
+  `boileroom-rf3-kit` is not published; use `build`, or build and push it as below.
 
 Apptainer only pulls from a registry, so a kit mode on the Apptainer backend needs a published image: set
 `BOILEROOM_KIT_IMAGE_SOURCE=registry` or pass `backend="apptainer:<tag>"`. Without either, boileroom refuses the call up
@@ -75,6 +82,7 @@ To build an image yourself on a many-core machine and use it from Modal or Appta
 ```bash
 docker build -f boileroom/models/protenix/kit/Dockerfile boileroom/models/protenix/kit -t <repository>/boileroom-protenix-kit:<tag>
 docker build -f boileroom/models/esmfold2/kit/Dockerfile boileroom/models/esmfold2/kit -t <repository>/boileroom-esmfold2-kit:<tag>
+docker build -f boileroom/models/rf3/kit/Dockerfile boileroom/models/rf3/kit -t <repository>/boileroom-rf3-kit:<tag>
 # H100/H200 only, a smaller ESMFold2 compile: add --build-arg STACK=img_ef2_fa
 docker push <repository>/boileroom-esmfold2-kit:<tag>   # and likewise for protenix
 
@@ -89,7 +97,8 @@ identity is the Dockerfile plus those scripts at the pinned kit commit.
 27 GB), which differ from the single revision (`ESMFOLD2_HF_REVISION`) that `vanilla` loads. They are not in the image. On the
 first kit-mode call the core downloads the snapshots for the requested variant into `$MODEL_DIR/esmfold2/kit-hf` (on Modal, the
 `model_weights` volume) and reuses them afterwards; a failed download raises `OptimizationUnavailableError`. Protenix keeps
-downloading its checkpoint into `PROTENIX_ROOT_DIR`, as in vanilla.
+downloading its checkpoint into `PROTENIX_ROOT_DIR`, as in vanilla. RF3 uses the same checkpoint (`rf3_foundry_01_24`, sha256-verified,
+downloaded into `$MODEL_DIR/rf3` on first use) in every mode; the kit changes the kernels, not the weights.
 
 **What has been exercised.** The Dockerfiles, routing, builders, the Apptainer interpreter selection and the weight bootstrap
 are covered by offline contract and unit tests (`tests/contracts/test_kit_images.py`, the kit tests in
@@ -101,6 +110,7 @@ are covered by offline contract and unit tests (`tests/contracts/test_kit_images
 | ESMFold2 | `fast` A100, `exact` A100, `fast` H100 | 98 s, 74 s, 166 s | 0.4 s, 0.5 s, 0.4 s (vanilla A100: 1.9 s) |
 | Protenix | `fast` A100 and H100, `exact` A100 and H100, `fast` with a template (A100) | 65-208 s | `fast` 4.9 s A100 / 4.3 s H100, `exact` 3.1 s A100 / 2.3 s H100 (vanilla A100: 5.5 s) |
 | OpenDDE | `exact` and `fast` A100 | 45 s, 62 s | 4.5 s, 4.3 s (vanilla: 7.0 s, 15 folds) |
+| RF3 | `exact` A100-80GB and H100 (2026-10-09) | 38.4 s, 33.1 s (vanilla A100-80GB: 30.9 s) | 16.8 s A100, 12.2 s H100 (vanilla: 21.1 s A100, 16.8 s H100; 328-residue homodimer, defaults) |
 
 The cold fold includes the model load (plus the one-off weight download the first time on a volume). ESMFold2 `fast` on A100
 gave ptm 0.173 against vanilla's 0.176 for the same sequence. OpenDDE `exact` and `fast` differ from vanilla by up to several
@@ -108,7 +118,15 @@ angstroms of C-alpha RMSD at the same seed on two-chain complexes, but two same-
 this is the sampler's run-to-run variation, not evidence the kit is wrong; `exact` is the more repeatable (0.5 A between runs).
 Do not rely on bit-identical output to vanilla for OpenDDE.
 
-Not exercised: the Apptainer kit path, `kit_msa` for ESMFold2, a Protenix or OpenDDE kit fold with a caller-supplied MSA, and
+RF3 `exact` on A100-80GB and H100 reported `optimization={'requested': 'exact', 'active': 'exact', 'kit_config': 'a100' | 'h100'}`
+with the card name and compute capability. Against stock `rf3 fold` output at seed 0 (see `tests/data/rf3/manifest.json`), the kit's
+C-alpha RMSD is 0.71 A for ubiquitin and 0.39-0.41 A for the GCN4 homodimer (vanilla: 0.19 A and 0.34 A), with scores within
+1.5e-3. Over eight seeds the worst kit RMSD is 0.9 A (ubiquitin) and 0.41 A (homodimer), so the kit stays inside the sampler's
+own seed-to-seed spread. As the worker runs `python -I`, which ignores `PYTHONHASHSEED`, `exact` is checked by tolerance and
+not bit-for-bit against vanilla.
+
+Not exercised: the Apptainer kit path (also for RF3, whose kit image carries `fastapi`/`uvicorn` in the system interpreter but was
+never started under Apptainer), `kit_msa` for ESMFold2, a Protenix, OpenDDE or RF3 kit fold with a caller-supplied MSA, and
 OpenDDE on H100. The benchmark numbers below were measured on images assembled from the original recipe. The Protenix
 Dockerfile keeps `TORCH_CUDA_ARCH_LIST="9.0+PTX"` from that recipe, whose configured card was the H100; the A100 runs above
 completed, but whether stock's fast-LayerNorm extension (built for compute capability 9.0) is used on an A100 or falls back was
@@ -146,6 +164,12 @@ Same GPU, vanilla vs kit (median warm wall time per fold and cost; speedup equal
 | Protenix v2 | H100 | 12.4 s, $0.0136 | 1.9 s, $0.0021 (6.4x) | 1.4 s, $0.0015 (9.1x) |
 | OpenDDE | A100 | 16.1 s, $0.0111 | 12.7 s, $0.0088 (1.3x) | 9.3 s, $0.0064 (1.7x) |
 | OpenDDE | H100 | 14.0 s, $0.0154 | 11.4 s, $0.0125 (1.2x) | 5.8 s, $0.0064 (2.4x) |
+| RF3 | A100-80GB | 21.1 s, $0.0146 | 16.8 s, $0.0117 (1.25x) | not available |
+| RF3 | H100 | 16.8 s, $0.0184 | 12.2 s, $0.0134 (1.37x) | not available |
+
+RF3 rows are a different, smaller measurement: one 328-residue T4 lysozyme homodimer (no MSA), the defaults (10 recycles, 50 steps,
+5 samples), `seed=0`, and the mean of the two warm calls after a cold first call (n = 2, so treat the ratios as indicative; the
+cold first call took 26-38 s). The H100 vanilla figure is from a separate run. RF3 has no `fast` recipe.
 
 OpenDDE rows use the same 3 complexes but boileroom's default sampler settings (10 cycles, 200 steps, 5 samples per
 seed, A100-80GB SXM4 / H100), so their absolute seconds are not comparable with the Protenix rows above, which used the

@@ -67,9 +67,9 @@ per-residue arrays on `[0, 1]`, and scalar scores such as `ptm` and `iptm` are r
 In `0.3.1`, this replaces ESMFold's old padded pLDDT batch array and moves Boltz `ptm`/`iptm` from nested
 `confidence` dictionaries to top-level fields.
 
-Protenix, OpenDDE and AlphaFold2-Multimer keep their model runners loaded between `fold()` calls. Create one model instance and reuse it for successive jobs, just like the other wrappers. They fetch MSAs from the ColabFold MMseqs2 server by default; none needs local genetic databases. Callers can supply their own alignment with `options={"msa": ...}` (Protenix, OpenDDE, ESMFold2 and AlphaFold2-Multimer) and mmCIF structure templates with `options={"templates": {...}}` (Protenix and OpenDDE only). See [docs/models.md](docs/models.md) for examples, configuration and Modal GPU defaults.
+Protenix, OpenDDE, RF3 and AlphaFold2-Multimer keep their model runners loaded between `fold()` calls. Create one model instance and reuse it for successive jobs, just like the other wrappers. Protenix, OpenDDE and AlphaFold2-Multimer fetch MSAs from the ColabFold MMseqs2 server by default; none needs local genetic databases. RF3 runs no MSA search at all and folds each chain from its sequence unless you pass alignments. Callers can supply their own alignment with `options={"msa": ...}` (Protenix, OpenDDE, RF3, ESMFold2 and AlphaFold2-Multimer) and mmCIF structure templates with `options={"templates": {...}}` (Protenix and OpenDDE only). See [docs/models.md](docs/models.md) for examples, configuration and Modal GPU defaults.
 
-ESMFold2, Protenix and OpenDDE also accept `config={"optimization": "vanilla" | "exact" | "fast"}` (default `"vanilla"`), which runs the Anthropic kit kernels on A100 or H100/H200 GPUs for a large per-fold speedup. See [docs/optimization.md](docs/optimization.md).
+ESMFold2, Protenix and OpenDDE also accept `config={"optimization": "vanilla" | "exact" | "fast"}` (default `"vanilla"`), and RF3 accepts `"vanilla" | "exact"`, which runs the Anthropic kit kernels on A100 or H100/H200 GPUs for a per-fold speedup. See [docs/optimization.md](docs/optimization.md).
 
 ## Available Models
 
@@ -84,9 +84,10 @@ ESMFold2, Protenix and OpenDDE also accept `config={"optimization": "vanilla" | 
 | Boltz-2   | ✅      | Diffusion-based protein structure prediction | [Boltz / MIT](https://github.com/jwohlwend/boltz) |
 | Protenix  | 🍊      | AlphaFold3-style biomolecular structure prediction (Protenix v2) | [ByteDance](https://github.com/bytedance/Protenix) |
 | OpenDDE   | 🍊      | AF3-style biomolecular structure prediction (OpenDDE v1, Protenix-compatible interface) | [Aureka Research](https://github.com/aurekaresearch/OpenDDE) |
+| RF3       | 🍊      | RoseTTAFold 3 protein structure and complex prediction (weights license unconfirmed, see [docs/models.md](docs/models.md#rf3)) | [RosettaCommons](https://github.com/RosettaCommons/foundry) |
 | AlphaFold2-Multimer | 🍊 | Protein complex prediction via ColabFold (`alphafold2_multimer_v3`) | [Google DeepMind](https://github.com/google-deepmind/alphafold) / [ColabFold](https://github.com/sokrypton/ColabFold) |
 
-> **Licensing:** all bundled model weights are MIT-licensed except **Chai-1**, whose weights are released under the non-commercial Chai Discovery Community License. Review Chai Discovery's terms before using Chai-1 outside research.
+> **Licensing:** all bundled model weights are MIT-licensed except **Chai-1**, whose weights are released under the non-commercial Chai Discovery Community License. Review Chai Discovery's terms before using Chai-1 outside research. The **RF3** code is BSD-3-Clause, but its weights' license has not been confirmed from a primary source, so they are downloaded on first use instead of being baked into the images; check it before redistributing.
 
 ## Development
 
@@ -117,7 +118,7 @@ For Modal integration tests, run the model families in parallel shards:
 uv run pytest -v -n 4 --dist loadgroup -m integration
 ```
 
-This starts four pytest workers and keeps each model family on its own worker, so each model family (Boltz, Chai, ESM2, ESMFold, ESMFold2, Protenix, OpenDDE, AlphaFold2-Multimer) uses its own Modal app without registering unrelated GPU functions in the same app.
+This starts four pytest workers and keeps each model family on its own worker, so each model family (Boltz, Chai, ESM2, ESMFold, ESMFold2, Protenix, OpenDDE, RF3, AlphaFold2-Multimer) uses its own Modal app without registering unrelated GPU functions in the same app.
 
 To run the same integration tests in series, omit xdist:
 
