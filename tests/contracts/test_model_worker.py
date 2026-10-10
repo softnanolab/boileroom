@@ -189,6 +189,22 @@ def test_finish_request_runs_after_cache_release_before_reply(worker, tmp_path) 
     assert note.read_text() == "finished"
 
 
+def test_worker_allocator_facts_are_sampled_after_finish_request(worker, tmp_path) -> None:
+    """The parent receives the child's post-cleanup allocation, including byte-to-MiB conversion."""
+    instance, config = worker
+    runtime_path = tmp_path / "runtime.py"
+    runtime_path.write_text(
+        runtime_path.read_text()
+        + "    def finish_request(self):\n"
+        + "        from types import SimpleNamespace\n"
+        + "        cuda = SimpleNamespace(is_initialized=lambda: True, memory_allocated=lambda: 42 * 1024**2, memory_reserved=lambda: 84 * 1024**2)\n"
+        + "        sys.modules['torch'] = SimpleNamespace(cuda=cuda)\n"
+    )
+    payload = instance.predict("ok", str(tmp_path / "out"), config)
+    assert payload["gpu.mem.allocated_mib"] == "42"
+    assert payload["gpu.mem.reserved_mib"] == "84"
+
+
 def test_predict_returns_the_runtime_payload(worker, tmp_path) -> None:
     instance, config = worker
     payload = instance.predict("ok", str(tmp_path / "out"), config)

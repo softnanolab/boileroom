@@ -261,7 +261,11 @@ uses a fixed amino-acid composition and fixed termini, shuffled differently on e
 identity and feature ordering while controlling atom-count allocation shapes. The three native lengths 280/320/360
 exceed the geometry LRU of two; the H100 padded case uses 529/577/625. This is a controlled allocation-shape test,
 not a memory bound for arbitrary sequences. Short runs measure every peak from cycle two; runs of at least ten
-cycles measure every peak in the second half. The limit stays 256 MiB, and synthetic 40/75 MiB-per-cycle leaks fail
+cycles measure the second half. Every allocated and reserved peak must stay within 256 MiB of the first settled
+peak. Child workers record their own post-cleanup allocator counters as `predict.gpu.mem.allocated_mib` and
+`predict.gpu.mem.reserved_mib`; parent counters cannot describe a child's tensors. Total device use additionally
+compares the first and last three settled peaks by median, covering sustained direct-CUDA growth while tolerating
+transient variation. All individual device peaks remain in the log. Synthetic 40/75 MiB-per-cycle leaks fail
 the 20-cycle gate. Use `BOILEROOM_MEMORY_CYCLES=20` for the longer test.
 
 On 2026-10-10, variable-composition 20-cycle runs passed for ESMFold2 exact on A100-80GB and Protenix exact on

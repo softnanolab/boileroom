@@ -144,6 +144,18 @@ def _recv(connection: Connection) -> Any:
         return _CLOSED
 
 
+def _record_worker_memory(payload: Any) -> None:
+    """Record the owning interpreter's live tensors and allocator after request cleanup, without importing torch."""
+    cuda = getattr(sys.modules.get("torch"), "cuda", None)
+    if isinstance(payload, dict) and cuda is not None and cuda.is_initialized():
+        payload.update(
+            {
+                "gpu.mem.allocated_mib": str(cuda.memory_allocated() // (1024 * 1024)),
+                "gpu.mem.reserved_mib": str(cuda.memory_reserved() // (1024 * 1024)),
+            }
+        )
+
+
 def _serve(connection: Connection, runtime_path: str, runtime_class: str, work_dir: str) -> None:
     """Own the loaded runtime until its parent closes the pipe or a request fails."""
     try:
@@ -163,6 +175,7 @@ def _serve(connection: Connection, runtime_path: str, runtime_class: str, work_d
             finish = getattr(runtime, "finish_request", None)
             if callable(finish):
                 finish()
+            _record_worker_memory(payload)
             connection.send(("ok", payload))
     except KeyboardInterrupt:
         raise

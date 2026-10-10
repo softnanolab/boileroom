@@ -2,8 +2,8 @@
 
 Every model of the registry runs on one live model through its public wrapper, calling ``fold()`` / ``embed()`` with
 sequences of a few lengths for :data:`CYCLES` cycles. Every output records the GPU memory in use right after its call
-(``metadata.runtime["gpu.mem.used_mib"]``, see ``docs/optimization.md``). After warm-up no measured cycle peak may rise
-by :data:`GROWTH_LIMIT_MIB`. Short traces start at cycle two; traces of ten or more cycles measure the entire second
+(``metadata.runtime["gpu.mem.used_mib"]``, see ``docs/optimization.md``). After warm-up no allocated or reserved cycle peak may rise
+by :data:`GROWTH_LIMIT_MIB`; total device use has a separate sustained-growth guard. Short traces start at cycle two; traces of ten or more cycles measure the entire second
 half, allowing bounded shape-dependent cache fill while rejecting continued growth.
 
 A leak grows on every call instead. The kits' TriMul geometry caches, which the kit's LRU evicted but whose weight
@@ -205,10 +205,13 @@ def test_gpu_memory_stays_flat_across_calls(
         pytest.skip("GPU memory test: needs a GPU device")
     task_method = MODEL_SPECS_BY_KEY[case.model].contract.task_method
     used: list[list[int]] = []
+    allocator: dict[str, list[list[int]]] = {"allocated": [], "reserved": []}
     with output_ctx(), _wrapper(case.model)(backend=backend_option, device=device, config=dict(case.config)) as model:
         task = getattr(model, task_method)
         for cycle in range(CYCLES):
             used.append([])
+            for trace in allocator.values():
+                trace.append([])
             for length in case.lengths:
                 result = task(_sequence(length, cycle), options=dict(case.options))
                 runtime = result.metadata.runtime or {}
@@ -223,20 +226,37 @@ def test_gpu_memory_stays_flat_across_calls(
                             )
                 assert "gpu.mem.used_mib" in runtime, f"{case.id}: the output records no GPU memory: {sorted(runtime)}"
                 used[-1].append(int(runtime["gpu.mem.used_mib"]))
+                for metric, trace in allocator.items():
+                    key = f"gpu.mem.{metric}_mib"
+                    value = runtime.get(f"predict.{key}", runtime.get(key))
+                    if value is not None:
+                        trace[-1].append(int(value))
 
     print(f"{case.id} gpu.mem.used_mib per cycle of {case.lengths}: {used}")
-    _check_memory_plateau(used, case.id)
+    _check_memory_plateau(used, case.id, device=True)
+    for metric, trace in allocator.items():
+        if any(trace):
+            assert all(len(row) == len(case.lengths) for row in trace), f"partial {metric} trace: {trace}"
+            print(f"{case.id} {metric}_mib: {trace}")
+            _check_memory_plateau(trace, f"{case.id} {metric}")
 
 
-def _check_memory_plateau(used: list[list[int]], name: str) -> None:
+def _check_memory_plateau(used: list[list[int]], name: str, *, device: bool = False) -> None:
     """A shape-dependent allocator may warm for several cycles; persistent growth must stop in the second half.
 
-    Long traces retain the original 256 MiB bound, applied to every settled peak.
+    Allocator traces retain the original 256 MiB bound, applied to every settled peak.
+    Device traces additionally reject sustained growth while tolerating transient variation.
     This catches even 40 MiB/cycle leaks over a 20-cycle run while tolerating bounded initial cache fill.
     """
     start = len(used) // 2 if len(used) >= 10 else 1
     settled = [max(cycle) for cycle in used[start:]]
-    growth = max(settled) - settled[0]
+    # Device usage includes direct CUDA allocations and transient driver state.
+    # Retain a sustained-growth guard alongside strict allocator peak bounds.
+    growth = (
+        float(np.median(settled[-3:]) - np.median(settled[:3]))
+        if device and len(used) >= 10
+        else max(settled) - settled[0]
+    )
     assert growth < GROWTH_LIMIT_MIB, (
         f"{name}: GPU memory grew {growth} MiB after warm-up, cycles {start + 1}–{len(used)} "
         f"(limit {GROWTH_LIMIT_MIB} MiB): {used}"
@@ -248,3 +268,13 @@ def test_memory_gate_accepts_bounded_cache_fill_and_rejects_continued_growth() -
     for per_cycle in (40, 75, 900):
         with pytest.raises(AssertionError, match="GPU memory grew"):
             _check_memory_plateau([[4000 + i * per_cycle] for i in range(20)], "leak")
+        with pytest.raises(AssertionError, match="GPU memory grew"):
+            _check_memory_plateau([[4000 + i * per_cycle] for i in range(20)], "device leak", device=True)
+
+
+def test_allocator_peak_gate_remains_strict_when_device_usage_fluctuates() -> None:
+    trace = [[4000] for _ in range(20)]
+    trace[13] = [4700]
+    _check_memory_plateau(trace, "bounded device variation", device=True)
+    with pytest.raises(AssertionError, match="GPU memory grew"):
+        _check_memory_plateau(trace, "retained allocator spike")
