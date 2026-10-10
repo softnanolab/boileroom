@@ -255,6 +255,12 @@ complete sampler `policy.release()` API. It refuses a kit missing that API inste
 `predict.kit.sampler_releases` records this cleanup. On H100, 60 variable-composition folds at 529/577/625 tokens
 remained finite and grew only 62 MiB across cycles 11–20; the previous cleanup grew over 3.5 GiB in that window.
 OpenDDE's final allocator flush runs at the worker boundary, after orphan-cache release and request-frame teardown.
+Its per-call capture warm-up creates new streams: on the pinned PyTorch 2.7.1 Hopper stack, each new stream retains
+a 32 MiB cuBLAS workspace until the 32-stream pool fills. Allocator snapshots confirmed this bounded warm-up and
+ordinary split-segment fragmentation, with no graph-private pools left after a request. The worker synchronizes,
+requires the sampler graph and conditioning-hoist contexts to be released, clears the last request's pair-copy memo,
+then clears cuBLAS workspaces through the pinned PyTorch API before flushing. Missing API or live sampler state
+refuses cleanup. This applies only to OpenDDE's isolated sequential worker; other models retain graphs across calls.
 
 `tests/test_memory_stability.py` exercises every current model and supported mode on one live runtime. Each length
 uses a fixed amino-acid composition and fixed termini, shuffled differently on every cycle. This changes sequence
@@ -340,6 +346,11 @@ Every output a backend returns, for every model, also records the GPU memory in 
 | --- | --- |
 | `gpu.mem.used_mib`, `gpu.mem.total_mib` | the device's used and total memory in MiB, every process on it counted (a model's worker child too) |
 | `gpu.mem.allocated_mib`, `gpu.mem.reserved_mib` | the serving process's live tensors and all the memory its torch caching allocator holds, in MiB; only when that process runs CUDA itself, so not for AlphaFold2-Multimer, Protenix and OpenDDE, which predict in a worker child |
+| `predict.gpu.mem.allocated_mib`, `predict.gpu.mem.reserved_mib` | post-cleanup allocator counters from the isolated Protenix, OpenDDE or RF3 worker that actually owns the model |
+
+RF3 additionally records its isolated worker's Python, torch/CUDA/GPU, `rc-foundry` version and the sha256 of the
+actual checkpoint, including a caller override. Its kit status is refreshed after imports and predictions;
+canonical `kit.*` facts prefer the settled prediction report over startup facts.
 
 The entries are missing when no GPU memory can be read (a CPU run, no `nvidia-smi`). Within one runtime, calls of a
 repeating input size should leave `gpu.mem.used_mib` flat after the first few, since torch reuses the memory it
