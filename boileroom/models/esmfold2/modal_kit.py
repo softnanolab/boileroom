@@ -1,4 +1,4 @@
-"""Modal entrypoint that runs ESMFold2 on the optimization-kit image (``optimization="exact"`` and ``"fast"``)."""
+"""Modal entrypoint that runs ESMFold2 on the optimization-kit image (``optimization="exact"``)."""
 
 import json
 from typing import TYPE_CHECKING

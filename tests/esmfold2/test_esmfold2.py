@@ -576,7 +576,7 @@ def test_esmfold2_kit_weights_for_the_fast_checkpoint_skip_the_full_model(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     log = _fake_kit(monkeypatch, FILES)
-    core = _core_cls()(config={"device": "cpu", "optimization": "fast", "model_name": "biohub/ESMFold2-Fast"})
+    core = _core_cls()(config={"device": "cpu", "optimization": "exact", "model_name": "biohub/ESMFold2-Fast"})
 
     core._ensure_kit_weights(tmp_path)
 
@@ -707,6 +707,6 @@ def test_esmfold2_kit_ccd_comes_from_the_pinned_snapshot(
     """Kit mode reads ccd.pkl beside the kit weights, never fetching from the hub (it is offline by then)."""
     _fake_kit(monkeypatch, FILES)
     monkeypatch.setenv("HF_HOME", str(tmp_path))
-    core = _core_cls()(config={"device": "cpu", "optimization": "fast", "model_name": model_name})
+    core = _core_cls()(config={"device": "cpu", "optimization": "exact", "model_name": model_name})
 
     assert core._kit_ccd_dir() == tmp_path / "hub" / "models--biohub--ESMFold2" / "snapshots" / ("c" * 40)

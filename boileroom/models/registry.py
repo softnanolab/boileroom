@@ -15,6 +15,7 @@ CHAI_IMAGE_NAME = get_model_image_spec("chai").image_name
 BOLTZ_IMAGE_NAME = get_model_image_spec("boltz").image_name
 PROTENIX_IMAGE_NAME = get_model_image_spec("protenix").image_name
 OPENDDE_IMAGE_NAME = get_model_image_spec("opendde").image_name
+RF3_IMAGE_NAME = get_model_image_spec("rf3").image_name
 ALPHAFOLD2_MULTIMER_IMAGE_NAME = get_model_image_spec("alphafold").image_name
 
 
@@ -46,7 +47,7 @@ class ModelSpec:
     contract: ModelContract
     supported_backends: tuple[str, ...] = ("modal",)
     default_backend: str = "modal"
-    # Families whose kit modes (optimization="exact" / "fast") need a different image than the default one run those
+    # Families whose kit modes (every ``optimization`` except ``vanilla``) need a different image than the default one run those
     # modes there: the Modal class on the kit image, and the kit image key (see KIT_IMAGE_SPECS in images/metadata.py)
     # for Apptainer. ``optimization="vanilla"`` never touches them.
     kit_modal_class_path: str | None = None
@@ -322,6 +323,52 @@ OPENDDE_SPEC = ModelSpec(
     ),
 )
 
+RF3_SPEC = ModelSpec(
+    key="rf3",
+    public_name="RF3",
+    family="rf3",
+    wrapper_class_path="boileroom.models.rf3.rf3.RF3",
+    modal_class_path="boileroom.models.rf3.rf3.ModalRF3",
+    apptainer_core_class_path="boileroom.models.rf3.core.RF3Core",
+    apptainer_image_name=RF3_IMAGE_NAME,
+    supported_backends=("modal", "apptainer"),
+    kit_modal_class_path="boileroom.models.rf3.modal_kit.ModalRF3Kit",
+    kit_image_key="rf3",
+    contract=ModelContract(
+        task_method="fold",
+        task_kind="structure",
+        static_config_keys=frozenset(
+            {
+                "device",
+                "n_recycles",
+                "diffusion_batch_size",
+                "num_steps",
+                "checkpoint_path",
+                "rf3_python",
+                "optimization",
+            }
+        ),
+        minimal_output_fields=("metadata", "atom_array"),
+        optional_output_fields=(
+            "confidence",
+            "plddt",
+            "ptm",
+            "iptm",
+            "pae",
+            "token_chain_ids",
+            "token_res_ids",
+            "atom_plddt",
+            "seeds",
+            "sample_ranks",
+            "sample_indices",
+            "pdb",
+            "cif",
+        ),
+        supports_batch=False,
+        supports_multimer=True,
+    ),
+)
+
 SAE_SPEC = ModelSpec(
     key="sae",
     public_name="SAE",
@@ -400,6 +447,7 @@ MODEL_SPECS = (
     SAE_SPEC,
     PROTENIX_SPEC,
     OPENDDE_SPEC,
+    RF3_SPEC,
     ALPHAFOLD2_MULTIMER_SPEC,
 )
 MODEL_SPECS_BY_KEY = {spec.key: spec for spec in MODEL_SPECS}
@@ -433,6 +481,7 @@ __all__ = [
     "ModelSpec",
     "PROTENIX_SPEC",
     "OPENDDE_SPEC",
+    "RF3_SPEC",
     "get_model_spec",
     "resolve_object",
 ]

@@ -1,4 +1,4 @@
-"""Modal entrypoint that runs Protenix on the optimization-kit image (``optimization="exact"`` and ``"fast"``)."""
+"""Modal entrypoint that runs Protenix on the optimization-kit image (``optimization="exact"``)."""
 
 import json
 from collections.abc import Sequence

@@ -10,7 +10,12 @@ import pytest
 
 @pytest.mark.parametrize(
     "family,class_name",
-    [("protenix", "ProtenixCore"), ("opendde", "OpenDDECore"), ("alphafold", "AlphaFold2MultimerCore")],
+    [
+        ("protenix", "ProtenixCore"),
+        ("opendde", "OpenDDECore"),
+        ("alphafold", "AlphaFold2MultimerCore"),
+        ("rf3", "RF3Core"),
+    ],
 )
 def test_core_loads_once_for_multiple_fold_jobs(monkeypatch, tmp_path, family, class_name) -> None:
     """Repeated folds use one worker and fresh files, and closing releases it."""

@@ -23,7 +23,7 @@ KIT_IMAGE_SOURCE_ENV: Final = "BOILEROOM_KIT_IMAGE_SOURCE"
 KIT_IMAGE_SOURCES: Final[tuple[str, ...]] = ("build", "registry")
 DEFAULT_KIT_IMAGE_SOURCE: Final = "build"
 
-# The optimization kit behind ``optimization="exact"`` and ``"fast"``: github.com/anthropics/uplifting-biomolecular-modeling
+# The optimization kit behind the kit modes (``"exact"``, plus ``"fast"`` and ``"big"`` for RF3): github.com/anthropics/uplifting-biomolecular-modeling
 # (Apache-2.0). The kit Dockerfiles under ``boileroom/models/<family>/kit/`` fetch exactly this commit; their ``KIT_COMMIT``
 # build arg must stay equal to the constant below (tests/contracts/test_kit_images.py checks it).
 KIT_REPOSITORY: Final = "https://github.com/anthropics/uplifting-biomolecular-modeling.git"
@@ -137,6 +137,13 @@ MODEL_IMAGE_SPECS: Final[tuple[RuntimeImageSpec, ...]] = (
         config_relative_path="boileroom/models/opendde/config.yaml",
         modal_runtime_env=(("LAYERNORM_TYPE", "fast_layernorm"),),
     ),
+    RuntimeImageSpec(
+        key="rf3",
+        image_name="boileroom-rf3",
+        dockerfile_relative_path="boileroom/models/rf3/Dockerfile",
+        context_relative_path="boileroom/models/rf3",
+        config_relative_path="boileroom/models/rf3/config.yaml",
+    ),
 )
 
 # Kit runtime images: opt-in variants that only ``optimization != "vanilla"`` uses, never part of MODEL_IMAGE_SPECS (so the
@@ -159,6 +166,14 @@ KIT_IMAGE_SPECS: Final[tuple[RuntimeImageSpec, ...]] = (
         python_version="3.11",
         # The kit's layernorm lever and its pinned environment need stock's fast LayerNorm (the vanilla image uses openfold).
         modal_runtime_env=(("LAYERNORM_TYPE", "fast_layernorm"),),
+    ),
+    RuntimeImageSpec(
+        key="rf3",
+        image_name="boileroom-rf3-kit",
+        dockerfile_relative_path="boileroom/models/rf3/kit/Dockerfile",
+        context_relative_path="boileroom/models/rf3/kit",
+        config_relative_path="boileroom/models/rf3/kit/config.yaml",
+        python_version="3.12",
     ),
 )
 KIT_IMAGE_SPECS_BY_KEY: Final = {spec.key: spec for spec in KIT_IMAGE_SPECS}

@@ -194,13 +194,13 @@ class ESMFold2Core(FoldingAlgorithm):
         for key in ("revision", "cache_dir", "ccd_cache_dir"):
             if self.config.get(key) is not None:
                 raise ValueError(
-                    f"ESMFold2 config {key!r} does not apply to optimization='exact'/'fast', which load pinned "
+                    f"ESMFold2 config {key!r} does not apply to optimization='exact', which loads pinned "
                     f"snapshots from {KIT_HF_SUBDIR}; use optimization='vanilla' to choose your own."
                 )
         served = (ESMFOLD2_HF_REPO, f"{ESMFOLD2_HF_REPO}-Fast")
         if self.config["model_name"] not in served:
             raise ValueError(
-                f"optimization='exact'/'fast' serves {list(served)}, not model_name={self.config['model_name']!r}"
+                f"optimization='exact' serves {list(served)}, not model_name={self.config['model_name']!r}"
             )
 
     def _activate_optimization(self) -> None:
