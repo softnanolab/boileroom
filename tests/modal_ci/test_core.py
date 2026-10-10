@@ -270,16 +270,51 @@ def test_github_outage_during_verification_asks_for_retry_without_spending(world
     assert not sandboxes.created and "job:7" not in store
 
 
-def test_failed_sandbox_creation_removes_the_runner_and_frees_the_reservation(world) -> None:
-    core, gh, sandboxes, store, deliveries, _ = world
+def test_failed_sandbox_creation_keeps_reservation_until_hard_expiry(world) -> None:
+    core, gh, sandboxes, store, deliveries, clock = world
     sandboxes.fail_create = True
     assert core.handle_webhook(*delivery()).status == 503
-    assert gh.deleted == [555]
-    assert store["job:7"]["state"] == "settled" and store["job:7"]["actual_usd"] == 0.0
+    assert gh.deleted == []
+    assert store["job:7"]["state"] == "uncertain"
+    assert core.ledger.totals()["active"] == 1
     assert not deliveries  # the claim is released so a redelivery can retry
     sandboxes.fail_create = False
-    assert core.handle_webhook(*delivery()).status == 200
+    assert core.handle_webhook(*delivery()).body == "already_launched"
+    clock.now += L.PROFILES["modal-ci"].hard_timeout_s + L.STARTUP_ALLOWANCE_S
+    assert core.reconcile()["settled"] == 1
+    assert gh.deleted == [555]
+    assert store["job:7"]["actual_usd"] == store["job:7"]["reserved_usd"]
+    # A separate delivery may retry only after the uncertain launch is settled.
+    assert core.handle_webhook(*delivery(delivery_id="after-expiry")).status == 200
     assert store["job:7"]["tries"] == 2
+
+
+@pytest.mark.parametrize("ceiling,denial", [(0.3, "budget_exhausted"), (20.0, "capacity")])
+def test_lost_create_response_cannot_free_capacity_or_budget(world, monkeypatch, ceiling, denial) -> None:
+    core, gh, sandboxes, store, _, clock = world
+    core.ledger.limits = L.Limits(ceiling_usd=ceiling, daily_cap_usd=ceiling, max_concurrent=1)
+    create = sandboxes.create
+
+    def lost_response(**kwargs):
+        create(**kwargs)
+        raise TimeoutError("sandbox exists but its response was lost")
+
+    monkeypatch.setattr(sandboxes, "create", lost_response)
+    assert core.handle_webhook(*delivery()).status == 503
+    assert len(sandboxes.live) == 1
+    assert core.ledger.totals()["committed"] == L.worst_case_usd(L.PROFILES["modal-ci"])
+    # Completion delivery cannot release an unknown sandbox either.
+    assert core.handle_webhook(*delivery("completed", delivery_id="done")).status == 202
+    gh.job["id"] = 8
+    assert core.handle_webhook(*delivery(job={"id": 8}, delivery_id="other")).body == denial
+    assert len(sandboxes.live) == 1
+    # The orphan is terminated, but an unreliable listing is not evidence that
+    # no other creation exists: keep the reservation through its hard lifetime.
+    assert core.reconcile()["orphans"] == 1
+    assert core.ledger.totals()["active"] == 1
+    clock.now += L.PROFILES["modal-ci"].hard_timeout_s + L.STARTUP_ALLOWANCE_S
+    assert core.reconcile()["settled"] == 1
+    assert store["job:7"]["actual_usd"] == store["job:7"]["reserved_usd"]
 
 
 def test_failed_jit_minting_leaves_nothing_running(world) -> None:
@@ -348,14 +383,15 @@ def test_failed_launch_retains_registration_cleanup_before_retry(world, monkeypa
     sandboxes.fail_create = True
     monkeypatch.setattr(gh, "delete_runner", unavailable)
     assert core.handle_webhook(*delivery()).status == 503
-    assert store["job:7"]["state"] == "cleanup"
+    assert store["job:7"]["state"] == "uncertain"
     assert core.handle_webhook(*delivery(delivery_id="retry")).body == "already_launched"
     assert len(gh.minted) == 1
-    clock.now += 300
+    clock.now += L.PROFILES["modal-ci"].hard_timeout_s + L.STARTUP_ALLOWANCE_S
     assert core.reconcile()["settled"] == 0
+    assert store["job:7"]["state"] == "cleanup"
     monkeypatch.setattr(gh, "delete_runner", delete_runner)
     assert core.reconcile()["settled"] == 1
-    assert gh.deleted == [555] and store["job:7"]["actual_usd"] == 0
+    assert gh.deleted == [555] and store["job:7"]["actual_usd"] == store["job:7"]["reserved_usd"]
     sandboxes.fail_create = False
     assert core.handle_webhook(*delivery(delivery_id="retry-after-cleanup")).status == 200
 

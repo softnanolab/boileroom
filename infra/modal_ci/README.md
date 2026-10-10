@@ -127,8 +127,11 @@ earlier RoseTTAFold 3 and pilot testing. The operator must reconcile that separa
   cheaper than GitHub's $0.006 per minute: 2 cores / 4 GiB is about $0.0063 per minute.
 - **Per job** the ledger reserves the worst case *before* anything starts: 0.5 CPU + 2 GiB for the sandbox's hard timeout
   (3 600 s job limit + 300 s) + 180 s of startup + 2 GiB of egress ≈ **$0.215**. The reservation is replaced by the observed
-  cost when the job ends, and given back if the launch fails. The 2 GiB egress allowance ($0.08) is a flat, conservative
-  reservation, not a measurement.
+  cost when the job ends, and given back if setup fails before requesting a sandbox. If creation times out or its
+  response is lost, the sandbox may exist: its slot and full reservation are retained through the hard timeout plus
+  startup allowance, then charged at the reserved maximum. The reaper still terminates untracked sandboxes promptly.
+  This deliberately sacrifices availability for up to 68 minutes rather than treating an unknown launch as free.
+  The 2 GiB egress allowance ($0.08) is a flat, conservative reservation, not a measurement.
 - **A launch is refused** (`budget_exhausted`, `daily_cap`, `capacity`) if `max(settled, measured) + reserved + this job`
   would exceed the ceiling or a cap. Four simultaneous reservations total approximately $0.86, excluding overhead and
   egress beyond the allowance. Failed cleanup retains its reservation until the registration is deleted.

@@ -18,7 +18,7 @@ from typing import Any, Protocol
 
 from infra.modal_ci import policy
 from infra.modal_ci.github_api import GitHubError
-from infra.modal_ci.ledger import PROFILES, Ledger, Profile
+from infra.modal_ci.ledger import PROFILES, STARTUP_ALLOWANCE_S, Ledger, Profile
 
 log = logging.getLogger("modal_ci")
 
@@ -181,30 +181,33 @@ class Core:
         try:
             jit, runner_id = self.github.generate_jit(req.repo, runner_name, [*policy.RUNNER_LABELS, job_label])
             self.ledger.update(req.job_id, runner_id=runner_id)
-            binding = {
-                "repo": req.repo,
-                "job_id": req.job_id,
-                "run_id": req.run_id,
-                "run_attempt": req.run_attempt,
-                "job_key": req.job_key,
-                "head_sha": req.head_sha,
-                "runner_name": runner_name,
-            }
-            # Creation can include billed startup work; keep this boundary before the API call.
-            launched = self.clock()
-            sandbox_id = self.sandboxes.create(
-                profile=profile,
-                name=runner_name,
-                env={
-                    "CI_BINDING": json.dumps(binding),
-                    "CI_JIT": jit,
-                    "CI_MAX_SECONDS": str(profile.max_seconds),
-                },
-                tags={"job_id": str(req.job_id), "repo": req.repo, "runner": runner_name},
-            )
         except Exception:
             self._abandon(req, runner_id)
             raise
+        binding = {
+            "repo": req.repo,
+            "job_id": req.job_id,
+            "run_id": req.run_id,
+            "run_attempt": req.run_attempt,
+            "job_key": req.job_key,
+            "head_sha": req.head_sha,
+            "runner_name": runner_name,
+        }
+        # Persist before calling Modal: a timeout or controller crash can hide a
+        # successful creation. Keep its capacity and full reservation until the
+        # hard lifetime ends; the sweep also terminates any untracked sandbox.
+        launched = self.clock()
+        self.ledger.update(req.job_id, state="uncertain", launched=launched)
+        sandbox_id = self.sandboxes.create(
+            profile=profile,
+            name=runner_name,
+            env={
+                "CI_BINDING": json.dumps(binding),
+                "CI_JIT": jit,
+                "CI_MAX_SECONDS": str(profile.max_seconds),
+            },
+            tags={"job_id": str(req.job_id), "repo": req.repo, "runner": runner_name},
+        )
         self.ledger.update(req.job_id, state="running", sandbox_id=sandbox_id, launched=launched)
         log.info("launched job=%s repo=%s sandbox=%s runner=%s", req.job_id, req.repo, sandbox_id, runner_name)
         return Response(200, "launched")
@@ -245,6 +248,13 @@ class Core:
         """End a job's sandbox and runner registration and settle its cost. `False` means it must be retried."""
         sandbox_id = rec.get("sandbox_id")
         seconds = rec.get("cleanup_seconds")
+        if rec["state"] == "uncertain":
+            # Even a completed webhook cannot prove an untracked sandbox has
+            # exited. Do not release its slot or call an unknown launch free.
+            seconds = PROFILES[rec["profile"]].hard_timeout_s + STARTUP_ALLOWANCE_S
+            if self.clock() - rec["launched"] < seconds:
+                return False
+            self.ledger.update(job_id, state="cleanup", cleanup_seconds=seconds)
         if seconds is None and sandbox_id and sandbox_alive:
             try:
                 self.sandboxes.terminate(sandbox_id)
@@ -291,7 +301,7 @@ class Core:
         for rec in records:
             if rec["state"] == "settled":
                 continue
-            if rec["state"] == "cleanup":
+            if rec["state"] in {"cleanup", "uncertain"}:
                 stats["settled"] += self._teardown(rec["job_id"], rec, sandbox_alive=False)
                 continue
             sandbox = states.get(rec.get("sandbox_id", ""))
