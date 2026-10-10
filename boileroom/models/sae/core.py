@@ -124,6 +124,7 @@ class SAECore(EmbeddingAlgorithm):
         # Local backend defaults (used when feature_source == "local").
         "esmc_model_name": "esmc_600m",
         "sae_repo_id": "biohub/ESMC-600M-sae-k64-codebook16384",
+        "sae_revision": None,
         "activation": "topk",
     }
     STATIC_CONFIG_KEYS: ClassVar[frozenset[str]] = frozenset(
@@ -140,6 +141,7 @@ class SAECore(EmbeddingAlgorithm):
             "activation",
             "esmc_model_name",
             "sae_repo_id",
+            "sae_revision",
             "forge_model",
             "forge_sae_model",
             "forge_url",
@@ -228,6 +230,7 @@ class SAECore(EmbeddingAlgorithm):
                     d_model=self._infer_d_model(),
                     k=int(self.config["k"]),
                     activation=str(self.config["activation"]),  # type: ignore[arg-type]
+                    revision=self.config["sae_revision"],
                     device=self.config["device"],
                 )
             self._sae.eval()

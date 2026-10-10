@@ -65,6 +65,17 @@ Request dense per-residue activations with `options={"include_per_residue": True
 
 ## Weights (local backend)
 
+For Modal, pass credentials explicitly with `config={"forge_token": ...}`.
+The `ESM_API_KEY` fallback reads the model container's environment; exporting it
+on the calling machine does not forward it to Modal. Local SAE requires no
+Forge credential. Forge's live API validation requires a working Biohub token
+and is separate from the local-checkpoint tests; the CPU/GPU resource split is
+tracked in softnanolab/boileroom#112.
+
+Set the initialization-only `sae_revision` to a Hugging Face commit to freeze
+the local checkpoint and its config. The reference integration tests use the
+revisions recorded in `tests/data/sae/manifest.json`.
+
 The local `SparseAutoencoder` reproduces Biohub's reference implementation,
 `esm.models.esmc.sae.EsmcSaeLayer` (`esm==3.4.1.post1`):
 

@@ -32,6 +32,7 @@ MODELS = sorted(MANIFEST["references"])
 #: about 0.999; reading the neighbouring layer's hidden state instead drops them to about 0.55 and 0.94.
 MIN_RESIDUE_JACCARD = 0.9
 MIN_POOLED_COSINE = 0.99
+MAX_RELATIVE_ERROR = 0.15
 
 
 def _reference_features(reference: dict, sequence_name: str) -> np.ndarray:
@@ -96,7 +97,11 @@ def test_local_sae_matches_biohub_reference(
 
     reference = MANIFEST["references"][esmc_model_name]
     sequences = MANIFEST["sequences"]
-    config = {"feature_source": "local", "esmc_model_name": esmc_model_name}
+    config = {
+        "feature_source": "local",
+        "esmc_model_name": esmc_model_name,
+        "sae_revision": reference["sae_revision"],
+    }
 
     with output_ctx(), SAE(backend=backend_option, device=device_option, config=config) as model:
         result = model.embed(list(sequences.values()), options={"include_per_residue": True})
@@ -105,10 +110,23 @@ def test_local_sae_matches_biohub_reference(
     assert result.sae_model == reference["sae_repo"]
     assert result.num_features == reference["num_features"]
     assert result.features is not None
+    assert result.features.shape == (len(sequences), max(map(len, sequences.values())), reference["num_features"])
+    assert np.isfinite(result.features).all() and np.isfinite(result.pooled_features).all()
+    assert (result.features >= 0).all()
+    assert np.count_nonzero(result.features, axis=-1).max() <= reference["k"]
     for row, (sequence_name, sequence) in enumerate(sequences.items()):
         expected = _reference_features(reference, sequence_name)
         features = result.features[row, : len(sequence)]
+        np.testing.assert_allclose(result.pooled_features[row], features.max(axis=0), rtol=1e-6, atol=1e-6)
+        assert not result.features[row, len(sequence) :].any()
+        np.testing.assert_array_equal(result.residue_index[row, : len(sequence)], np.arange(len(sequence)))
+        np.testing.assert_array_equal(result.chain_index[row, : len(sequence)], np.zeros(len(sequence)))
+        relative_error = float(np.linalg.norm(features - expected) / np.linalg.norm(expected))
         jaccard = _mean_support_jaccard(features, expected)
         cosine = _cosine(result.pooled_features[row], expected.max(axis=0))
+        print(
+            f"{esmc_model_name}/{sequence_name}: Jaccard={jaccard:.4f}, cosine={cosine:.5f}, relative error={relative_error:.4f}"
+        )
         assert jaccard >= MIN_RESIDUE_JACCARD, f"{sequence_name}: per-residue feature Jaccard {jaccard:.3f}"
         assert cosine >= MIN_POOLED_COSINE, f"{sequence_name}: pooled feature cosine {cosine:.4f}"
+        assert relative_error < MAX_RELATIVE_ERROR, f"{sequence_name}: relative feature error {relative_error:.4f}"
