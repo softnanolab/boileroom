@@ -1,0 +1,40 @@
+{
+  "generated_by": "scripts/testing/rf3_stock_reference.py",
+  "generated_at": "2026-10-09",
+  "foundry_commit": "4010e3e2e7350edada3e25a45c908c6bf407df4d",
+  "checkpoint": "rf3_foundry_01_24_latest_remapped.ckpt",
+  "checkpoint_sha256": "364ef592fd8042a9cf4176d045015190f8322f961ccca38d891b20ca578d3bb0",
+  "gpu": "A100-40GB",
+  "command": "rf3 fold inputs=<json> ckpt_path=<checkpoint> out_dir=<dir> n_recycles=10 num_steps=50 diffusion_batch_size=1 seed=0 early_stopping_plddt_threshold=0.0",
+  "settings": {
+    "n_recycles": 10,
+    "num_steps": 50,
+    "diffusion_batch_size": 1,
+    "seed": 0,
+    "early_stopping_plddt_threshold": 0.0
+  },
+  "references": {
+    "1ubq": {
+      "pdb_entry": "1UBQ",
+      "chains": [
+        {
+          "id": "A",
+          "sequence": "MQIFVKTLTGKTITLEVEPSDTIENVKAKIQDKEGIPPDQQRLIFAGKQLEDGRTLSDYNIQKESTLHLVLRLRGG"
+        }
+      ]
+    },
+    "2zta": {
+      "pdb_entry": "2ZTA",
+      "chains": [
+        {
+          "id": "A",
+          "sequence": "RMKQLEDKVEELLSKNYHLENEVARLKKLVGER"
+        },
+        {
+          "id": "B",
+          "sequence": "RMKQLEDKVEELLSKNYHLENEVARLKKLVGER"
+        }
+      ]
+    }
+  }
+}

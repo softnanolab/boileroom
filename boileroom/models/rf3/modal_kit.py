@@ -1,4 +1,4 @@
-"""Modal entrypoint that runs Protenix on the optimization-kit image (``optimization="exact"``)."""
+"""Modal entrypoint that runs RF3 on the optimization-kit image (``optimization="exact"``)."""
 
 import json
 from collections.abc import Sequence
@@ -13,32 +13,33 @@ from ...optimization import initialize_core, retry_initialize
 from ...utils import HOURS, MINUTES, MODAL_MODEL_DIR
 
 if TYPE_CHECKING:
-    from .types import ProtenixOutput
+    from .types import RF3Output
 
 # A separate app: Modal builds every image registered on an app when it starts, and the kit image is not needed for the
-# vanilla modes.
-app = get_modal_app("protenix-kit")
-protenix_kit_image = get_modal_kit_image("protenix")
+# vanilla mode.
+app = get_modal_app("rf3-kit")
+rf3_kit_image = get_modal_kit_image("rf3")
 
 
 @app.cls(
-    image=protenix_kit_image,
-    # The kit serves A100 and H100/H200; the checkpoint and data caches download on the first call.
-    gpu="A100-40GB",
+    image=rf3_kit_image,
+    # The kit serves A100 and H100/H200 (its A100 configuration targets the 80 GB card); the checkpoint downloads on the
+    # first call.
+    gpu="A100-80GB",
     timeout=1 * HOURS,
     scaledown_window=10 * MINUTES,
     volumes={MODAL_MODEL_DIR: model_weights},
 )
-class ModalProtenixKit:
-    """Modal entrypoint for Protenix on the kit image."""
+class ModalRF3Kit:
+    """Modal entrypoint for RF3 on the kit image."""
 
     config: bytes = modal.parameter(default=b"{}")
 
     @modal.enter()
     def _initialize(self) -> None:
-        from .core import ProtenixCore
+        from .core import RF3Core
 
-        self._core = ProtenixCore(json.loads(self.config.decode("utf-8")))
+        self._core = RF3Core(json.loads(self.config.decode("utf-8")))
         self._refusal = initialize_core(self._core)
 
     @modal.exit()
@@ -46,7 +47,7 @@ class ModalProtenixKit:
         self._core.close()
 
     @modal.method()
-    def fold(self, sequences: str | Sequence[str], options: dict | None = None) -> "ProtenixOutput":
+    def fold(self, sequences: str | Sequence[str], options: dict | None = None) -> "RF3Output":
         self._refusal = retry_initialize(self._core, self._refusal)
         if self._refusal is not None:
             raise self._refusal

@@ -1,6 +1,7 @@
-"""Static ``optimization`` option: vanilla | exact | fast, resolved per GPU.
+"""Static ``optimization`` option: vanilla | exact (| fast, big for some families), resolved per GPU.
 
-``exact`` and ``fast`` drive the kits of anthropics/uplifting-biomolecular-modeling (Apache-2.0).
+The kit modes (``exact``, plus ``fast`` and ``big`` for RF3) drive the kits of
+anthropics/uplifting-biomolecular-modeling (Apache-2.0).
 A kit mode is all of its levers on a GPU class, so a card the kit cannot fully serve is refused
 by name here, before any weights load, instead of the kit's own ``os._exit(3)``.
 """
@@ -12,12 +13,17 @@ from typing import Any
 
 OPTIMIZATION_MODES = ("vanilla", "exact")
 DEFAULT_OPTIMIZATION = "vanilla"
+# Kit modes a family accepts on top of OPTIMIZATION_MODES. ``fast`` was withdrawn for every family in #125 (memory
+# problems on A100); a family is listed here once those modes have been run on the cards it is served on (RF3: see
+# docs/optimization.md, where ``big`` is the fallback for inputs that run ``fast`` out of memory).
+FAMILY_EXTRA_MODES: dict[str, tuple[str, ...]] = {"rf3": ("fast", "big")}
 
 # Compute capabilities on which each kit family was benchmarked here; the kit's configs exist per card.
 _KIT_CONFIG_BY_CAPABILITY: dict[str, dict[tuple[int, int], str]] = {
     "esmfold2": {(8, 0): "a100", (9, 0): "h100"},
     "protenix": {(8, 0): "a100", (9, 0): "h100"},
     "opendde": {(8, 0): "a100", (9, 0): "h100"},
+    "rf3": {(8, 0): "a100", (9, 0): "h100"},
 }
 # Card names the kit config was validated on; H200 is the same Hopper (GH100) silicon Modal serves for H100 requests.
 _KIT_CARD_NAMES: dict[str, tuple[str, ...]] = {"a100": ("a100",), "h100": ("h100", "h200")}
@@ -28,6 +34,7 @@ _UNSERVED_REASON: dict[str, str] = {
     ),
     "protenix": "the kit has no BLK2 launch cells for sm89 (blk2_block_path, blk2_chunked_*), so it refuses the mode",
     "opendde": "the kit ships configs only for a100, h100 and h200 (no sm89 launch cells)",
+    "rf3": "the kit ships configs only for a100, h100 and h200 (no sm89 launch cells)",
 }
 
 
@@ -84,24 +91,30 @@ class OptimizationResolution:
         return asdict(self)
 
 
-def validate_optimization(mode: object) -> str:
-    """Return ``mode`` if it is a known optimization mode, else raise ``ValueError``."""
-    if mode not in OPTIMIZATION_MODES:
-        raise ValueError(f"optimization must be one of {list(OPTIMIZATION_MODES)}, got {mode!r}")
+def optimization_modes(family: str | None = None) -> tuple[str, ...]:
+    """Return the ``optimization`` modes ``family`` accepts (the shared ones when ``family`` is ``None``)."""
+    return OPTIMIZATION_MODES + FAMILY_EXTRA_MODES.get(family or "", ())
+
+
+def validate_optimization(mode: object, family: str | None = None) -> str:
+    """Return ``mode`` if ``family`` accepts it as an optimization mode, else raise ``ValueError``."""
+    modes = optimization_modes(family)
+    if mode not in modes:
+        raise ValueError(f"optimization must be one of {list(modes)}, got {mode!r}")
     return str(mode)
 
 
 def detect_gpu(device: str | None = None) -> GpuInfo:
     """Read name and compute capability of the CUDA device the model will run on."""
     if device is not None and not device.startswith("cuda"):
-        raise OptimizationUnavailableError(f"optimization exact/fast runs on a CUDA GPU, not on device={device!r}")
+        raise OptimizationUnavailableError(f"a kit optimization mode runs on a CUDA GPU, not on device={device!r}")
     index = int(device.split(":")[1]) if device and device.startswith("cuda:") else 0
     try:
         import torch
     except ImportError:
         return _detect_gpu_nvidia_smi(index)
     if not torch.cuda.is_available():
-        raise OptimizationUnavailableError("optimization exact/fast needs a CUDA GPU; none is visible")
+        raise OptimizationUnavailableError("a kit optimization mode needs a CUDA GPU; none is visible")
     return GpuInfo(name=torch.cuda.get_device_name(index), capability=torch.cuda.get_device_capability(index))
 
 
@@ -119,14 +132,14 @@ def _detect_gpu_nvidia_smi(index: int) -> GpuInfo:
         major, minor = cap.split(".")
     except (OSError, subprocess.CalledProcessError, IndexError, ValueError) as error:
         raise OptimizationUnavailableError(
-            "optimization exact/fast could not read the GPU (nvidia-smi failed)"
+            "a kit optimization mode could not read the GPU (nvidia-smi failed)"
         ) from error
     return GpuInfo(name=name, capability=(int(major), int(minor)))
 
 
 def resolve_optimization(family: str, mode: str, gpu: GpuInfo | None = None) -> OptimizationResolution:
     """Resolve ``mode`` for a model family on ``gpu``; raise by name when it cannot be served."""
-    validate_optimization(mode)
+    validate_optimization(mode, family)
     if mode == "vanilla":
         return OptimizationResolution(mode, "vanilla", None, gpu.name if gpu else None, None)
     if family not in _KIT_CONFIG_BY_CAPABILITY:

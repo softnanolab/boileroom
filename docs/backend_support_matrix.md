@@ -19,6 +19,7 @@ Legend:
 | ESMFold    | ✅       | 🍊           |
 | OpenDDE    | 🍊       | 🍊           |
 | Protenix   | 🍊       | 🍊           |
+| RF3        | 🍊       | 🍊           |
 
 ### Embedding Algorithms
 

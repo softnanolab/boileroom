@@ -214,7 +214,7 @@ def _kit_reference_ids() -> list[str]:
 
 
 @pytest.mark.parametrize("reference_id", _kit_reference_ids())
-@pytest.mark.parametrize("optimization", ["exact", "fast"])
+@pytest.mark.parametrize("optimization", ["exact"])
 def test_esmfold2_kit_mode_matches_biohub_reference_within_seed_noise(
     reference_id: str,
     optimization: str,

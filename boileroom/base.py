@@ -429,11 +429,11 @@ class ModelWrapper:
             )
 
         backend_instance: Any
-        # A family with a kit image (ESMFold2, Protenix) runs "exact" and "fast" there; "vanilla" keeps the stock image.
+        # A family with a kit image (ESMFold2, Protenix, OpenDDE, RF3) runs its kit modes there; "vanilla" keeps the stock image.
         kit_image_key = None
         if "optimization" in model_spec.contract.static_config_keys:
             # Checked here so a bad mode fails in the caller, not in a Modal container that would restart silently.
-            mode = validate_optimization(resolved_config.get("optimization", DEFAULT_OPTIMIZATION))
+            mode = validate_optimization(resolved_config.get("optimization", DEFAULT_OPTIMIZATION), model_spec.family)
             if mode != DEFAULT_OPTIMIZATION and model_spec.kit_image_key is not None:
                 kit_image_key = model_spec.kit_image_key
         if backend_type == "modal":

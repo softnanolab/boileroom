@@ -22,6 +22,7 @@ from boileroom.models.registry import (
     MODEL_SPECS,
     OPENDDE_SPEC,
     PROTENIX_SPEC,
+    RF3_SPEC,
     ModelSpec,
     get_model_spec,
     resolve_object,
@@ -46,6 +47,7 @@ SAMPLE_INPUTS: dict[str, Any] = {
     "boltz2": "MLKNVHVLVLGAGDVGSVVVRLLEK",
     "protenix": "MLKNVHVLVLGAGDVGSVVVRLLEK",
     "opendde": "MLKNVHVLVLGAGDVGSVVVRLLEK",
+    "rf3": "MLKNVHVLVLGAGDVGSVVVRLLEK",
     "alphafold2_multimer": "MLKNVHVLVLGAGDVGSVVVRLLEK:MLKNVHVLVLGAGDVGSVVVRLLEK",
 }
 EXPECTED_MODAL_APP_NAMES = {spec.key: f"boileroom-{spec.key}" for spec in MODEL_SPECS}
@@ -140,6 +142,11 @@ def _make_output(spec: ModelSpec) -> object:
         from boileroom.models.opendde.types import OpenDDEOutput
 
         return OpenDDEOutput(metadata=_make_metadata(spec.public_name), atom_array=[object()])
+
+    if spec.key == "rf3":
+        from boileroom.models.rf3.types import RF3Output
+
+        return RF3Output(metadata=_make_metadata(spec.public_name), atom_array=[object()])
 
     if spec.key == "alphafold2_multimer":
         from boileroom.models.alphafold.types import AlphaFold2MultimerOutput
@@ -317,7 +324,7 @@ def test_chai1_contract_declares_single_input_only() -> None:
 
 
 @pytest.mark.parametrize(
-    "spec", [PROTENIX_SPEC, OPENDDE_SPEC, ALPHAFOLD2_MULTIMER_SPEC], ids=lambda spec: spec.public_name
+    "spec", [PROTENIX_SPEC, OPENDDE_SPEC, ALPHAFOLD2_MULTIMER_SPEC, RF3_SPEC], ids=lambda spec: spec.public_name
 )
 def test_resident_folding_contracts_declare_single_input_multimer_support(spec: ModelSpec) -> None:
     """Resident folding wrappers should use one top-level sequence with ':' chain joining."""
@@ -359,7 +366,7 @@ def test_chai1_wrapper_rejects_static_option_overrides(monkeypatch: pytest.Monke
 
 
 @pytest.mark.parametrize(
-    "spec", [PROTENIX_SPEC, OPENDDE_SPEC, ALPHAFOLD2_MULTIMER_SPEC], ids=lambda spec: spec.public_name
+    "spec", [PROTENIX_SPEC, OPENDDE_SPEC, ALPHAFOLD2_MULTIMER_SPEC, RF3_SPEC], ids=lambda spec: spec.public_name
 )
 def test_resident_wrappers_reject_multiple_top_level_sequences(
     monkeypatch: pytest.MonkeyPatch,
@@ -380,7 +387,12 @@ def test_resident_wrappers_reject_multiple_top_level_sequences(
 
 @pytest.mark.parametrize(
     ("spec", "static_key"),
-    [(PROTENIX_SPEC, "model_name"), (OPENDDE_SPEC, "optimization"), (ALPHAFOLD2_MULTIMER_SPEC, "data_dir")],
+    [
+        (PROTENIX_SPEC, "model_name"),
+        (OPENDDE_SPEC, "optimization"),
+        (ALPHAFOLD2_MULTIMER_SPEC, "data_dir"),
+        (RF3_SPEC, "n_recycles"),
+    ],
     ids=lambda item: item.public_name if isinstance(item, ModelSpec) else item,
 )
 def test_resident_wrappers_reject_static_option_overrides(

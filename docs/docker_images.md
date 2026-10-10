@@ -8,9 +8,10 @@
 - **esm**: `boileroom/models/esm/Dockerfile` → installs ESM runtime dependencies from `requirements.txt` shared by esm2/esmfold. Tag: `docker.io/jakublala/boileroom-esm`.
 - **opendde**: `boileroom/models/opendde/Dockerfile` → OpenDDE 1.1.1 and the Anthropic kit stack (Python 3.11, torch 2.7.1+cu126, cuequivariance 0.10.0) in `/opt/opendde`, CUDA 12.6 `nvcc` for the Triton JIT, GCC 13 libstdc++ for `exact`, HMMER/Kalign. `LAYERNORM_TYPE=fast_layernorm` is set but `ninja` is not installed, so the fused LayerNorm extension cannot build and torch's `layer_norm` is used in every mode. Tag: `docker.io/jakublala/boileroom-opendde`. Platform: `linux/amd64`.
 - **protenix**: `boileroom/models/protenix/Dockerfile` → installs Protenix plus HMMER/Kalign CLI dependencies. Tag: `docker.io/jakublala/boileroom-protenix`. Platform: `linux/amd64`.
+- **rf3**: `boileroom/models/rf3/Dockerfile` → RoseTTAFold 3 (`rc-foundry` at the pinned foundry commit, `atomworks==2.2.1`, Python 3.12, torch 2.7.1+cu126, cuequivariance 0.10.0) in its own virtualenv at `/opt/rf3`, with `git` for the pinned install. The checkpoint (about 3 GB) is **not** in the image: it is downloaded on first use into `$MODEL_DIR/rf3` and verified by sha256, because the weights' license has not been confirmed. Tag: `docker.io/jakublala/boileroom-rf3`. Platform: `linux/amd64`.
 - **esmfold2**: `boileroom/models/esmfold2/Dockerfile` → installs the MIT-licensed 2026 Chan Zuckerberg Biohub `esm` package (`esm==3.4.1.post1`, torch 2.11, CUDA 12.6 only) from `requirements.txt`. Tag: `docker.io/jakublala/boileroom-esmfold2`. **Shared by ESMFold2, ESM-C, and ESM3** — all three use the same Biohub `esm` package, so ESM-C/ESM3 run on this image instead of a separate one.
 
-- **esmfold2-kit** and **protenix-kit** (opt-in, published by hand rather than by CI): `boileroom/models/esmfold2/kit/Dockerfile` and `boileroom/models/protenix/kit/Dockerfile` → the stack of the Anthropic optimization kit (torch 2.13+cu130, kit commit `f4f62fa`) behind `optimization="exact"` and `"fast"`. Names: `boileroom-esmfold2-kit` and `boileroom-protenix-kit`. Used only when a kit mode is requested; `optimization="vanilla"` (the default) keeps using the stock images above. Not part of the build/smoke/publish scripts or CI: see [Kit images](#kit-images-optimizationexact-and-fast).
+- **esmfold2-kit**, **protenix-kit** and **rf3-kit** (opt-in, published by hand rather than by CI): `boileroom/models/esmfold2/kit/Dockerfile`, `boileroom/models/protenix/kit/Dockerfile` and `boileroom/models/rf3/kit/Dockerfile` → the stack of the Anthropic optimization kit (torch 2.13+cu130, kit commit `f4f62fa`) behind `optimization="exact"` (RF3 also accepts `"fast"` and `"big"`; the other two families refuse them). Names: `boileroom-esmfold2-kit`, `boileroom-protenix-kit` and `boileroom-rf3-kit`. Used only when a kit mode is requested; `optimization="vanilla"` (the default) keeps using the stock images above. Not part of the build/smoke/publish scripts or CI: see [Kit images](#kit-images).
 
 Dockerfiles are the canonical image definition for all runtimes. Docker/Apptainer images are built from these Dockerfiles, and Modal pulls the corresponding published model image from Docker Hub instead of maintaining a separate handwritten dependency stack. CUDA variants select the PyTorch wheel index; the runtime images rely on PyTorch/NVIDIA wheels for user-space CUDA libraries and on Docker/Apptainer GPU integration for host driver libraries.
 
@@ -184,8 +185,8 @@ docker build \
 
 > ESM-C and ESM3 do not have their own image — they run on the `esmfold2` image above (same Biohub `esm` package).
 
-### Kit images (`optimization="exact"` and `"fast"`)
-The kit modes need a different stack from the stock images (see [optimization.md](optimization.md)), so ESMFold2 and Protenix have a second, opt-in image each, defined next to their stock Dockerfile in a `kit/` directory. They are not built by `scripts/images/` and not smoke-tested or published by CI: the ESMFold2 image compiles flash-attn, TransformerEngine and xformers from source (about 30 minutes on a 48-64 core builder, hours on a GitHub-hosted runner). Both images were built locally and pushed to `docker.io/jakublala` under the temporary tag `sha-dc652b0` (kit commit `f4f62fa`); once the PR merges they are retagged to the release version, with no rebuild. Until then, pull them with `BOILEROOM_KIT_IMAGE_SOURCE=registry BOILEROOM_DOCKER_REPOSITORY=docker.io/jakublala BOILEROOM_IMAGE_TAG=sha-dc652b0`.
+### Kit images
+The kit modes need a different stack from the stock images (see [optimization.md](optimization.md)), so ESMFold2, Protenix and RF3 have a second, opt-in image each, defined next to their stock Dockerfile in a `kit/` directory. They are not built by `scripts/images/` and not smoke-tested or published by CI: the ESMFold2 image compiles flash-attn, TransformerEngine and xformers from source (about 30 minutes on a 48-64 core builder, hours on a GitHub-hosted runner). The ESMFold2 and Protenix images were built locally and pushed to `docker.io/jakublala` under the temporary tag `sha-dc652b0` (kit commit `f4f62fa`); once the PR merges they are retagged to the release version, with no rebuild. The RF3 kit image has not been published: on Modal it is built from the Dockerfile on first use (219 s for the measured build, then cached); for Docker or Apptainer build and push it as below. To pull the published two, use `BOILEROOM_KIT_IMAGE_SOURCE=registry BOILEROOM_DOCKER_REPOSITORY=docker.io/jakublala BOILEROOM_IMAGE_TAG=sha-dc652b0`.
 
 - **Modal** builds the image from the Dockerfile in your installed boileroom the first time a kit mode is used, and caches it. This is the default (`BOILEROOM_KIT_IMAGE_SOURCE=build`).
 - **Docker/Apptainer, or your own registry**: build and push the image, then point the runtime at it:
@@ -193,13 +194,15 @@ The kit modes need a different stack from the stock images (see [optimization.md
 ```bash
 docker build -f boileroom/models/protenix/kit/Dockerfile boileroom/models/protenix/kit -t <repository>/boileroom-protenix-kit:<tag>
 docker build -f boileroom/models/esmfold2/kit/Dockerfile boileroom/models/esmfold2/kit -t <repository>/boileroom-esmfold2-kit:<tag>
+docker build -f boileroom/models/rf3/kit/Dockerfile boileroom/models/rf3/kit -t <repository>/boileroom-rf3-kit:<tag>
 docker push <repository>/boileroom-protenix-kit:<tag>
 docker push <repository>/boileroom-esmfold2-kit:<tag>
+docker push <repository>/boileroom-rf3-kit:<tag>
 
 export BOILEROOM_KIT_IMAGE_SOURCE=registry BOILEROOM_DOCKER_REPOSITORY=<repository> BOILEROOM_IMAGE_TAG=<tag>
 ```
 
-  With `backend="apptainer"` the kit image is pulled as `docker://<repository>/boileroom-<family>-kit:<tag>` (the interpreter is `/usr/local/bin/python3.11` in the Protenix kit image, `python3.12` in the ESMFold2 one).
+  With `backend="apptainer"` the kit image is pulled as `docker://<repository>/boileroom-<family>-kit:<tag>` (the interpreter is `/usr/local/bin/python3.11` in the Protenix kit image, `python3.12` in the ESMFold2 one, and `/kit/rosettafold3/opt/venv/bin/python` in the RF3 one, which the core selects for the kit modes). The RF3 kit's Apptainer path is untested.
 
 The Dockerfile pins the kit commit; `KIT_COMMIT` in `boileroom/images/metadata.py` must match it (`tests/contracts/test_kit_images.py` checks this).
 
