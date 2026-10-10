@@ -31,7 +31,9 @@ SANDBOX_DIR = Path(__file__).parent / "sandbox"
 SOURCE_IGNORE = ["**/*.pyc", "**/__pycache__/**"]
 APT_PACKAGES = (
     "ca-certificates curl git git-lfs jq unzip zip xz-utils build-essential pkg-config python3 python3-venv "
-    "python3-pip gh procps"
+    # actions/cache includes its compression method in the archive version. Match hosted Linux
+    # runners so existing zstd caches remain visible after moving a workflow to Modal.
+    "python3-pip gh procps zstd"
 )
 
 
