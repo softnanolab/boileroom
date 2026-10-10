@@ -1,13 +1,13 @@
 """Public and Modal wrappers for the ESM-C sparse-autoencoder feature model."""
 
-import json
 import logging
 from collections.abc import Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import modal
 
 from ...backend.modal import get_modal_app
+from ...backend.modal_server import ModalEmbedServer
 from ...base import ModelWrapper
 from ...images.volumes import model_weights
 from ...utils import MINUTES, MODAL_MODEL_DIR
@@ -15,6 +15,7 @@ from ..registry import SAE_SPEC
 from .image import sae_image
 
 if TYPE_CHECKING:
+    from .core import SAECore
     from .types import SAEFeaturesOutput
 
 logger = logging.getLogger(__name__)
@@ -28,23 +29,15 @@ app = get_modal_app("sae")
     scaledown_window=10 * MINUTES,
     volumes={MODAL_MODEL_DIR: model_weights},
 )
-class ModalSAE:
+class ModalSAE(ModalEmbedServer):
     """Modal wrapper around :class:`~boileroom.models.sae.core.SAECore`."""
 
     config: bytes = modal.parameter(default=b"{}")
 
-    @modal.enter()
-    def _initialize(self) -> None:
+    def _build_core(self, config: dict[str, Any]) -> "SAECore":
         from .core import SAECore
 
-        self._core = SAECore(config=json.loads(self.config.decode("utf-8")))
-        self._core._initialize()
-
-    @modal.method()
-    def embed(self, sequences: str | Sequence[str], options: dict | None = None) -> "SAEFeaturesOutput":
-        if getattr(self, "_core", None) is None:
-            raise RuntimeError("ModalSAE has not been initialized")
-        return self._core.embed(sequences, options=options)
+        return SAECore(config=config)
 
 
 class SAE(ModelWrapper):

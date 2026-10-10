@@ -143,6 +143,17 @@ def test_protenix_modal_runtime_env_uses_non_jit_layernorm(monkeypatch) -> None:
     assert env["LAYERNORM_TYPE"] == "openfold"
 
 
+def test_opendde_modal_runtime_env_leaves_layernorm_to_the_worker(monkeypatch) -> None:
+    """Modal OpenDDE must not set LAYERNORM_TYPE image-wide: the core's worker sets it per optimization mode."""
+    monkeypatch.setenv("BOILEROOM_DOCKER_REPOSITORY", "docker.io/example")
+    monkeypatch.setenv(IMAGE_TAG_ENV, "0.3.0.1")
+
+    env = render_modal_runtime_env(get_model_image_spec("opendde"), "/mnt/models")
+
+    assert "LAYERNORM_TYPE" not in env
+    assert set(env) == {"MODEL_DIR", "BOILEROOM_DOCKER_REPOSITORY", IMAGE_TAG_ENV}
+
+
 def test_docker_repository_uses_env_override(monkeypatch) -> None:
     """Image references should support a shared Docker repository override."""
     monkeypatch.setenv("BOILEROOM_DOCKER_REPOSITORY", "example")

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import sys
+from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -19,6 +20,9 @@ if str(REPO_ROOT) not in sys.path:
 from boileroom.images.metadata import (  # noqa: E402
     BASE_IMAGE_SPEC,
     DEFAULT_DOCKER_REPOSITORY,
+    KIT_IMAGE_DIGEST_HISTORY,
+    KIT_IMAGE_DIGESTS,
+    KIT_IMAGE_SPECS,
     MODEL_IMAGE_SPECS,
     normalize_docker_repository,
 )
@@ -33,6 +37,8 @@ class TagInfo:
 
     name: str
     last_updated: datetime | None
+    # Content digests the tag points at: the top-level digest and, for a multi-platform index, each platform image's.
+    digests: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -92,8 +98,13 @@ def plan_tag_retention(
     keep_alpha: int,
     sha_max_age_days: int,
     now: datetime | None = None,
+    protected_digests: Collection[str] = (),
 ) -> RetentionPlan:
-    """Compute keep/delete tags using the cleanup policy."""
+    """Compute keep/delete tags using the cleanup policy.
+
+    A tag that points at one of ``protected_digests`` (every kit image digest a boileroom release has pinned) is always
+    kept, whatever its name, so the pinned images stay tagged and Docker Hub never treats them as untagged.
+    """
     current_time = (now or datetime.now(tz=UTC)).astimezone(UTC)
     cutoff = current_time - timedelta(days=sha_max_age_days)
 
@@ -112,6 +123,9 @@ def plan_tag_retention(
     for tag in tags:
         logical_tag = strip_cuda_prefix(tag.name)
         alpha_version = parse_alpha(logical_tag)
+        if protected_digests and not set(tag.digests).isdisjoint(protected_digests):
+            keep.append(tag.name)
+            continue
         if logical_tag.startswith("buildcache-"):
             keep.append(tag.name)
             continue
@@ -194,7 +208,14 @@ def list_repository_tags(namespace: str, repository: str, auth_token: str) -> li
         if response is None:
             break
         for item in response.get("results", []):
-            results.append(TagInfo(name=str(item["name"]), last_updated=parse_timestamp(item.get("last_updated"))))
+            digests = [item.get("digest")] + [image.get("digest") for image in item.get("images") or []]
+            results.append(
+                TagInfo(
+                    name=str(item["name"]),
+                    last_updated=parse_timestamp(item.get("last_updated")),
+                    digests=tuple(str(digest) for digest in digests if digest),
+                )
+            )
         next_url = str(response["next"]) if response.get("next") else ""
     return results
 
@@ -208,9 +229,37 @@ def delete_repository_tag(namespace: str, repository: str, tag: str, auth_token:
     dockerhub_request("DELETE", url, token=auth_token)
 
 
+def is_not_found(exc: BaseException) -> bool:
+    """Return whether ``exc`` is a failed Docker Hub request that answered 404 (wrapped by :func:`dockerhub_request`)."""
+    cause = exc.__cause__ if isinstance(exc, RuntimeError) else exc
+    return isinstance(cause, error.HTTPError) and cause.code == 404
+
+
 def runtime_image_names() -> tuple[str, ...]:
-    """Return all boileroom runtime image repository names."""
-    return (BASE_IMAGE_SPEC.image_name, *(spec.image_name for spec in MODEL_IMAGE_SPECS))
+    """Return all boileroom runtime image repository names, the kit images included."""
+    return (
+        BASE_IMAGE_SPEC.image_name,
+        *(spec.image_name for spec in MODEL_IMAGE_SPECS),
+        *(spec.image_name for spec in KIT_IMAGE_SPECS),
+    )
+
+
+def protected_kit_digests(image_name: str) -> tuple[str, ...]:
+    """Return every digest the cleanup must keep tagged in ``image_name``: each pin in its history and the current one.
+
+    Parameters
+    ----------
+    image_name : str
+        A runtime image name, for example ``boileroom-protenix-kit``.
+
+    Returns
+    -------
+    tuple[str, ...]
+        The historical pins in order, then the current pin if the history does not list it; empty for a stock image.
+    """
+    history = KIT_IMAGE_DIGEST_HISTORY.get(image_name, ())
+    current = KIT_IMAGE_DIGESTS.get(image_name)
+    return (*history, current) if current is not None and current not in history else tuple(history)
 
 
 @click.command(context_settings=CONTEXT_SETTINGS, help="Apply retention policy to boileroom Docker Hub image tags.")
@@ -238,15 +287,46 @@ def cli(
     sha_max_age_days: int,
     dry_run: bool,
 ) -> None:
-    """Run Docker Hub retention cleanup for runtime image tags."""
+    """Run Docker Hub retention cleanup for runtime image tags.
+
+    A kit repository in which no tag points at the digest pinned in ``KIT_IMAGE_DIGESTS`` is not pruned at all: either
+    the pinned image is already untagged (and so open to Docker Hub's garbage collection) or the listing does not show
+    it, and in both cases deleting tags could remove the image every installation pulls. The other repositories are
+    still cleaned, then the command exits non-zero naming them, in a dry run too.
+
+    Every digest in ``KIT_IMAGE_DIGEST_HISTORY`` is protected, not only the current pin: an installed older release
+    still pulls the digest it pinned. An older pin that no tag names any more is only reported, since nothing this
+    cleanup does can make it tagged again.
+    """
     namespace = normalize_namespace(docker_user)
     auth_token = dockerhub_login(dockerhub_username, dockerhub_token)
     image_names = runtime_image_names()
     deleted_total = 0
+    unpinned: list[str] = []
 
     for image_name in image_names:
-        tags = list_repository_tags(namespace, image_name, auth_token)
-        plan = plan_tag_retention(tags, keep_alpha=keep_alpha, sha_max_age_days=sha_max_age_days)
+        try:
+            tags = list_repository_tags(namespace, image_name, auth_token)
+        except RuntimeError as exc:
+            # The kit images are pushed by hand, so a namespace may not have them; the stock images must exist.
+            if is_not_found(exc) and image_name in KIT_IMAGE_DIGESTS:
+                click.echo(f"{image_name}: repository not found in {namespace}, skipping")
+                continue
+            raise
+        pinned_digest = KIT_IMAGE_DIGESTS.get(image_name)
+        protected = protected_kit_digests(image_name)
+        if pinned_digest is not None and not any(pinned_digest in tag.digests for tag in tags):
+            click.echo(
+                f"{image_name}: ERROR: no tag points at its pinned digest {pinned_digest}; not pruning this repository"
+            )
+            unpinned.append(f"{image_name}@{pinned_digest}")
+            continue
+        for digest in protected:
+            if digest != pinned_digest and not any(digest in tag.digests for tag in tags):
+                click.echo(f"{image_name}: WARNING: no tag points at the earlier pinned digest {digest}")
+        plan = plan_tag_retention(
+            tags, keep_alpha=keep_alpha, sha_max_age_days=sha_max_age_days, protected_digests=protected
+        )
         click.echo(
             f"{image_name}: total={len(tags)} keep={len(plan.keep_tags)} delete={len(plan.delete_tags)} dry_run={dry_run}"
         )
@@ -258,8 +338,9 @@ def cli(
                 delete_repository_tag(namespace, image_name, tag_name, auth_token)
                 click.echo(f"  Deleted {image_name}:{tag_name}")
                 deleted_total += 1
-            except error.HTTPError as exc:
-                if exc.code == 404:
+            except RuntimeError as exc:
+                # dockerhub_request wraps HTTP errors, so a bare HTTPError never reaches this loop.
+                if is_not_found(exc):
                     click.echo(f"  Already deleted {image_name}:{tag_name}")
                     continue
                 raise
@@ -268,6 +349,12 @@ def cli(
         click.echo("Dry run complete.")
     else:
         click.echo(f"Cleanup complete. Deleted {deleted_total} tag(s).")
+    if unpinned:
+        raise click.ClickException(
+            f"No tag in {namespace} points at the pinned kit image(s) {', '.join(unpinned)}, so those repositories were "
+            "not pruned. Tag each pinned digest again (scripts/images/promote_image_tags.py) or update "
+            "KIT_IMAGE_DIGESTS, then rerun."
+        )
 
 
 if __name__ == "__main__":

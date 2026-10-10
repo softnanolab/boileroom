@@ -1,16 +1,20 @@
-import json
 import logging
 from collections.abc import Sequence
+from typing import TYPE_CHECKING, Any
 
 import modal
 
 from ...backend.modal import get_modal_app
+from ...backend.modal_server import ModalFoldServer
 from ...base import ModelWrapper
 from ...images.volumes import model_weights
 from ...utils import MINUTES, MODAL_MODEL_DIR
 from ..registry import CHAI1_SPEC
 from .image import chai_image
 from .types import Chai1Output
+
+if TYPE_CHECKING:
+    from .core import Chai1Core
 
 logger = logging.getLogger(__name__)
 app = get_modal_app("chai1")
@@ -26,43 +30,15 @@ app = get_modal_app("chai1")
     scaledown_window=10 * MINUTES,
     volumes={MODAL_MODEL_DIR: model_weights},  # TODO: somehow link this to what Chai-1 actually uses
 )
-class ModalChai1:
-    """
-    Modal-specific wrapper around `Chai1Core`.
-    """
+class ModalChai1(ModalFoldServer):
+    """Modal-specific wrapper around `Chai1Core`."""
 
     config: bytes = modal.parameter(default=b"{}")
 
-    @modal.enter()
-    def _initialize(self) -> None:
-        """Instantiate Chai1Core from the JSON-encoded `self.config` bytes and perform its initialization.
-
-        This decodes `self.config` as UTF-8 JSON, constructs a Chai1Core with the resulting dict, and calls its `_initialize` method.
-        """
+    def _build_core(self, config: dict[str, Any]) -> "Chai1Core":
         from .core import Chai1Core
 
-        self._core = Chai1Core(json.loads(self.config.decode("utf-8")))
-        self._core._initialize()
-
-    @modal.method()
-    def fold(self, sequences: str | Sequence[str], options: dict | None = None) -> "Chai1Output":
-        """Run structure prediction for a single top-level sequence entry.
-
-        Parameters
-        ----------
-        sequences : str | Sequence[str]
-            One sequence string or a one-item sequence containing a single sequence string. Use ":" inside that sequence to join multiple chains for multimer prediction.
-        options : dict, optional
-            Per-call configuration overrides merged with the model's default configuration to control
-            sampling and which result fields to include. Static configuration such as ``device`` must
-            be set when the model is initialized.
-
-        Returns
-        -------
-        Chai1Output
-            Prediction results and associated metadata for the provided sequence.
-        """
-        return self._core.fold(sequences, options=options)
+        return Chai1Core(config)
 
 
 ############################################################

@@ -23,6 +23,9 @@ RUN --mount=type=cache,id=${UV_CACHE_ID},target=/root/.cache/uv \
     uv pip install --system -r /tmp/requirements.txt \
     && rm /tmp/requirements.txt
 
+# LAYERNORM_TYPE=openfold: stock Protenix's unset default, fast_layernorm, JIT-compiles a CUDA extension at first use,
+# which this image does not carry. The core's worker sets the same value itself (PROTENIX_LAYERNORM in core.py), over
+# this ENV, so the mode decides it whatever the container inherits.
 ENV HF_HUB_ENABLE_HF_TRANSFER=1 \
     DISABLE_PANDERA_IMPORT_WARNING=True \
     LAYERNORM_TYPE=openfold

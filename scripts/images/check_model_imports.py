@@ -15,12 +15,14 @@ if str(REPO_ROOT) not in sys.path:
 
 from boileroom.images.import_checks import (  # noqa: E402
     compute_cuda_versions,
+    interpreter_smoke_command,
     iter_image_targets,
     requirement_import_names,
 )
 from boileroom.images.metadata import (  # noqa: E402
     DEFAULT_DOCKER_REPOSITORY,
     MODEL_IMAGE_SELECTOR_KEYS,
+    get_model_image_spec,
     normalize_docker_repository,
     normalize_requested_tag,
     select_model_image_specs,
@@ -153,6 +155,10 @@ for dep in deps:
         check=True,
     )
 
+    # Images that run the model under a second interpreter (OpenDDE's /opt/opendde venv) check its imports too.
+    for interpreter_check in get_model_image_spec(image_key).interpreter_smoke_checks:
+        print(f"Checking imports for {image_key} under {interpreter_check.python}")
+        subprocess.run(interpreter_smoke_command(image_reference, interpreter_check), check=True)
 
 
 def check_image(

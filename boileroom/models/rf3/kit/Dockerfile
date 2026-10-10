@@ -72,4 +72,8 @@ ENV PYTHONHASHSEED=0 \
     CFLAGS=-g0 \
     MODEL_DIR=/mnt/models \
     MODEL_OPT=/kit/rosettafold3 \
-    ROSETTAFOLD3_OPT_STOCK_PYTHON=/usr/local/bin/python
+    ROSETTAFOLD3_OPT_STOCK_PYTHON=/usr/local/bin/python \
+    BOILEROOM_KIT_COMMIT=${KIT_COMMIT}
+
+# Verify the patched interpreter can import its stack before publishing.
+RUN /kit/rosettafold3/opt/venv/bin/python -c "import opt_core, rosettafold3_opt; from rf3.inference_engines.rf3 import RF3InferenceEngine"

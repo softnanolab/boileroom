@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from boileroom.inputs import MSAInput
+from boileroom.inputs import MSAInput, a3m_rows, aligned_columns, parse_a3m
 from boileroom.models.alphafold.msa import encode_msa_option, materialize_msa
 
 HETERO = ["AAAA", "CCC"]
@@ -14,6 +14,41 @@ HOMO = ["AAAA", "AAAA"]
 
 def _a3m(*rows: str) -> str:
     return "".join(f">r{index}\n{row}\n" for index, row in enumerate(rows))
+
+
+def _file(tmp_path: Path, text: str) -> MSAInput:
+    path = tmp_path / "given.a3m"
+    path.write_text(text, encoding="utf-8")
+    return MSAInput(path=path)
+
+
+def _colabfold_split(text: str) -> tuple[list[str], list[list[str]]]:
+    """Split a complex a3m the way ColabFold's ``unserialize_msa`` does.
+
+    Every non-lowercase character counts as an aligned column, and a row is cut
+    into chains after ``length`` such columns. Returns the query slices and each
+    hit row's per-chain segments.
+    """
+    header, _, body = text.partition("\n")
+    lengths = [int(part) for part in header[1:].split("\t")[0].split(",")]
+    rows = [row for _, row in parse_a3m(body)]
+
+    def split(row: str) -> list[str]:
+        segments: list[str] = []
+        start, count = 0, 0
+        for position, char in enumerate(row):
+            if not char.islower():
+                count += 1
+                if count == lengths[len(segments)]:
+                    segments.append(row[start : position + 1])
+                    start, count = position + 1, 0
+                    if len(segments) == len(lengths):
+                        break
+        return segments
+
+    query = rows[0]
+    offsets = [sum(lengths[:index]) for index in range(len(lengths) + 1)]
+    return [query[offsets[i] : offsets[i + 1]] for i in range(len(lengths))], [split(row) for row in rows[1:]]
 
 
 # -- (b) validation against the requested sequence ------------------------------
@@ -115,6 +150,209 @@ def test_paired_rows_of_a_heteromer_also_get_unpaired_rows() -> None:
         ">102",
         "----CCD",
     ]
+
+
+# -- first row as ColabFold folds it, '.' and invalid characters ----------------
+
+
+@pytest.mark.parametrize(
+    ("msa", "chains"),
+    [
+        (MSAInput(sequences=["AAaAA", "AAAA"]), ["AAAA"]),
+        (MSAInput(sequences=["AAaAA:CCC", "AAAA:CCC"]), HETERO),
+        ([_a3m("AAaAA", "AAAG"), None], HETERO),
+        ([_a3m("AAaAA", "AAAG")], ["AAAA"]),
+    ],
+    ids=["rows-single", "rows-complex", "per-chain", "per-chain-single"],
+)
+def test_first_row_with_insertions_rejected(msa: object, chains: list[str]) -> None:
+    """ColabFold folds the raw first row, so an insertion in it would change the folded sequence."""
+    with pytest.raises(ValueError, match="must not contain insertions"):
+        materialize_msa(msa, chains)
+
+
+def test_complex_file_query_line_with_insertion_rejected(tmp_path: Path) -> None:
+    """ColabFold slices the raw query line by the header lengths, so 'AAAaACCCC' would fold AAAa + ACCC."""
+    with pytest.raises(ValueError, match="must not contain insertions"):
+        materialize_msa(_file(tmp_path, "#4,4\t1,1\n>101\t102\nAAAaACCCC\n>h\nAAAACCCC\n"), ["AAAA", "CCCC"])
+
+
+def test_first_row_insertions_are_fine_once_removed(tmp_path: Path) -> None:
+    msa = _file(tmp_path, "#4,4\t1,1\n>101\t102\nAAAaACCCC\n>h\nAAAACCCC\n")
+    text = materialize_msa(MSAInput(path=msa.path, remove_insertions=True), ["AAAA", "CCCC"])
+
+    assert _colabfold_split(text)[0] == ["AAAA", "CCCC"]
+
+
+@pytest.mark.parametrize(
+    ("msa", "chains"),
+    [
+        (MSAInput(sequences=["AAAA:CDEF", "--.--:CDEF"]), ["AAAA", "CDEF"]),
+        (MSAInput(sequences=["AAAA:CDEF", "AA.AA:CDEF"]), ["AAAA", "CDEF"]),
+        ([">q\nAAAA\n>h\n-.--W\n", None], ["AAAA", "CDEF"]),
+        (MSAInput(sequences=["AAAA", "AA.AA"]), ["AAAA"]),
+        ([">q\nAAAA\n>h\nAA.AA\n"], ["AAAA"]),
+    ],
+    ids=["rows-unpaired-gap", "rows-paired", "per-chain", "rows-single", "per-chain-single"],
+)
+def test_dot_in_rows_rejected(msa: object, chains: list[str]) -> None:
+    """'.' is an aligned column to ColabFold's chain split, so it would shift residues across chains."""
+    with pytest.raises(ValueError, match="contains '\\.'") as excinfo:
+        materialize_msa(msa, chains)
+
+    # Only MSAInput has remove_insertions; pointing list users there would swap unpaired-only for paired rows.
+    if isinstance(msa, list):
+        assert "remove_insertions=True" not in str(excinfo.value)
+        assert "per-chain list form has no remove_insertions option" in str(excinfo.value)
+    else:
+        assert "MSAInput(..., remove_insertions=True)" in str(excinfo.value)
+
+
+def test_dot_in_complex_file_rejected(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="contains '\\.'"):
+        materialize_msa(_file(tmp_path, "#4,4\t1,1\n>101\t102\nAAAACDEF\n>h\n--.--CDEF\n"), ["AAAA", "CDEF"])
+
+
+@pytest.mark.parametrize("dotted", ["--.--:CDEF", "AA.AA:CDeEF"])
+def test_dot_removed_with_insertions_keeps_chain_boundaries(dotted: str) -> None:
+    text = materialize_msa(MSAInput(sequences=["AAAA:CDEF", dotted], remove_insertions=True), ["AAAA", "CDEF"])
+
+    assert "." not in text
+    query, hits = _colabfold_split(text)
+    assert query == ["AAAA", "CDEF"]
+    assert {segment for _, segment in hits} == {"CDEF", "----"}
+    assert {segment for segment, _ in hits} <= {"AAAA", "----"}
+
+
+@pytest.mark.parametrize(
+    ("text", "bad"),
+    [
+        (">q\nAAAA\n# comment\n>h\nAAAG\n", "#"),
+        (">q\nAAAA\n>h\nAA AG\n", " "),
+        (">q\nAAAA\n>h\nAA\tAG\n", "\t"),
+        (">q\nAAAA*\n>h\nAAAG\n", "*"),
+        (">q\nAAAA\n>h\nAA1G\n", "1"),
+    ],
+    ids=["comment-line", "space", "tab", "star", "digit"],
+)
+def test_invalid_characters_rejected(tmp_path: Path, text: str, bad: str) -> None:
+    with pytest.raises(ValueError, match="invalid characters") as excinfo:
+        materialize_msa(_file(tmp_path, text), ["AAAA"])
+    assert repr(bad) in str(excinfo.value)
+
+
+def test_comment_line_inside_complex_file_rejected(tmp_path: Path) -> None:
+    """ColabFold's normalize_a3m keeps only the first '#' line; a later one would join a sequence row."""
+    with pytest.raises(ValueError, match="invalid characters.*'#'"):
+        materialize_msa(_file(tmp_path, "#4,3\t1,1\n>101\t102\nAAAACCC\n#note\n>h\nAAAGCCD\n"), HETERO)
+
+
+@pytest.mark.parametrize("header", ["#4,3\t1,1\t9", "#4,3", "#4,x\t1,1"])
+def test_complex_header_must_have_two_integer_fields(tmp_path: Path, header: str) -> None:
+    with pytest.raises(ValueError, match="'#<lengths>"):
+        materialize_msa(_file(tmp_path, f"{header}\n>101\t102\nAAAACCC\n"), HETERO)
+
+
+def test_complex_file_is_re_rendered_from_validated_rows(tmp_path: Path) -> None:
+    """Wrapped rows, blank lines and padding are normalised; headers and row order are kept."""
+    text = materialize_msa(
+        _file(tmp_path, "\n#4,3\t1,1  \n>101\t102\nAAAA\nCCC\n\n>h1\n  AAAG\nC-D\n>h1\nAAAGC-D\n"), HETERO
+    )
+
+    assert text == "#4,3\t1,1\n>101\t102\nAAAACCC\n>h1\nAAAGC-D\n>h1\nAAAGC-D\n"
+    assert _colabfold_split(text) == (["AAAA", "CCC"], [["AAAG", "C-D"], ["AAAG", "C-D"]])
+
+
+# -- repeated chains (one segment per unique chain in ColabFold's format) -------
+
+
+@pytest.mark.parametrize(
+    ("rows", "chains"),
+    [
+        (["AAAA:AAAA:CCC", "AAAG:ADDD:CCD"], ["AAAA", "AAAA", "CCC"]),
+        (["AAAA:AAAA:CCC", "----:AKKA:---"], ["AAAA", "AAAA", "CCC"]),
+        (["AAAA:AAAA", "AAAG:----"], HOMO),
+        (["AAAA:CCC:AAAA", "AAAG:CCD:AADA"], ["AAAA", "CCC", "AAAA"]),
+    ],
+)
+def test_differing_segments_for_copies_of_a_chain_rejected(rows: list[str], chains: list[str]) -> None:
+    """The complex a3m keeps one segment per unique chain, so a copy-specific segment would be dropped."""
+    with pytest.raises(ValueError, match="copies of one sequence but carry different segments"):
+        materialize_msa(MSAInput(sequences=rows), chains)
+
+
+def test_identical_segments_for_copies_of_a_chain_accepted() -> None:
+    text = materialize_msa(MSAInput(sequences=["AAAA:CCC:AAAA", "AAAG:CCD:AAAG"]), ["AAAA", "CCC", "AAAA"])
+
+    assert text.startswith("#4,3\t2,1\n>101\t102\nAAAACCC\n>seq_0\nAAAACCC\n>seq_1\nAAAGCCD\n")
+
+
+def test_copy_segments_compared_after_removing_insertions() -> None:
+    msa = MSAInput(sequences=["AAAA:AAAA", "AAaAG:AAAG"], remove_insertions=True)
+
+    assert materialize_msa(msa, HOMO) == "#4\t2\n>101\nAAAA\n>seq_0\nAAAA\n>seq_1\nAAAG\n"
+
+
+# -- one shared A3M parser -------------------------------------------------------
+
+Q = "MKTAYIAK"
+
+
+@pytest.mark.parametrize(
+    ("text", "af2_only_error"),
+    [
+        (f">q\n{Q}\n>h1\nMKT-YIAK\n", None),
+        (">q\nMKTA\nYIAK\n>h1\nMKT-\nYIAK\n", None),
+        (f">q\n{Q}\n>h\nMKabT-YIAK\n>h\nMKT-YIAK\n", None),
+        (f">q\n{Q}\n>h1\nMKT-YI.AK\n", "contains '\\.'"),
+        (">q\nMKTaAYIAK\n>h1\nMKT-YIAK\n", "must not contain insertions"),
+        (f">q\n{Q}\n# comment\n>h1\nMKT-YIAK\n", "*"),
+        (f"#A3M#\n>q\n{Q}\n", "*"),
+        (">q\nMKTA YIAK\n>h1\nMKT-YIAK\n", "*"),
+        (f">q\n{Q}\n>h1\nMKT-\tYIAK\n", "*"),
+        (f">q\n{Q}*\n>h1\nMKT-YIAK\n", "*"),
+        (f">q\n{Q}\n>h1\n\n", "*"),
+        (">q\nMKTAYIAG\n", "*"),
+        (f">q\n{Q}\n>h1\nMKT\n", "*"),
+    ],
+    ids=[
+        "plain",
+        "wrapped",
+        "insertions-repeated-header",
+        "dot",
+        "first-row-insertion",
+        "comment-mid",
+        "comment-top",
+        "space",
+        "tab",
+        "star",
+        "empty-row",
+        "wrong-query",
+        "short-row",
+    ],
+)
+def test_af2_and_shared_a3m_rows_agree(text: str, af2_only_error: str | None) -> None:
+    """AF2 parses with ``a3m_rows``' parser: same rows when both accept, plus AF2's own ColabFold rules.
+
+    ``af2_only_error`` is ``None`` when both accept, ``"*"`` when both reject, and
+    otherwise the message of the AF2-only rule that rejects text ``a3m_rows`` accepts.
+    """
+    try:
+        shared: list[str] | None = a3m_rows(text, Q)
+    except ValueError:
+        shared = None
+    try:
+        af2: list[str] | None = [aligned_columns(row) for _, row in parse_a3m(materialize_msa([text], [Q]))]
+    except ValueError as exc:
+        af2, af2_error = None, str(exc)
+
+    if af2_only_error is None:
+        assert af2 == shared is not None
+    elif af2_only_error == "*":
+        assert af2 is None and shared is None
+    else:
+        assert shared is not None and af2 is None
+        assert af2_only_error.replace("\\", "") in af2_error
 
 
 # -- (a) per-chain A3M text list -----------------------------------------------

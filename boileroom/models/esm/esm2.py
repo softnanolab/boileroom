@@ -1,11 +1,11 @@
-import json
 import logging
 from collections.abc import Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import modal
 
 from ...backend.modal import get_modal_app
+from ...backend.modal_server import ModalEmbedServer
 from ...base import ModelWrapper
 from ...images.volumes import model_weights
 from ...utils import MINUTES, MODAL_MODEL_DIR
@@ -13,6 +13,7 @@ from ..registry import ESM2_SPEC
 from .image import esm_image
 
 if TYPE_CHECKING:
+    from .core import ESM2Core
     from .types import ESM2Output
 
 logger = logging.getLogger(__name__)
@@ -30,40 +31,15 @@ app = get_modal_app("esm2")
     scaledown_window=10 * MINUTES,
     volumes={MODAL_MODEL_DIR: model_weights},
 )
-class ModalESM2:
-    """Modal-specific wrapper around `ESM2`."""
+class ModalESM2(ModalEmbedServer):
+    """Modal-specific wrapper around `ESM2Core`."""
 
     config: bytes = modal.parameter(default=b"{}")
 
-    @modal.enter()
-    def _initialize(self) -> None:
-        """Create and initialize the ESM2Core backend instance from the encoded configuration.
-
-        Decodes the JSON bytes stored in self.config, constructs an ESM2Core using that config, assigns it to self._core, and calls its initialization routine.
-        """
+    def _build_core(self, config: dict[str, Any]) -> "ESM2Core":
         from .core import ESM2Core
 
-        self._core = ESM2Core(config=json.loads(self.config.decode("utf-8")))
-        self._core._initialize()
-
-    @modal.method()
-    def embed(self, sequences: str | Sequence[str], options: dict | None = None) -> "ESM2Output":
-        """Compute embeddings for one or more protein sequences using the configured ESM-2 model.
-
-        Parameters
-        ----------
-        sequences : str | Sequence[str]
-            A single protein sequence string or an iterable of sequence strings. ESM2 inputs may include inline ``<mask>`` tokens and optional ``:`` chain separators for multimers.
-        options : dict | None, optional
-            Per-call options that override the instance configuration (e.g., glycine_linker, position_ids_skip, include_fields). Request `include_fields=["lm_logits"]` for full-vocabulary masked-language-model logits; the backend automatically switches its internal model load path when logits are requested and keeps the upgraded MLM-capable model loaded for later calls on that instance.
-
-        Returns
-        -------
-        ESM2Output
-            Prediction container with residue-aligned `embeddings`, `metadata`, `chain_index`, `residue_index`, and optional `hidden_states` / full-vocabulary `lm_logits` when requested.
-        """
-        assert self._core is not None, "ModalESM2 has not been initialized"
-        return self._core.embed(sequences, options=options)
+        return ESM2Core(config=config)
 
 
 ############################################################

@@ -1,16 +1,20 @@
-import json
 import logging
 from collections.abc import Sequence
+from typing import TYPE_CHECKING, Any
 
 import modal
 
 from ...backend.modal import get_modal_app
+from ...backend.modal_server import ModalFoldServer
 from ...base import ModelWrapper
 from ...images.volumes import model_weights
 from ...utils import MINUTES, MODAL_MODEL_DIR
 from ..registry import BOLTZ2_SPEC
 from .image import boltz_image
 from .types import Boltz2Output
+
+if TYPE_CHECKING:
+    from .core import Boltz2Core
 
 logger = logging.getLogger(__name__)
 app = get_modal_app("boltz2")
@@ -28,19 +32,15 @@ app = get_modal_app("boltz2")
         MODAL_MODEL_DIR: model_weights
     },  # TODO: Volume is shared with MSA cache. Consider renaming volume to something more generic like "boileroom-data" in the future to reflect it's not just for model weights but all boileroom persistent data (models, MSA cache, etc.)
 )
-class ModalBoltz2:
+class ModalBoltz2(ModalFoldServer):
+    """Modal-specific wrapper around `Boltz2Core`."""
+
     config: bytes = modal.parameter(default=b"{}")
 
-    @modal.enter()
-    def _initialize(self) -> None:
+    def _build_core(self, config: dict[str, Any]) -> "Boltz2Core":
         from .core import Boltz2Core
 
-        self._core = Boltz2Core(json.loads(self.config.decode("utf-8")))
-        self._core._initialize()
-
-    @modal.method()
-    def fold(self, sequences: str | Sequence[str], options: dict | None = None) -> "Boltz2Output":
-        return self._core.fold(sequences, options=options)
+        return Boltz2Core(config)
 
 
 ############################################################

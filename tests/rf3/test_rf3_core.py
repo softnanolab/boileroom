@@ -382,6 +382,7 @@ def test_ranking_score_must_be_numeric(module: ModuleType, bad_score: object) ->
 def fake_worker(module: ModuleType, monkeypatch: pytest.MonkeyPatch) -> Mock:
     """Replace the worker process with one that writes RF3-layout samples into the requested output directory."""
     worker = Mock()
+    worker.info = {"torch": "2.7.1", "gpu": "worker GPU"}
     factory = Mock(return_value=worker)
     monkeypatch.setattr(module, "ModelWorker", factory)
 
@@ -403,14 +404,15 @@ def test_fold_runs_the_worker_and_returns_ranked_samples(
     output = core.fold(real_sequence, options={"include_fields": ["*"]})
 
     fake_worker.predict.assert_called_once()
+    assert output.metadata.runtime["worker.torch"] == "2.7.1"
+    assert output.metadata.runtime["worker.gpu"] == "worker GPU"
     input_json, _, config = fake_worker.predict.call_args.args
     assert Path(input_json).name == "input.json" and config["msa"] is None
     assert output.sample_indices == [2, 1, 0]
     # One entry per top-level sequence, chain separators not counted (the shared convention).
     assert output.metadata.model_name == "RF3" and output.metadata.sequence_lengths == [2 * CHAIN_RESIDUES]
     assert output.metadata.optimization == {
-        "requested": "vanilla",
-        "active": "vanilla",
+        "mode": "vanilla",
         "kit_config": None,
         "gpu_name": None,
         "capability": None,
@@ -497,7 +499,7 @@ def test_vanilla_never_probes_the_gpu(module: ModuleType, fake_worker: Mock, mon
     core._initialize()
 
     detect.assert_not_called()
-    assert core.optimization is not None and core.optimization.active == "vanilla"
+    assert core.optimization is not None and core.optimization.mode == "vanilla"
     assert fake_worker.factory.call_args.kwargs["python_executable"] == module.DEFAULT_RF3_PYTHON
 
 
@@ -514,7 +516,7 @@ def test_kit_modes_run_in_the_kit_interpreter(
     # The worker receives the mode itself: it is what the runtime hands to the kit.
     assert fake_worker.factory.call_args.args[0]["optimization"] == mode
     assert core.optimization is not None
-    assert core.optimization.active == mode and core.optimization.kit_config == "a100"
+    assert core.optimization.mode == mode and core.optimization.kit_config == "a100"
 
 
 @pytest.mark.parametrize("mode", ["exact", "fast", "big"])
@@ -549,12 +551,24 @@ def test_fold_records_the_resolved_optimization(
 ) -> None:
     monkeypatch.setattr(module, "detect_gpu", lambda device=None: A100)
 
+    fake_worker.info.update({"kit.levers_applied": '["startup"]', "kit.partial": "false"})
+    original = fake_worker.predict.side_effect
+
+    def predict(*args, **kwargs):
+        original(*args, **kwargs)
+        return {"kit.levers_applied": '["after_prediction"]', "kit.partial": "true"}
+
+    fake_worker.predict.side_effect = predict
+
     output = module.RF3Core({"optimization": mode, "diffusion_batch_size": 1}).fold(real_sequence)
 
     assert output.metadata.optimization is not None
-    assert output.metadata.optimization["requested"] == mode and output.metadata.optimization["active"] == mode
+    assert output.metadata.optimization["mode"] == mode
     assert output.metadata.optimization["kit_config"] == "a100"
     assert output.metadata.optimization["capability"] == "sm80"
+    assert output.metadata.runtime["kit.levers_applied"] == "after_prediction"
+    assert output.metadata.runtime["kit.partial"] == "true"
+    assert output.metadata.runtime["predict.kit.levers_applied"] == '["after_prediction"]'
 
 
 @pytest.mark.parametrize(

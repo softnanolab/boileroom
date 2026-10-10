@@ -1,19 +1,22 @@
 """Public and Modal wrappers for RoseTTAFold 3."""
 
-import json
 import logging
 from collections.abc import Sequence
+from typing import TYPE_CHECKING, Any
 
 import modal
 
 from ...backend.modal import get_modal_app
+from ...backend.modal_server import ModalFoldServer
 from ...base import ModelWrapper
 from ...images.volumes import model_weights
-from ...optimization import initialize_core, retry_initialize
 from ...utils import MINUTES, MODAL_MODEL_DIR
 from ..registry import RF3_SPEC
 from .image import rf3_image
 from .types import RF3Output
+
+if TYPE_CHECKING:
+    from .core import RF3Core
 
 logger = logging.getLogger(__name__)
 app = get_modal_app("rf3")
@@ -26,28 +29,15 @@ app = get_modal_app("rf3")
     scaledown_window=10 * MINUTES,
     volumes={MODAL_MODEL_DIR: model_weights},
 )
-class ModalRF3:
+class ModalRF3(ModalFoldServer):
     """Modal entrypoint for RF3."""
 
     config: bytes = modal.parameter(default=b"{}")
 
-    @modal.enter()
-    def _initialize(self) -> None:
+    def _build_core(self, config: dict[str, Any]) -> "RF3Core":
         from .core import RF3Core
 
-        self._core = RF3Core(json.loads(self.config.decode("utf-8")))
-        self._refusal = initialize_core(self._core)
-
-    @modal.exit()
-    def _shutdown(self) -> None:
-        self._core.close()
-
-    @modal.method()
-    def fold(self, sequences: str | Sequence[str], options: dict | None = None) -> "RF3Output":
-        self._refusal = retry_initialize(self._core, self._refusal)
-        if self._refusal is not None:
-            raise self._refusal
-        return self._core.fold(sequences, options=options)
+        return RF3Core(config)
 
 
 class RF3(ModelWrapper):

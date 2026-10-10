@@ -6,13 +6,19 @@
 # stock image; this one is opt-in and only used when a kit mode is requested.
 #
 # Source: anthropics/uplifting-biomolecular-modeling (Apache-2.0), fetched at KIT_COMMIT. The pinned stack, the install
-# recipe and the compile recipe (kit_wheels.sh) are the kit's own `esmfold2/environment/Dockerfile` at that commit, with
-# three changes: the kit comes from git instead of the build context, the optional `_jitcache` COPY (a glob that Modal's
-# Dockerfile parser rejects) is gone, and boileroom's runtime dependencies are added (kit_finish.sh).
+# recipe and the compile recipe (kit_wheels.sh) follow the kit's own `esmfold2/environment/Dockerfile` at that commit,
+# with these changes: the kit comes from git instead of the build context, the optional `_jitcache` COPY (a glob that
+# Modal's Dockerfile parser rejects) is gone, the compile toolchain (nvcc 13.0.88, ninja 1.13.0) is pinned to the
+# versions the kit's PINS.json records, the compiled wheels must carry machine code for every compute capability of the
+# stack (kit_sass.sh), boileroom's runtime dependencies are added (kit_finish.sh), and the build ends with a CPU-only
+# smoke check of the compiled kernels (kit_smoke.py).
 #
-# Build, from the repository root (about half an hour on a 48-64 core builder; the compile is the cost):
+# Build, from the repository root (about half an hour on a 48-64 core builder; the compile is the cost; flash-attn's
+# nvcc jobs are capped at one per 9 GB of available memory and at most 14, so memory sets its pace):
 #   docker build -f boileroom/models/esmfold2/kit/Dockerfile boileroom/models/esmfold2/kit -t boileroom-esmfold2-kit:local
-# H100/H200 only (compute capability 9.0, a smaller compile): add --build-arg STACK=img_ef2_fa
+# Compute capability 9.0 only (H100/H200, a smaller compile): add --build-arg STACK=img_ef2_fa. That image cannot run on
+# an A100 (8.0) -- including the A100 GPU class of the Modal wrapper -- so keep the default STACK for any image that may
+# be scheduled there; the ESMFold2 core refuses it on an A100 (BOILEROOM_KIT_STACK) before fetching any weight.
 # On Modal the wrapper builds this file itself, compiling the extensions on a 48-core step (WHEELS_FROM=defer):
 # see docs/optimization.md.
 #
@@ -62,11 +68,31 @@ RUN grep -E '^pip==' /kit/esmfold2/environment/requirements.lock | xargs python 
  && python -m pip install --no-cache-dir --no-deps -r /tmp/stack.txt \
  && rm -f /tmp/stack.txt
 
-COPY kit_wheels.sh kit_finish.sh /opt/boileroom-kit/
 WORKDIR /kit/esmfold2
 
+# The compile and the install are separate layers, so that in a `docker build` a change to kit_finish.sh or kit_smoke.py
+# does not recompile the extensions. Modal (WHEELS_FROM=defer) builds this whole file as one cached step and runs the two
+# scripts as two build steps on top of it (boileroom/images/modal.py): a failed install step is retried on its own, but
+# any change to this file or to a file it copies, kit_finish.sh and kit_smoke.py included, recompiles the extensions.
+COPY kit_wheels.sh kit_sass.sh /opt/boileroom-kit/
 RUN case "$WHEELS_FROM" in \
-      build) sh /opt/boileroom-kit/kit_wheels.sh && sh /opt/boileroom-kit/kit_finish.sh ;; \
-      defer) echo "WHEELS_FROM=defer: kit_wheels.sh and kit_finish.sh are run by the caller" ;; \
+      build) sh /opt/boileroom-kit/kit_wheels.sh ;; \
+      defer) echo "WHEELS_FROM=defer: kit_wheels.sh is run by the caller" ;; \
       *) echo "WHEELS_FROM must be build or defer, got $WHEELS_FROM" >&2; exit 2 ;; \
     esac
+
+COPY kit_finish.sh kit_smoke.py /opt/boileroom-kit/
+RUN case "$WHEELS_FROM" in \
+      build) sh /opt/boileroom-kit/kit_finish.sh ;; \
+      defer) echo "WHEELS_FROM=defer: kit_finish.sh (and its kit_smoke.py check) is run by the caller" ;; \
+      *) echo "WHEELS_FROM must be build or defer, got $WHEELS_FROM" >&2; exit 2 ;; \
+    esac
+
+# Fail loud at run time: with this set the kit refuses (exit 3, which boileroom raises as OptimizationUnavailableError)
+# instead of falling back to its slow attention and MLP paths. The ESMFold2 core sets it as well, so that a kit image
+# built without this line cannot fall back either. The stack and commit are recorded in each output's metadata.runtime.
+ENV ESMFOLD2_OPT_REQUIRE_FAST_ENV=1 \
+    BOILEROOM_KIT_STACK=$STACK \
+    BOILEROOM_KIT_COMMIT=$KIT_COMMIT
+LABEL org.opencontainers.image.revision=$KIT_COMMIT \
+      io.boileroom.kit.stack=$STACK

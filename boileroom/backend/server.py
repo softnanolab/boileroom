@@ -86,6 +86,8 @@ from boileroom.backend.transport import (  # noqa: E402
     TRANSPORT_HMAC_KEY_ENV,
     serialize_transport_payload,
 )
+from boileroom.optimization import REFUSAL_PROCESS_EXIT_CODE, initialize_core, is_refusal  # noqa: E402
+from boileroom.provenance import record_gpu_memory  # noqa: E402
 
 # Set up logging to stderr so it gets captured in the log file
 logging.basicConfig(
@@ -123,8 +125,16 @@ def _load_model() -> None:
     """Dynamically import and initialize the Core class specified by environment variables.
 
     Reads MODEL_CLASS, MODEL_CONFIG, and DEVICE from environment variables,
-    imports the Core class using importlib, instantiates it, and calls _initialize().
-    Also sets CUDA_VISIBLE_DEVICES if device is a CUDA device.
+    imports the Core class using importlib, instantiates it, and loads it with
+    :func:`boileroom.optimization.initialize_core`. Also sets CUDA_VISIBLE_DEVICES
+    if device is a CUDA device.
+
+    Raises
+    ------
+    Exception
+        The load failure: an ``OptimizationUnavailableError`` when the core refuses the requested optimization mode
+        (including a kit that exits with the refusal code), any other exception otherwise, with a ``SystemExit``
+        turned into a ``RuntimeError``.
     """
     global _model_instance
 
@@ -151,15 +161,11 @@ def _load_model() -> None:
     except (ImportError, AttributeError) as e:
         raise ValueError(f"Failed to import {model_class_path}: {e}") from e
 
-    # Instantiate and initialize
-    _model_instance = core_class(config=model_config)
-    _model_instance._initialize()
-
-
-@app.on_event("startup")
-async def startup_event() -> None:
-    """Load model on server startup."""
-    _load_model()
+    core = core_class(config=model_config)
+    failure = initialize_core(core)
+    if failure is not None:
+        raise failure
+    _model_instance = core
 
 
 @app.get("/health")
@@ -217,6 +223,27 @@ def _serialize_output(output: Any) -> dict[str, str]:
     return serialize_transport_payload(output, transport_secret)
 
 
+def _error_response(action: str, error: Exception) -> JSONResponse:
+    """Return the 500 response for a failed call, naming the exception type so the client can re-raise a refusal.
+
+    Parameters
+    ----------
+    action : str
+        What failed, such as ``"Folding failed"``.
+    error : Exception
+        The exception the core raised.
+
+    Returns
+    -------
+    JSONResponse
+        Status 500 with ``detail`` (the message) and ``error_type`` (the exception's class name).
+    """
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"{action}: {error}", "error_type": type(error).__name__},
+    )
+
+
 @app.post("/embed")
 async def embed(request: EmbedRequest) -> JSONResponse:
     """Embed sequences using the loaded model.
@@ -236,11 +263,12 @@ async def embed(request: EmbedRequest) -> JSONResponse:
 
     try:
         output = _model_instance.embed(request.sequences, options=request.options)
+        record_gpu_memory(output)
         serialized = _serialize_output(output)
         return JSONResponse(content=serialized)
     except Exception as e:
         logger.error(f"Embedding failed: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Embedding failed: {str(e)}") from e
+        return _error_response("Embedding failed", e)
 
 
 @app.post("/inverse_fold")
@@ -255,13 +283,13 @@ async def inverse_fold(request: InverseFoldRequest) -> JSONResponse:
     Returns
     -------
     JSONResponse
-        Signed inverse-folding output payload.
+        Signed inverse-folding output payload, or the 500 body of :func:`_error_response` for an unexpected failure.
 
     Raises
     ------
     HTTPException
-        422 for invalid inputs (``ValueError``), 501 if the model has no ``inverse_fold``, 503 if no model is
-        loaded, and 500 for unexpected failures.
+        422 for invalid inputs (``ValueError``), 501 if the model has no ``inverse_fold`` and 503 if no model is
+        loaded.
     """
     if _model_instance is None:
         raise HTTPException(status_code=503, detail="Model not loaded")
@@ -272,6 +300,7 @@ async def inverse_fold(request: InverseFoldRequest) -> JSONResponse:
         # ``dtype=float32`` turns JSON null entries back into NaN.
         coordinates = np.asarray(request.backbone_coordinates, dtype=np.float32)
         output = _model_instance.inverse_fold(request.sequence, coordinates, request.positions)
+        record_gpu_memory(output)
         serialized = _serialize_output(output)
         return JSONResponse(content=serialized)
     except ValueError as e:
@@ -280,7 +309,7 @@ async def inverse_fold(request: InverseFoldRequest) -> JSONResponse:
         raise HTTPException(status_code=422, detail=f"Invalid inverse folding input: {str(e)}") from e
     except Exception as e:
         logger.error(f"Inverse folding failed: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Inverse folding failed: {str(e)}") from e
+        return _error_response("Inverse folding failed", e)
 
 
 @app.post("/fold")
@@ -302,23 +331,45 @@ async def fold(request: FoldRequest) -> JSONResponse:
 
     try:
         output = _model_instance.fold(request.sequences, options=request.options)
+        record_gpu_memory(output)
         serialized = _serialize_output(output)
         return JSONResponse(content=serialized)
     except Exception as e:
         logger.error(f"Folding failed: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Folding failed: {str(e)}") from e
+        return _error_response("Folding failed", e)
 
 
 def main() -> None:
-    """Main entry point for the server."""
+    """Main entry point for the server: load the model, then serve it.
+
+    The model loads before uvicorn starts, so a failed load ends the process with a code of its own: the kits' refusal
+    code (:data:`boileroom.optimization.REFUSAL_PROCESS_EXIT_CODE`) when the core refuses the optimization mode, 1 for any
+    other failure. The Apptainer backend turns the refusal code into ``OptimizationUnavailableError``. uvicorn exits
+    with the same code 3 when it cannot start, so that exit is reported as 1 instead.
+    """
     parser = argparse.ArgumentParser(description="Generic model server for image-backed runtimes")
     parser.add_argument("--host", default="127.0.0.1", help="Host to bind to")
     parser.add_argument("--port", type=int, default=8000, help="Port to bind to")
     args = parser.parse_args()
 
+    try:
+        _load_model()
+    except Exception as error:
+        if is_refusal(error):
+            logger.error(f"Model load refused: {error}", exc_info=True)
+            sys.exit(REFUSAL_PROCESS_EXIT_CODE)
+        logger.error(f"Model load failed: {type(error).__name__}: {error}", exc_info=True)
+        sys.exit(1)
+
     import uvicorn
 
-    uvicorn.run(app, host=args.host, port=args.port)
+    try:
+        uvicorn.run(app, host=args.host, port=args.port)
+    except SystemExit as exit_:
+        # uvicorn's STARTUP_FAILURE is 3 as well; it must not read as a refusal.
+        if exit_.code == REFUSAL_PROCESS_EXIT_CODE:
+            sys.exit(1)
+        raise
 
 
 if __name__ == "__main__":

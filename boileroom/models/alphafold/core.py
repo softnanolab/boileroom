@@ -114,9 +114,12 @@ class AlphaFold2MultimerCore(FoldingAlgorithm):
 
         Use ``:`` inside a sequence string to define multiple protein chains.
         ``options["msa"]`` supplies an alignment instead of querying the server:
-        a :class:`~boileroom.inputs.MSAInput` (``:``-joined rows or an a3m path) or a
-        list with one A3M text (unpaired MSA) or ``None`` per chain. The alignment's
-        first row must match the requested chain(s), otherwise ``ValueError`` is raised.
+        a :class:`~boileroom.inputs.MSAInput` (``:``-joined rows, paired plus
+        unpaired, or an a3m path) or a list with one A3M text or ``None`` per chain
+        (unpaired only, no cross-chain pairing). The first row must equal the
+        requested chain(s) exactly; ``.``, invalid characters and differing segments
+        for copies of a repeated chain are refused with ``ValueError`` (see
+        :mod:`boileroom.models.alphafold.msa`).
         """
         effective_config = self._merge_options(options)
         _validate_config(effective_config)
@@ -125,7 +128,7 @@ class AlphaFold2MultimerCore(FoldingAlgorithm):
             raise ValueError(
                 "AlphaFold2-Multimer currently supports exactly one top-level sequence per call; use ':' to join chains."
             )
-        provided_msa = (options or {}).get("msa")
+        provided_msa = effective_config.get("msa")
 
         chains = split_chains(validated_sequences[0])
         joined = ":".join(chains)

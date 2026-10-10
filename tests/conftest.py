@@ -7,10 +7,21 @@ import re
 
 import pytest
 
-from boileroom.images.metadata import DOCKER_REPOSITORY_ENV, IMAGE_TAG_ENV, normalize_docker_repository
+from boileroom.images.metadata import (
+    DOCKER_REPOSITORY_ENV,
+    IMAGE_TAG_ENV,
+    KIT_IMAGE_SOURCE_ENV,
+    KIT_IMAGE_TAG_ENV,
+    get_kit_image_source,
+    normalize_docker_repository,
+    normalize_kit_image_tag,
+)
 from boileroom.utils import GPUS_AVAIL_ON_MODAL
 
 _APPTAINER_DEVICE_RE = re.compile(r"^(cpu|cuda(:\d+)?)$")
+#: Environment opt-in for the ``kit`` tests, equivalent to ``--run-kit``.
+RUN_KIT_ENV = "BOILEROOM_RUN_KIT"
+_RUN_KIT_VALUES = {"1": True, "true": True, "yes": True, "": False, "0": False, "false": False, "no": False}
 
 
 def pytest_report_header(config: pytest.Config) -> list[str]:
@@ -31,7 +42,12 @@ def pytest_report_header(config: pytest.Config) -> list[str]:
         One-line-per-entry header additions.
     """
     try:
-        from boileroom.images.metadata import get_docker_repository, get_image_tag, resolve_registry_tag
+        from boileroom.images.metadata import (
+            KIT_IMAGE_DIGESTS,
+            get_docker_repository,
+            get_image_tag,
+            resolve_registry_tag,
+        )
     except ImportError as exc:  # pragma: no cover - defensive; keep pytest running if the module is missing
         return [f"boileroom image: <unresolved: {exc!s}>"]
 
@@ -49,7 +65,45 @@ def pytest_report_header(config: pytest.Config) -> list[str]:
         override = os.environ.get(IMAGE_TAG_ENV)
         source = f"override via {IMAGE_TAG_ENV}" if override else "from pyproject.toml"
     repository = get_docker_repository()
-    return [f"boileroom image: {repository}/boileroom-<family>:{tag} ({source})"]
+    lines = [f"boileroom image: {repository}/boileroom-<family>:{tag} ({source})"]
+    lines.append(f"boileroom kit image: {_kit_image_header(raw_backend, repository, len(KIT_IMAGE_DIGESTS))}")
+    return lines
+
+
+def _kit_image_header(raw_backend: str, repository: str, pinned: int) -> str:
+    """Describe where the selected backend gets the kit images (``optimization="exact"`` / ``"fast"``).
+
+    Parameters
+    ----------
+    raw_backend : str
+        The ``--backend`` value.
+    repository : str
+        The Docker repository namespace in effect.
+    pinned : int
+        How many kit images have a pinned digest.
+
+    Returns
+    -------
+    str
+        The header text after ``boileroom kit image:``.
+    """
+    family, _, inline_tag = raw_backend.partition(":")
+    kit_tag = os.environ.get(KIT_IMAGE_TAG_ENV, "").strip()
+    if family.strip() == "apptainer" and inline_tag.strip():
+        return f"{repository}/boileroom-<family>-kit:{inline_tag.strip()} (from --backend tag)"
+    if family.strip() == "modal":
+        try:
+            source = get_kit_image_source()
+        except ValueError as exc:
+            return f"<invalid {KIT_IMAGE_SOURCE_ENV}: {exc}>"
+        if source == "build":
+            ignored = f"; {KIT_IMAGE_TAG_ENV}={kit_tag} is ignored" if kit_tag else ""
+            return (
+                f"built on Modal from boileroom/models/<family>/kit/Dockerfile ({KIT_IMAGE_SOURCE_ENV}=build{ignored})"
+            )
+    if kit_tag:
+        return f"{repository}/boileroom-<family>-kit:{kit_tag} ({KIT_IMAGE_TAG_ENV})"
+    return f"{repository}/boileroom-<family>-kit@<pinned digest> ({pinned} pinned)"
 
 
 def pytest_addoption(parser):
@@ -60,7 +114,9 @@ def pytest_addoption(parser):
     - --gpu: Modal-only GPU class (e.g. "T4", "A100-80GB").
     - --device: Apptainer-only CUDA device (e.g. "cuda:0", "cpu"). Defaults to cuda:0.
     - --docker-user: overrides the Docker Hub user or namespace for image lookup.
-    - --image-tag: overrides the runtime image tag for both Modal and Apptainer tests.
+    - --image-tag: overrides the stock runtime image tag for both Modal and Apptainer tests (not the kit images).
+    - --kit-image-tag: names the kit images (optimization="exact" / "fast") by tag instead of their pinned digests.
+    - --run-kit: runs the opt-in GPU tests marked ``kit`` (also BOILEROOM_RUN_KIT=1); they are skipped otherwise.
 
     Parameters
     ----------
@@ -99,21 +155,27 @@ def pytest_addoption(parser):
         "--image-tag",
         action="store",
         default=None,
-        help="Runtime image tag for Modal and Apptainer image lookup.",
+        help="Stock runtime image tag for Modal and Apptainer image lookup (sets BOILEROOM_IMAGE_TAG; kit images ignore it).",
     )
-
-
-def _backend_with_image_tag(backend: str, image_tag: str | None) -> str:
-    """Return the backend selector after applying the pytest image-tag option."""
-    family, sep, tag = backend.partition(":")
-    if family.strip() == "apptainer":
-        inline_tag = tag.strip() if sep else ""
-        if inline_tag:
-            return f"apptainer:{inline_tag}"
-        if image_tag:
-            return f"apptainer:{image_tag}"
-        return "apptainer"
-    return backend
+    parser.addoption(
+        "--kit-image-tag",
+        action="store",
+        default=None,
+        help=(
+            "Kit image tag for optimization='exact'/'fast' (sets BOILEROOM_KIT_IMAGE_TAG); without it the kit images "
+            "are pulled by their pinned digests. On Modal it needs BOILEROOM_KIT_IMAGE_SOURCE=registry, since Modal "
+            "builds the kit images from their Dockerfiles by default."
+        ),
+    )
+    parser.addoption(
+        "--run-kit",
+        action="store_true",
+        default=False,
+        help=(
+            f"Run the opt-in GPU tests of the optimization kit modes (marker 'kit'; same as {RUN_KIT_ENV}=1). They "
+            "fold on paid GPUs: see each tests/*/test_*_kit_integration.py docstring for its cost."
+        ),
+    )
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -147,6 +209,53 @@ def pytest_configure(config: pytest.Config) -> None:
         os.environ[DOCKER_REPOSITORY_ENV] = normalize_docker_repository(docker_user)
     if image_tag := config.getoption("--image-tag"):
         os.environ[IMAGE_TAG_ENV] = image_tag
+    if family == "modal":
+        try:
+            kit_source = get_kit_image_source()
+        except ValueError as exc:
+            raise pytest.UsageError(str(exc)) from None
+    if kit_image_tag := config.getoption("--kit-image-tag"):
+        try:
+            normalized_kit_tag = normalize_kit_image_tag(kit_image_tag)
+        except ValueError as exc:
+            raise pytest.UsageError(f"--kit-image-tag: {exc}") from None
+        if normalized_kit_tag is not None and family == "modal" and kit_source == "build":
+            # Modal builds the kit images from their Dockerfiles by default and never reads a kit tag.
+            raise pytest.UsageError(
+                f"--kit-image-tag has no effect on Modal while {KIT_IMAGE_SOURCE_ENV}=build (the default): Modal builds "
+                f"the kit images from their Dockerfiles. Set {KIT_IMAGE_SOURCE_ENV}=registry to run a published tag."
+            )
+        if normalized_kit_tag is not None:
+            os.environ[KIT_IMAGE_TAG_ENV] = normalized_kit_tag
+
+
+def _run_kit_requested(config: pytest.Config) -> bool:
+    """Return whether the ``kit`` tests were opted into, by ``--run-kit`` or :data:`RUN_KIT_ENV`.
+
+    Raises
+    ------
+    pytest.UsageError
+        If :data:`RUN_KIT_ENV` holds something other than ``1/true/yes`` or ``0/false/no`` (or nothing).
+    """
+    raw = os.environ.get(RUN_KIT_ENV, "").strip().lower()
+    if raw not in _RUN_KIT_VALUES:
+        raise pytest.UsageError(f"{RUN_KIT_ENV}={raw!r}: expected 1/true/yes to run the kit tests, or 0/false/no")
+    return bool(config.getoption("--run-kit")) or _RUN_KIT_VALUES[raw]
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """Skip the ``kit`` tests unless they were opted into (``--run-kit`` or ``BOILEROOM_RUN_KIT=1``).
+
+    They fold on paid GPUs, so selecting them by marker or path alone (``-m integration``) is not enough.
+    """
+    if _run_kit_requested(config):
+        return
+    skip = pytest.mark.skip(
+        reason=f"kit GPU test: opt in with --run-kit or {RUN_KIT_ENV}=1 (cost in the module docstring)"
+    )
+    for item in items:
+        if item.get_closest_marker("kit") is not None:
+            item.add_marker(skip)
 
 
 @pytest.fixture(autouse=True, scope="session")
@@ -171,9 +280,10 @@ def backend_option(request):
     Returns
     -------
     str
-        The backend string as provided via `--backend` (defaults to "modal").
+        The backend string as provided via `--backend` (defaults to "modal"). ``--image-tag`` reaches the stock images
+        through BOILEROOM_IMAGE_TAG, not through this string, so it never names a kit image.
     """
-    return _backend_with_image_tag(request.config.getoption("--backend"), request.config.getoption("--image-tag"))
+    return request.config.getoption("--backend")
 
 
 @pytest.fixture(scope="session")

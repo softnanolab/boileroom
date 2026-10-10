@@ -1,11 +1,11 @@
-import json
 import logging
 from collections.abc import Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import modal
 
 from ...backend.modal import get_modal_app
+from ...backend.modal_server import ModalEmbedServer
 from ...base import ModelWrapper
 from ...images.volumes import model_weights
 from ...utils import MINUTES, MODAL_MODEL_DIR
@@ -13,6 +13,7 @@ from ..registry import ESMC_SPEC
 from .image import esm3_image
 
 if TYPE_CHECKING:
+    from .core import ESMCCore
     from .types import ESMCOutput
 
 logger = logging.getLogger(__name__)
@@ -26,23 +27,15 @@ app = get_modal_app("esmc")
     scaledown_window=10 * MINUTES,
     volumes={MODAL_MODEL_DIR: model_weights},
 )
-class ModalESMC:
+class ModalESMC(ModalEmbedServer):
     """Modal wrapper around :class:`ESMCCore`."""
 
     config: bytes = modal.parameter(default=b"{}")
 
-    @modal.enter()
-    def _initialize(self) -> None:
+    def _build_core(self, config: dict[str, Any]) -> "ESMCCore":
         from .core import ESMCCore
 
-        self._core = ESMCCore(config=json.loads(self.config.decode("utf-8")))
-        self._core._initialize()
-
-    @modal.method()
-    def embed(self, sequences: str | Sequence[str], options: dict | None = None) -> "ESMCOutput":
-        if getattr(self, "_core", None) is None:
-            raise RuntimeError("ModalESMC has not been initialized")
-        return self._core.embed(sequences, options=options)
+        return ESMCCore(config=config)
 
 
 class ESMC(ModelWrapper):

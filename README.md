@@ -60,7 +60,7 @@ embedding_result.embeddings.shape  # (1, 5, features), residue-only
 embedding_result.chain_index       # [[0, 0, 0, 1, 1]]
 ```
 
-ESM-C and ESM3 use the MIT-licensed 2026 Chan Zuckerberg Biohub `esm` fork (weights `biohub/esmc-*-2024-12` and `biohub/esm3-sm-open-v1`). They share the Biohub `esmfold2` runtime image — the same `esm` package backs all three. Set `MODEL_DIR` to control the shared model-weight cache.
+ESM-C and ESM3 use the 2026 Chan Zuckerberg Biohub `esm` fork, whose code is MIT-licensed (weights `biohub/esmc-*-2024-12` and `biohub/esm3-sm-open-v1`). They share the Biohub `esmfold2` runtime image — the same `esm` package backs all three. Set `MODEL_DIR` to control the shared model-weight cache.
 
 Confidence metrics returned by structure wrappers use a consistent public shape: `plddt` entries are unit-scale
 per-residue arrays on `[0, 1]`, and scalar scores such as `ptm` and `iptm` are returned as shape-`(1,)` arrays.
@@ -76,18 +76,18 @@ ESMFold2, Protenix, OpenDDE and RF3 also accept `config={"optimization": "vanill
 | Model      | Status | Description                                    | Reference                                              |
 |------------|--------|------------------------------------------------|--------------------------------------------------------|
 | ESMFold    | ✅      | Fast protein structure prediction   | [Facebook (now Meta)](https://github.com/facebookresearch/esm)     |
-| ESMFold2   | ✅      | MIT-licensed all-atom structure prediction model | [Chan Zuckerberg Biohub](https://github.com/Biohub/esm) |
+| ESMFold2   | ✅      | All-atom structure prediction model | [Chan Zuckerberg Biohub](https://github.com/Biohub/esm) |
 | ESM-2    | ✅      | MSA-free embedding model   | [Facebook (now Meta)](https://github.com/facebookresearch/esm)     |
-| ESM-C    | ✅      | MIT-licensed embedding-only model | [Chan Zuckerberg Biohub](https://github.com/Biohub/esm) |
-| ESM3     | ✅      | MIT-licensed multimodal model, embedding-only in Boileroom | [Chan Zuckerberg Biohub](https://github.com/Biohub/esm) |
+| ESM-C    | ✅      | Embedding-only model | [Chan Zuckerberg Biohub](https://github.com/Biohub/esm) |
+| ESM3     | ✅      | Multimodal model, embedding-only in Boileroom | [Chan Zuckerberg Biohub](https://github.com/Biohub/esm) |
 | Chai-1    | ✅      | Protein design and structure prediction model | [Chai Discovery](https://github.com/chaidiscovery/chai-lab) |
-| Boltz-2   | ✅      | Diffusion-based protein structure prediction | [Boltz / MIT](https://github.com/jwohlwend/boltz) |
+| Boltz-2   | ✅      | Diffusion-based protein structure prediction | [Boltz](https://github.com/jwohlwend/boltz) |
 | Protenix  | 🍊      | AlphaFold3-style biomolecular structure prediction (Protenix v2) | [ByteDance](https://github.com/bytedance/Protenix) |
 | OpenDDE   | 🍊      | AF3-style biomolecular structure prediction (OpenDDE v1, Protenix-compatible interface) | [Aureka Research](https://github.com/aurekaresearch/OpenDDE) |
 | RF3       | 🍊      | RoseTTAFold 3 protein structure and complex prediction (weights license unconfirmed, see [docs/models.md](docs/models.md#rf3)) | [RosettaCommons](https://github.com/RosettaCommons/foundry) |
 | AlphaFold2-Multimer | 🍊 | Protein complex prediction via ColabFold (`alphafold2_multimer_v3`) | [Google DeepMind](https://github.com/google-deepmind/alphafold) / [ColabFold](https://github.com/sokrypton/ColabFold) |
 
-> **Licensing:** all bundled model weights are MIT-licensed except **Chai-1**, whose weights are released under the non-commercial Chai Discovery Community License. Review Chai Discovery's terms before using Chai-1 outside research. The **RF3** code is BSD-3-Clause, but its weights' license has not been confirmed from a primary source, so they are downloaded on first use instead of being baked into the images; check it before redistributing.
+> **Licensing:** boileroom bundles no model weights; each model downloads its upstream weights on first use, under the upstream terms. Notably, **Chai-1** weights are released under the non-commercial Chai Discovery Community License, AlphaFold2-Multimer parameters under CC BY 4.0, and the ESM-C model cards list MIT together with Biohub's acceptable use policy; Boltz-2 code and weights are MIT. RF3 code is BSD-3-Clause; its checkpoint is downloaded on first use under its upstream terms. For the other models, check the linked repository or the model card of the checkpoint you load before use, especially commercial use. The optional kit images (`optimization="exact"` / `"fast"`) contain the Apache-2.0 Anthropic optimization kit.
 
 ## Development
 
@@ -148,7 +148,9 @@ uv run pytest -v -n 4 --dist loadgroup -m integration \
 ```
 
 The same `--image-tag` option works for the Apptainer backend. For Apptainer you can also pass the tag inline as
-`--backend apptainer:<tag>` (the inline suffix wins over `--image-tag`).
+`--backend apptainer:<tag>` (the inline suffix wins over `--image-tag`). `--image-tag` does not select the kit images
+used by `optimization="exact"` / `"fast"`: those are pulled by a pinned digest, or by the tag given with
+`--kit-image-tag` (see [docs/docker_images.md](docs/docker_images.md#kit-images-optimizationexact-and-fast)).
 
 Available GPU options include `T4`, `A100-40GB`, `A100-80GB`, and other Modal-supported GPU types.
 

@@ -1,12 +1,13 @@
 """Public and Modal wrappers for AlphaFold2-Multimer."""
 
-import json
 import logging
 from collections.abc import Sequence
+from typing import TYPE_CHECKING, Any
 
 import modal
 
 from ...backend.modal import get_modal_app
+from ...backend.modal_server import ModalFoldServer
 from ...base import ModelWrapper
 from ...images.volumes import model_weights
 from ...utils import HOURS, MINUTES, MODAL_MODEL_DIR
@@ -14,6 +15,9 @@ from ..registry import ALPHAFOLD2_MULTIMER_SPEC
 from .image import alphafold2_multimer_image
 from .msa import encode_msa_option, materialize_msa, split_chains
 from .types import AlphaFold2MultimerOutput
+
+if TYPE_CHECKING:
+    from .core import AlphaFold2MultimerCore
 
 logger = logging.getLogger(__name__)
 app = get_modal_app("alphafold2_multimer")
@@ -26,25 +30,15 @@ app = get_modal_app("alphafold2_multimer")
     scaledown_window=10 * MINUTES,
     volumes={MODAL_MODEL_DIR: model_weights},
 )
-class ModalAlphaFold2Multimer:
+class ModalAlphaFold2Multimer(ModalFoldServer):
     """Modal entrypoint for AlphaFold2-Multimer."""
 
     config: bytes = modal.parameter(default=b"{}")
 
-    @modal.enter()
-    def _initialize(self) -> None:
+    def _build_core(self, config: dict[str, Any]) -> "AlphaFold2MultimerCore":
         from .core import AlphaFold2MultimerCore
 
-        self._core = AlphaFold2MultimerCore(json.loads(self.config.decode("utf-8")))
-        self._core._initialize()
-
-    @modal.exit()
-    def _shutdown(self) -> None:
-        self._core.close()
-
-    @modal.method()
-    def fold(self, sequences: str | Sequence[str], options: dict | None = None) -> "AlphaFold2MultimerOutput":
-        return self._core.fold(sequences, options=options)
+        return AlphaFold2MultimerCore(config)
 
 
 class AlphaFold2Multimer(ModelWrapper):

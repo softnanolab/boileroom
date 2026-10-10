@@ -24,9 +24,14 @@ ARG KIT_REPOSITORY=https://github.com/anthropics/uplifting-biomolecular-modeling
 ARG KIT_COMMIT=f4f62fa6592ae4938d49b1757bea0cfeff9f468e
 
 # The process environment of the tested stack: hash seed fixed, no debug info from the C compiler, nvcc found through
-# CUDA_HOME by torch's extension builder (which compiles at run time for compute capability 9.0 plus PTX, up to 32 jobs),
-# the loader path every tested run had, and stock's fast LayerNorm (which the kit's layernorm lever requires; the vanilla
-# image uses openfold). MODEL_OPT_JIT_ROOT is the kit's compile cache.
+# CUDA_HOME by torch's extension builder (up to 32 jobs), the loader path every tested run had, and stock's fast LayerNorm
+# (which the kit's layernorm lever requires; the vanilla image uses openfold, and the core's worker sets LAYERNORM_TYPE per
+# mode over this ENV). TORCH_CUDA_ARCH_LIST is the kit's value, but the one extension built here, stock's fast LayerNorm,
+# ignores it: Protenix's torch_ext_compile.py replaces it with explicit -gencode flags for every architecture among
+# sm_70/80/86/89/90/100 that this nvcc lists (CUDA 13.0: sm_80 to sm_100), so the built extension serves A100 and H100
+# alike; the build checks the built extension's SASS for sm_80 and sm_90 (cuobjdump) and fails without either.
+# MODEL_OPT_JIT_ROOT is the kit's compile cache, ephemeral here (the image already carries the fused LayerNorm built).
+# BOILEROOM_KIT_COMMIT names the kit for the runtime's provenance (the fetched checkout and its .git are removed below).
 ENV PYTHONHASHSEED=0 \
     CFLAGS=-g0 \
     CUDA_HOME=/usr/local/cuda \
@@ -35,7 +40,8 @@ ENV PYTHONHASHSEED=0 \
     MAX_JOBS=32 \
     LAYERNORM_TYPE=fast_layernorm \
     MODEL_DIR=/mnt/models \
-    MODEL_OPT_JIT_ROOT=/tmp/jit
+    MODEL_OPT_JIT_ROOT=/tmp/jit \
+    BOILEROOM_KIT_COMMIT=$KIT_COMMIT
 
 # The C/C++ toolchain (gcc 13.3, make, ninja: torch's and Triton's run-time builds), git, the download tool of this build,
 # and kalign with its stdin-closing entry ahead of /usr/bin on PATH (template realignment waits on an open stdin otherwise).
@@ -62,7 +68,9 @@ RUN git init -q /tmp/kit-src \
 # The pinned stack: the lock's own pip first, then every line of the lock with --no-deps (the lock is complete), then
 # stock Protenix from the bundled wheel (--no-deps: its declared torch / triton / cuequivariance pins do not hold on this
 # stack, so `pip check` reports those lines and nothing else), then stock's fast-LayerNorm CUDA extension compiled the
-# way stock compiles it at first import, so the image carries it built. BUILD_JOBS = parallel compile jobs; 0 = every core.
+# way stock compiles it at first import, so the image carries it built, and checked to hold sm_80 (A100) and sm_90 (H100)
+# code: built for one card only, the other would rebuild it at first use or fail. BUILD_JOBS = parallel compile jobs;
+# 0 = every core.
 ARG BUILD_JOBS=0
 RUN J=${BUILD_JOBS:-0}; [ "$J" -gt 0 ] || J=$(nproc --all); export MAX_JOBS=$J CMAKE_BUILD_PARALLEL_LEVEL=$J MAKEFLAGS=-j$J NVCC_THREADS=4 \
  && echo "build jobs: $J (cores: $(nproc --all))" \
@@ -71,7 +79,14 @@ RUN J=${BUILD_JOBS:-0}; [ "$J" -gt 0 ] || J=$(nproc --all); export MAX_JOBS=$J C
  && python -m pip install --no-cache-dir --no-deps -r /tmp/stack.txt \
  && python -m pip install --no-cache-dir --no-deps /kit/protenix_v2/stock/protenix-2.0.0-py3-none-any.whl \
  && rm -f /tmp/stack.txt \
- && python -c "import protenix.model.layer_norm"
+ && python -c "import protenix.model.layer_norm" \
+ && python -I -c "import importlib, os, re, subprocess, sys; \
+so = importlib.import_module('protenix.model.layer_norm.layer_norm').fast_layer_norm_cuda_v2.__file__; \
+cuobjdump = os.path.join(os.environ['CUDA_HOME'], 'bin', 'cuobjdump'); \
+elf = subprocess.run([cuobjdump, '--list-elf', so], capture_output=True, text=True, check=True).stdout; \
+archs = sorted(set(re.findall(r'[.](sm_[0-9]+)[.]', elf))); \
+print('fast LayerNorm', so, 'carries', archs or 'no SASS'); \
+sys.exit(0 if {'sm_80', 'sm_90'} <= set(archs) else 1)"
 
 # The kit: the shared core, then protenix_opt, both editable, and the install checked against the pins. fastapi and
 # uvicorn are what boileroom's Apptainer service imports on top of the kit's lock (numpy, biotite and pydantic are in it);
@@ -81,3 +96,17 @@ RUN bash run.sh install \
  && python -m pip install --no-cache-dir fastapi==0.136.3 uvicorn==0.48.0 \
  && python -I stock/check_pins.py \
  && mkdir -p /opt/jit_cache && chmod -R a+rX,u+w /opt/jit_cache
+
+# Kernel smoke, CPU-safe (a builder has no GPU and no libcuda.so.1): the kernel packages, stock's fast LayerNorm and the
+# kit import, and cuEquivariance's kernel library libcue_ops.so is present with every dependency but the driver's
+# libcuda.so.1 resolved (against the torch and nvidia-* wheel libraries torch loads at run time). cuequivariance_ops_torch
+# itself is not imported: it loads libcue_ops.so, which needs libcuda.so.1.
+RUN python -I -c "import cuequivariance_torch, protenix.model.layer_norm, protenix_opt" \
+ && python -I -c "import importlib.util as u, os, pathlib as p, subprocess as s, sys; \
+loc = lambda n: list(u.find_spec(n).submodule_search_locations) if u.find_spec(n) else []; \
+libs = sorted(f for d in loc('cuequivariance_ops') for f in p.Path(d).rglob('libcue_ops.so')); \
+dirs = [str(d) for n, g in (('torch', 'lib'), ('nvidia', '*/lib')) for r in loc(n) for d in sorted(p.Path(r).glob(g))]; \
+run = lambda f: s.run(['ldd', str(f)], capture_output=True, text=True, env=dict(os.environ, LD_LIBRARY_PATH=':'.join([str(f.parent), *dirs, os.environ.get('LD_LIBRARY_PATH', '')]))); \
+bad = {str(f): sorted({l.split()[0] for l in r.stdout.splitlines() if 'not found' in l} - {'libcuda.so.1'}) or r.returncode for f in libs for r in [run(f)]}; \
+print('libcue_ops.so:', bad or 'missing'); \
+sys.exit(0 if libs and not any(bad.values()) else 1)"
