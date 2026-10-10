@@ -206,3 +206,21 @@ def test_a_deadline_is_an_instant_with_a_time_zone(value, epoch) -> None:
 def test_a_deadline_without_a_time_zone_or_not_a_date_is_an_error(value) -> None:
     with pytest.raises(ValueError):
         policy.parse_deadline(value)
+
+
+@pytest.mark.parametrize("profile", sorted(policy.PROFILE_LABELS))
+def test_resource_profile_is_admitted_as_one_label(profile) -> None:
+    labels = ["self-hosted", "modal-ci", profile, "job-100-1-evaluate"]
+    req = policy.parse_workflow_job(payload(job={"labels": labels}), CFG)
+    assert isinstance(req, policy.JobRequest)
+    assert req.labels == tuple(labels)
+
+
+@pytest.mark.parametrize(
+    "profiles", [["modal-ci-unknown"], ["modal-ci-long", "modal-ci-heavy"], ["modal-ci-long", "modal-ci-long"]]
+)
+def test_unknown_or_ambiguous_resource_profiles_are_rejected(profiles) -> None:
+    labels = ["self-hosted", "modal-ci", *profiles, "job-100-1-evaluate"]
+    assert policy.parse_workflow_job(payload(job={"labels": labels}), CFG) == policy.Rejected(
+        "unknown_or_ambiguous_profile"
+    )

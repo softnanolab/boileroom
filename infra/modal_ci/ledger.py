@@ -53,6 +53,9 @@ class Profile:
 # memory covers the Actions runner (dotnet) and pip with room to spare. A bigger box only bills for idle cores.
 PROFILES = {
     "modal-ci": Profile("modal-ci", cpu=0.5, memory_gib=2.0, max_seconds=3600),
+    "modal-ci-medium": Profile("modal-ci-medium", cpu=1.0, memory_gib=8.0, max_seconds=3600),
+    "modal-ci-long": Profile("modal-ci-long", cpu=0.5, memory_gib=2.0, max_seconds=210 * 60),
+    "modal-ci-heavy": Profile("modal-ci-heavy", cpu=2.0, memory_gib=16.0, max_seconds=210 * 60),
 }
 
 

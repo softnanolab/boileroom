@@ -687,3 +687,33 @@ def test_recovery_sweep_launches_nothing_after_the_deadline_but_still_cleans_up(
     sandboxes.live.clear()
     stats = core.reconcile()
     assert stats["recovered"] == 0 and stats["settled"] == 1 and len(sandboxes.created) == 1
+
+
+@pytest.mark.parametrize("label", sorted(policy.PROFILE_LABELS))
+def test_profile_is_reserved_registered_and_passed_to_worker(world, label) -> None:
+    core, gh, sandboxes, store, *_ = world
+    labels = ["self-hosted", "modal-ci", label, "job-100-1-unit-tests"]
+    gh.job["labels"] = labels
+    assert core.handle_webhook(*delivery(job={"labels": labels})).body == "launched"
+    profile = L.PROFILES[label]
+    assert sandboxes.created[0]["profile"] == profile
+    assert sandboxes.created[0]["env"]["CI_MAX_SECONDS"] == str(profile.max_seconds)
+    assert label in gh.minted[0][2]
+    assert store["job:7"]["profile"] == label
+    assert store["job:7"]["reserved_usd"] == pytest.approx(L.worst_case_usd(profile))
+
+
+def test_uncertain_long_worker_keeps_full_reservation_past_default_lifetime(world) -> None:
+    core, gh, sandboxes, store, _, clock = world
+    labels = ["self-hosted", "modal-ci", "modal-ci-long", "job-100-1-unit-tests"]
+    gh.job["labels"] = labels
+    sandboxes.fail_create = True
+    assert core.handle_webhook(*delivery(job={"labels": labels})).status == 503
+    clock.now += L.PROFILES["modal-ci"].hard_timeout_s + L.STARTUP_ALLOWANCE_S
+    core.reconcile()
+    assert core.ledger.totals()["active"] == 1
+    assert store["job:7"]["reserved_usd"] == L.worst_case_usd(L.PROFILES["modal-ci-long"])
+    clock.now += L.PROFILES["modal-ci-long"].hard_timeout_s
+    core.reconcile()
+    assert core.ledger.totals()["active"] == 0
+    assert store["job:7"]["actual_usd"] == store["job:7"]["reserved_usd"]

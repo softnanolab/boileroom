@@ -244,18 +244,35 @@ The live deployment additionally mounts a second, non-secret Secret, `softnanola
 Bakeoff after Boileroom was removed from the installation, without touching the credentials Secret (whose `CI_REPOS` may
 still name both repositories).
 
-### Activation (not done; authorized operator only)
+### Full Bakeoff workflow routing
 
-1. Close the open items in the validation table below and re-run the cost comparison against the current GitHub billing.
-2. Redeploy the controller (`modal deploy -m infra.modal_ci.controller`); it is stopped.
-3. Set `MODAL_CI_UNPRIVILEGED=true` (Settings → Secrets and variables → Actions → Variables) on `softnanolab/bakeoff`. The
-   next run routes its same-repo `push`/`pull_request`/`schedule` jobs to Modal; fork PRs stay hosted.
-4. Arrange the cutoff procedure **before `CI_ACTIVE_UNTIL`**: unset routing, drain or cancel already routed runs, verify
-   cleanup, and stop the controller. Admission expiry alone leaves jobs queued and recurring controller costs running.
-5. Workflows that use secrets (publishing, evaluation) need the separate `MODAL_CI_PRIVILEGED` variable and a separate
-   review; they are not routed. Docker, ARM and integration-test jobs stay hosted.
+The full rollout routes all 16 Bakeoff jobs, including publishing, browser tests, evaluation orchestration,
+Modal deployment and manual backfills. Boileroom workflows are unchanged. Each job still gets a fresh sandbox,
+a JIT runner, its own immutable binding and only the credentials GitHub supplies for that exact workflow job.
+Read-only jobs use `MODAL_CI_UNPRIVILEGED`; workflows with deployment secrets or write permissions use
+`MODAL_CI_PRIVILEGED`. Both variables must be `true` for the complete rollout. Fork heads remain excluded.
 
-**Kill switch / rollback:** delete (or set to anything but `true`) the variable. New runs go back to GitHub-hosted
+| Optional resource label | CPU cores | RAM | Maximum job lifetime | Workloads |
+|---|---:|---:|---:|---|
+| none | 0.5 | 2 GiB | 60 min | Small checks and deployment setup |
+| `modal-ci-medium` | 1 | 8 GiB | 60 min | Chromium and publishing |
+| `modal-ci-long` | 0.5 | 2 GiB | 210 min | Evaluation/backfill orchestration and target MSA preparation |
+| `modal-ci-heavy` | 2 | 16 GiB | 210 min | Local CPU prescreen and reference preparation |
+
+Exactly one optional resource label is accepted. Its complete CPU/RAM lifetime, startup and egress allowance are
+reserved before minting a runner, and its label is included in JIT registration. Unknown/ambiguous profiles fail closed.
+Cleanup and uncertain-launch obligations use the recorded profile; long jobs never inherit the short worker deadline.
+The image already contains Chromium OS dependencies, so browser jobs install Chromium without sudo.
+
+Before enabling both variables, deploy the profile-aware controller, reconcile the existing total budget, and verify
+worker execution/cleanup for the added workloads. This rollout does not raise the $30 CI, $10 daily, four-worker,
+or $250 total limits. Reduce the CI ceiling if less migration headroom remains. Lower runner compute costs do not
+by themselves demonstrate lower all-in cost; the user's instruction to move all jobs now governs this rollout.
+
+Before `CI_ACTIVE_UNTIL`, disable both routing variables, drain or cancel already routed jobs, verify cleanup and stop
+the controller. Expiry itself neither changes routing nor removes recurring controller overhead.
+
+**Kill switch / rollback:** delete (or set to anything but `true`) both routing variables. New runs go back to GitHub-hosted
 immediately; jobs already queued for Modal are finished by the reaper or can be re-run. To stop the controller itself:
 `modal app stop softnanolab-ci-controller` (and uninstall the App for a hard stop).
 
