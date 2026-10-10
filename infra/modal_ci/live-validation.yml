@@ -1,0 +1,38 @@
+# Copy only to a disposable Bakeoff branch after authorizing the bounded live test.
+name: modal-live-validation
+on:
+  push:
+    branches: [ci-live/validation]
+permissions:
+  contents: read
+env:
+  ACTIONS_RUNNER_HOOK_JOB_STARTED: /bin/true
+  BASH_ENV: /opt/ci/guard.py
+  GITHUB_REPOSITORY: invalid/workflow-override
+  RUNNER_NAME: workflow-override
+jobs:
+  bound:
+    runs-on: ${{ fromJSON(format('["self-hosted","modal-ci","job-{0}-{1}-bound"]', github.run_id, github.run_attempt)) }}
+    timeout-minutes: 2
+    env:
+      ACTIONS_RUNNER_HOOK_JOB_STARTED: /bin/false
+      GITHUB_JOB: invalid-job-override
+      RUNNER_NAME: job-override
+    steps:
+      - name: Positive marker after the administrator guard
+        shell: python3 {0}
+        env:
+          ACTIONS_RUNNER_HOOK_JOB_STARTED: /does/not/exist
+          GITHUB_RUN_ID: invalid-step-override
+          RUNNER_NAME: step-override
+        run: print("BOUND_MARKER")
+  intruder:
+    # Enable only for the mismatched-job control; cancel it if no bound runner picks it up.
+    if: ${{ false }}
+    runs-on: [self-hosted, modal-ci]
+    timeout-minutes: 2
+    steps:
+      - name: Must never execute
+        if: ${{ always() }}
+        shell: python3 {0}
+        run: print("INTRUDER_MUST_NOT_RUN")
