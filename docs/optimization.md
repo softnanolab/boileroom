@@ -283,7 +283,10 @@ the 20-cycle gate. Use `BOILEROOM_MEMORY_CYCLES=20` for the longer test.
 On 2026-10-10, variable-composition 20-cycle runs passed for ESMFold2 exact on A100-80GB and Protenix exact on
 A100-40GB (44 MiB of settled-window growth). The earlier OpenDDE H100 trace fluctuated nonmonotonically around
 7300–9100 MiB with changing atom counts and failed the strict bound; this does not establish a persistent linear leak
-or a universal plateau. SAE's released local checkpoints now load and pass CPU/GPU reference checks (#124); the
+or a universal plateau. After guarded cleanup and the allocator policy above, the controlled OpenDDE H100 run
+passed 60 finite folds: allocated peaks were 3034 MiB throughout, and reserved peaks across cycles 11–20 stayed
+at or below their initial 3654 MiB peak. Final four-cycle provenance and vanilla/exact p53/decoy parity checks passed.
+SAE's released local checkpoints now load and pass CPU/GPU reference checks (#124); the
 memory case no longer marks their former missing-`b_enc` failure as expected. Historical ESMFold2 fast measurements
 above predate the current mode policy: fast is now supported only by RF3.
 
