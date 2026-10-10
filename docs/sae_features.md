@@ -104,6 +104,8 @@ SAE trained on residual updates, or a `d_model` / `num_features` / `k` that
 disagrees with the repo config raises instead of being renamed, transposed,
 defaulted or ignored. Local checkpoints round-trip through
 `SparseAutoencoder.save` / `.load`.
+Older local checkpoints containing `b_enc` / `b_pre` use an incompatible format
+and must be regenerated.
 
 ### Layer numbering
 
