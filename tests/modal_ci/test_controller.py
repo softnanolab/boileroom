@@ -1,5 +1,6 @@
 """The Modal-facing pieces of the controller, against stand-ins for the Modal SDK."""
 
+import datetime as dt
 from types import SimpleNamespace
 
 import pytest
@@ -79,6 +80,21 @@ def test_billing_probe_fails_closed_when_it_has_never_succeeded(monkeypatch) -> 
     probe = controller.BillingProbe("2026-10-10T00:00:00", Clock())
     with pytest.raises(SpendUnknown):
         probe()
+
+
+@pytest.mark.parametrize(
+    "since, expected",
+    [
+        ("2026-10-10T00:00:00", "2026-10-10T00:00:00+00:00"),
+        ("2026-10-10T00:00:00Z", "2026-10-10T00:00:00+00:00"),
+        ("2026-10-10T00:00:00+02:00", "2026-10-09T22:00:00+00:00"),
+        ("2026-10-10T00:00:00-04:00", "2026-10-10T04:00:00+00:00"),
+    ],
+)
+def test_billing_probe_queries_the_actual_budget_start_instant(monkeypatch, since, expected) -> None:
+    calls = report(monkeypatch, ROWS)
+    controller.BillingProbe(since, Clock())()
+    assert calls == [(dt.datetime.fromisoformat(expected), "h")]
 
 
 def test_billing_probe_tolerates_a_short_outage_but_not_a_long_one(monkeypatch) -> None:

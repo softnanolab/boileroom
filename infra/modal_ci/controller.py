@@ -98,7 +98,8 @@ class BillingProbe:
     MAX_AGE_S = 6 * 3600
 
     def __init__(self, since: str, clock: Callable[[], float] = time.time) -> None:
-        self.since = dt.datetime.fromisoformat(since).replace(tzinfo=dt.UTC)
+        parsed = dt.datetime.fromisoformat(since)
+        self.since = parsed.replace(tzinfo=dt.UTC) if parsed.tzinfo is None else parsed.astimezone(dt.UTC)
         self.clock = clock
         self.value = 0.0
         self.read_at: float | None = None  # when `value` was last read successfully
