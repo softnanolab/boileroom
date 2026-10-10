@@ -266,7 +266,7 @@ the 20-cycle gate. Use `BOILEROOM_MEMORY_CYCLES=20` for the longer test.
 
 On 2026-10-10, variable-composition 20-cycle runs passed for ESMFold2 exact on A100-80GB and Protenix exact on
 A100-40GB (44 MiB of settled-window growth). The earlier OpenDDE H100 trace fluctuated nonmonotonically around
-7.3–9.1 GiB with changing atom counts and failed the strict bound; this does not establish a persistent linear leak
+7300–9100 MiB with changing atom counts and failed the strict bound; this does not establish a persistent linear leak
 or a universal plateau. SAE's released local checkpoints now load and pass CPU/GPU reference checks (#124); the
 memory case no longer marks their former missing-`b_enc` failure as expected. Historical ESMFold2 fast measurements
 above predate the current mode policy: fast is now supported only by RF3.
@@ -339,7 +339,7 @@ Every output a backend returns, for every model, also records the GPU memory in 
 
 The entries are missing when no GPU memory can be read (a CPU run, no `nvidia-smi`). Within one runtime, calls of a
 repeating input size should leave `gpu.mem.used_mib` flat after the first few, since torch reuses the memory it
-reserved; growth from call to call is a leak (see [Memory across calls](#memory-across-calls)).
+reserved; persistent growth after shape-controlled warm-up warrants investigation (see [Memory across calls](#memory-across-calls)).
 
 **Spotting a degraded run.** A kit mode never degrades silently: a missing kernel, a partial lever set or a fallen-back
 LayerNorm raises `OptimizationUnavailableError`. `vanilla` is not guarded, because it runs whatever the image provides,
