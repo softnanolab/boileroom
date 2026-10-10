@@ -75,7 +75,7 @@ def test_runtime_reports_err_files(monkeypatch, tmp_path) -> None:
         runtime.predict("c.json", "c", config)
 
 
-@pytest.mark.parametrize("mode", ["exact", "fast"])
+@pytest.mark.parametrize("mode", ["exact"])
 def test_kit_is_enabled_before_runner_import(monkeypatch, tmp_path, mode) -> None:
     """The kit refuses late activation, so it must run strictly before `runner` is imported."""
     from boileroom.models.opendde.core import OpenDDECore
@@ -111,7 +111,7 @@ def test_kit_mode_without_kit_image_fails_by_name(monkeypatch, tmp_path) -> None
     _install_fake_runner(monkeypatch, tmp_path)
     monkeypatch.setitem(sys.modules, "opendde_opt", None)
     with pytest.raises(RuntimeError, match="OpenDDE kit image"):
-        OpenDDERuntime({**OpenDDECore.DEFAULT_CONFIG, "optimization": "fast"}, str(tmp_path))
+        OpenDDERuntime({**OpenDDECore.DEFAULT_CONFIG, "optimization": "exact"}, str(tmp_path))
 
 
 def test_kit_inactive_report_is_an_error(monkeypatch, tmp_path) -> None:

@@ -173,7 +173,7 @@ def test_esmfold2_kit_mode_refuses_config_it_would_ignore(config: dict) -> None:
     from boileroom.models.esmfold2.core import ESMFold2Core
 
     core = ESMFold2Core({"optimization": "exact", **config})
-    with pytest.raises(ValueError, match="optimization='exact'/'fast'"):
+    with pytest.raises(ValueError, match="optimization='exact'"):
         core._activate_optimization()
 
 

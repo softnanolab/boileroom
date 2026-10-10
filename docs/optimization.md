@@ -118,9 +118,11 @@ are covered by offline contract and unit tests (`tests/contracts/test_kit_images
 | OpenDDE | `exact` and `fast` A100 | 45 s, 62 s | 4.5 s, 4.3 s (vanilla: 7.0 s, 15 folds) |
 | RF3 | `exact`, `fast` and `big` on A100-80GB, A100-40GB and H100 (2026-10-09) | see [RF3](#rf3-fast-and-big-measured-2026-10-09) | see [RF3](#rf3-fast-and-big-measured-2026-10-09) |
 
-The cold fold includes the model load (plus the one-off weight download the first time on a volume). ESMFold2 `fast` on A100
-gave ptm 0.173 against vanilla's 0.176 for the same sequence. OpenDDE `exact` and `fast` differ from vanilla by up to several
-angstroms of C-alpha RMSD at the same seed on two-chain complexes, but two same-seed runs of vanilla differ by 0.8-2.3 A, so
+The `fast` rows for ESMFold2, Protenix and OpenDDE predate #125 and cannot be reproduced through boileroom today (the wrapper
+refuses `fast` for those families). The cold fold includes the model load (plus the one-off weight download the first time on a
+volume). ESMFold2 `fast` on A100 gave ptm 0.173 against vanilla's 0.176 for the same sequence. OpenDDE `exact` and `fast` differ
+from vanilla by up to several angstroms of C-alpha RMSD at the same seed on two-chain complexes, but two same-seed runs of
+vanilla differ by 0.8-2.3 A, so
 this is the sampler's run-to-run variation, not evidence the kit is wrong; `exact` is the more repeatable (0.5 A between runs).
 Do not rely on bit-identical output to vanilla for OpenDDE.
 
@@ -206,6 +208,9 @@ Not measured: inputs between 1,956 and 2,608 residues on `fast` (where it starts
 residues, A100-40GB above 1,304, and any kit mode with a user MSA or on the Apptainer backend.
 
 ## Measured (5 seeds x 3 complexes of 170-199 tokens, no MSA, bakeoff sampler settings)
+
+The `fast` columns below were measured before #125 withdrew `fast` for ESMFold2, Protenix and OpenDDE: they are history, not
+an option boileroom still accepts for those families. The `exact` columns apply as measured.
 
 Median warm wall seconds per fold through `ESMFold2Core` / `ProtenixCore` on Modal (wall includes pre- and
 post-processing; the first fold of each process is excluded), and cost per fold at Modal list prices

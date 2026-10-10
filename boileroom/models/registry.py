@@ -47,7 +47,7 @@ class ModelSpec:
     contract: ModelContract
     supported_backends: tuple[str, ...] = ("modal",)
     default_backend: str = "modal"
-    # Families whose kit modes (optimization="exact" / "fast") need a different image than the default one run those
+    # Families whose kit modes (every ``optimization`` except ``vanilla``) need a different image than the default one run those
     # modes there: the Modal class on the kit image, and the kit image key (see KIT_IMAGE_SPECS in images/metadata.py)
     # for Apptainer. ``optimization="vanilla"`` never touches them.
     kit_modal_class_path: str | None = None

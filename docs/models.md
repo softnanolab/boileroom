@@ -96,7 +96,7 @@ and RNA-MSA searches require the external tools and databases expected by Proten
 `hmmer` and `kalign`, but database paths still need to be available inside the container when those features are
 enabled.
 
-Optimization: `config={"optimization": "vanilla" | "exact" | "fast"}` (default `"vanilla"`, initialization-only) switches
+Optimization: `config={"optimization": "vanilla" | "exact"}` (default `"vanilla"`, initialization-only) switches
 to the Anthropic kit kernels on A100 or H100/H200 GPUs only; other GPUs are refused by name. See
 [optimization.md](optimization.md) for the requirements, kit image and measured speedups.
 
@@ -109,12 +109,12 @@ The prerelease CLI setting `protenix_command` has been removed. `model_name`, `d
 
 - **Provided MSA:** `options={"msa": [a3m_chain_a, None, ...]}`, one A3M string or `None` (query-only) per chain, with the same rules as Protenix (`unpaired_msa` is the older, still-accepted name; passing both is an error).
 - **Templates:** `options={"templates": {"name": mmcif_text}}` (up to 4) applied to chain `options["templates_chain"]` (default `0`). Each mmCIF must be a full PDB-style file with `_atom_site`, `_entity_poly_seq` and `_struct_asym` and exactly one polymer chain; see the Protenix section for how they are staged.
-- **Optimization:** `config={"optimization": "vanilla" | "exact" | "fast"}` (default `"vanilla"`, initialization-only). `exact` and `fast` use the Anthropic OpenDDE kit on A100 or H100/H200 only (other GPUs are refused by name); see [optimization.md](optimization.md). Unlike Protenix and ESMFold2, OpenDDE uses the stock `boileroom-opendde` image for every mode, because its image already carries the kit stack.
+- **Optimization:** `config={"optimization": "vanilla" | "exact"}` (default `"vanilla"`, initialization-only). `exact` uses the Anthropic OpenDDE kit on A100 or H100/H200 only (other GPUs are refused by name); see [optimization.md](optimization.md). Unlike Protenix and ESMFold2, OpenDDE uses the stock `boileroom-opendde` image for every mode, because its image already carries the kit stack.
 
 ```python
 from boileroom import OpenDDE
 
-with OpenDDE(backend="modal", config={"optimization": "fast"}) as model:
+with OpenDDE(backend="modal", config={"optimization": "exact"}) as model:
     result = model.fold("SEQ_A:SEQ_B", options={"include_fields": ["pae", "token_chain_ids", "ptm", "iptm"]})
 ```
 
@@ -304,9 +304,9 @@ Optional fields:
 - For explicit in-memory MSAs, use the shared `boileroom.inputs.MSAInput` abstraction; ESMFold2 also re-exports it from `boileroom.models.esmfold2` for compatibility. File-backed MSA paths are reserved for adapters such as Boltz-2 and are not consumed by ESMFold2 yet.
 - `options={"msa": [a3m_text_or_None, ...]}` is a shortcut that attaches an A3M to protein entries: one A3M string or `None` per entry of the input's `sequences` (for `"AAA:BBB"` that is one entry per chain). It applies to a single input structure (not a batch), the first A3M row must equal the entry's sequence, every row must have the same aligned length, and an entry that already carries an `MSAInput` or is not a protein must be `None`.
 - `options["templates"]` is not supported: ESMFold2 refuses it with a `ValueError` (only Protenix and OpenDDE take caller-supplied mmCIF templates).
-- `config={"optimization": "vanilla" | "exact" | "fast"}` (default `"vanilla"`, initialization-only) runs the Anthropic kit kernels on A100 or H100/H200 only; L4, L40S and CPU are refused. Kit modes run on a separate kit image and Modal class (the default Modal GPU is `A100-80GB`); see [optimization.md](optimization.md).
+- `config={"optimization": "vanilla" | "exact"}` (default `"vanilla"`, initialization-only) runs the Anthropic kit kernels on A100 or H100/H200 only; L4, L40S and CPU are refused. Kit modes run on a separate kit image and Modal class (the default Modal GPU is `A100-80GB`); see [optimization.md](optimization.md).
 - Kit modes: the kit loads its own pinned snapshots (about 27 GB) into `$MODEL_DIR/esmfold2/kit-hf` on the first call, so `revision`, `cache_dir` and `ccd_cache_dir` do not apply (the kit reads its own `ccd.pkl` from that directory). The kit arms one variant per process: ESMFold2-Fast uses its own variant, and the full model uses a no-MSA variant unless `config={"kit_msa": True}` (initialization-only), which selects the MSA-consuming variant. An `options["msa"]` is refused in a kit mode unless it runs the full model with `kit_msa=True`.
-- Reference check: `tests/esmfold2/test_esmfold2_integration.py` folds the sequences of PDB entries 1UBQ (ubiquitin) and 1BRS (barnase–barstar, chains A and D) with both checkpoints and compares structure, pLDDT, pTM, ipTM and the full PAE matrix (including its inter-chain blocks) against predictions made by the Biohub Platform's hosted ESMFold2 for the same sequences and sampler settings. The references live under `tests/data/esmfold2/` with a `manifest.json`; regenerate them with `ESM_API_KEY=... uv run --with "esm==3.4.1.post1" python scripts/testing/esmfold2_biohub_reference.py`. The Platform's `lm_mask_pct` and `lm_dropout` are pinned to the checkpoints' own values (0.0 and 0.25) so both sides run the same model settings. The Platform exposes no seed, so the vanilla comparison allows sampler noise (structure is compared tightly only over residues both predictions call confident); the `exact` and `fast` kit modes fold 1UBQ with both checkpoints and must land within 1.1 times vanilla's own seed-to-seed noise of the Biohub reference on four metrics (all-residue and confident-residue CA RMSD, mean and max PAE entry gap; the noise was measured on an A100-80GB over seeds 0-3 and is recorded in the test). The kit comparisons run only when `BOILEROOM_KIT_IMAGE_SOURCE` is set (see [optimization.md](optimization.md)).
+- Reference check: `tests/esmfold2/test_esmfold2_integration.py` folds the sequences of PDB entries 1UBQ (ubiquitin) and 1BRS (barnase–barstar, chains A and D) with both checkpoints and compares structure, pLDDT, pTM, ipTM and the full PAE matrix (including its inter-chain blocks) against predictions made by the Biohub Platform's hosted ESMFold2 for the same sequences and sampler settings. The references live under `tests/data/esmfold2/` with a `manifest.json`; regenerate them with `ESM_API_KEY=... uv run --with "esm==3.4.1.post1" python scripts/testing/esmfold2_biohub_reference.py`. The Platform's `lm_mask_pct` and `lm_dropout` are pinned to the checkpoints' own values (0.0 and 0.25) so both sides run the same model settings. The Platform exposes no seed, so the vanilla comparison allows sampler noise (structure is compared tightly only over residues both predictions call confident); the `exact` kit mode folds 1UBQ with both checkpoints and must land within 1.1 times vanilla's own seed-to-seed noise of the Biohub reference on four metrics (all-residue and confident-residue CA RMSD, mean and max PAE entry gap; the noise was measured on an A100-80GB over seeds 0-3 and is recorded in the test). The kit comparisons run only when `BOILEROOM_KIT_IMAGE_SOURCE` is set (see [optimization.md](optimization.md)).
 
 Example usage:
 ```python
@@ -314,7 +314,7 @@ from boileroom import ESMFold2
 from boileroom.inputs import MSAInput
 from boileroom.models.esmfold2.types import DNAInput, LigandInput, ProteinInput, StructurePredictionInput
 
-# Vanilla runs on any GPU. For the kit kernels use config={"optimization": "fast"} with an A100 or H100/H200; L4 is refused.
+# Vanilla runs on any GPU. For the kit kernels use config={"optimization": "exact"} with an A100 or H100/H200; L4 is refused.
 model = ESMFold2(
     backend="modal",
     device="L4",

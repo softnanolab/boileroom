@@ -1,6 +1,7 @@
 """Static ``optimization`` option: vanilla | exact (| fast, big for some families), resolved per GPU.
 
-``exact`` and ``fast`` drive the kits of anthropics/uplifting-biomolecular-modeling (Apache-2.0).
+The kit modes (``exact``, plus ``fast`` and ``big`` for RF3) drive the kits of
+anthropics/uplifting-biomolecular-modeling (Apache-2.0).
 A kit mode is all of its levers on a GPU class, so a card the kit cannot fully serve is refused
 by name here, before any weights load, instead of the kit's own ``os._exit(3)``.
 """
@@ -106,14 +107,14 @@ def validate_optimization(mode: object, family: str | None = None) -> str:
 def detect_gpu(device: str | None = None) -> GpuInfo:
     """Read name and compute capability of the CUDA device the model will run on."""
     if device is not None and not device.startswith("cuda"):
-        raise OptimizationUnavailableError(f"optimization exact/fast runs on a CUDA GPU, not on device={device!r}")
+        raise OptimizationUnavailableError(f"a kit optimization mode runs on a CUDA GPU, not on device={device!r}")
     index = int(device.split(":")[1]) if device and device.startswith("cuda:") else 0
     try:
         import torch
     except ImportError:
         return _detect_gpu_nvidia_smi(index)
     if not torch.cuda.is_available():
-        raise OptimizationUnavailableError("optimization exact/fast needs a CUDA GPU; none is visible")
+        raise OptimizationUnavailableError("a kit optimization mode needs a CUDA GPU; none is visible")
     return GpuInfo(name=torch.cuda.get_device_name(index), capability=torch.cuda.get_device_capability(index))
 
 
@@ -131,7 +132,7 @@ def _detect_gpu_nvidia_smi(index: int) -> GpuInfo:
         major, minor = cap.split(".")
     except (OSError, subprocess.CalledProcessError, IndexError, ValueError) as error:
         raise OptimizationUnavailableError(
-            "optimization exact/fast could not read the GPU (nvidia-smi failed)"
+            "a kit optimization mode could not read the GPU (nvidia-smi failed)"
         ) from error
     return GpuInfo(name=name, capability=(int(major), int(minor)))
 
