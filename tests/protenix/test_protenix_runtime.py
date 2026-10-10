@@ -632,3 +632,81 @@ def test_runtime_source_supports_python_310() -> None:
         alias.name.split(".")[0] for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names
     } | {node.module.split(".")[0] for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.module}
     assert "boileroom" not in imported
+
+
+@pytest.mark.parametrize("key,value", [("triatt_kernel", "torch"), ("trimul_kernel", "torch"), ("dtype", "fp32")])
+def test_kit_refuses_settings_that_disable_its_kernels(rt, fake, monkeypatch, tmp_path, key, value) -> None:
+    FakeKit(monkeypatch, fake)
+    with pytest.raises(rt.OptimizationUnavailableError, match="needs optimization='vanilla'"):
+        rt.ProtenixRuntime(_config(optimization="exact", **{key: value}), str(tmp_path))
+    fake.batch.get_default_runner.assert_not_called()
+
+
+def test_kit_refuses_resolved_stock_kernel(rt, fake, monkeypatch, tmp_path) -> None:
+    FakeKit(monkeypatch, fake)
+    fake.configs.triangle_attention = "torch"
+    with pytest.raises(rt.OptimizationUnavailableError, match="the runner resolved 'torch'"):
+        rt.ProtenixRuntime(_config(optimization="exact"), str(tmp_path))
+
+
+def test_kit_refuses_per_request_dtype_change(rt, fake, monkeypatch, tmp_path) -> None:
+    FakeKit(monkeypatch, fake)
+    runtime = rt.ProtenixRuntime(_config(optimization="exact"), str(tmp_path))
+    with pytest.raises(rt.OptimizationUnavailableError, match="requires dtype='bf16'"):
+        runtime.predict("a.json", "a", _config(optimization="exact", dtype="fp32"))
+    assert not fake.seen
+
+
+def test_graph_reset_clears_live_accounting_and_preserves_budget(rt, fake, monkeypatch, tmp_path) -> None:
+    FakeKit(monkeypatch, fake)
+    native, reset = _fake_stack_graph_kit(monkeypatch)
+    stack = sys.modules[rt.FoldRuntime.STACK_GRAPH_MODULE]
+    stack._BUDGET = {"pool_total": 900, "bytes": 1024, "per_tok2_max": 4}  # type: ignore[attr-defined]
+    stack.ST = {"pool_gb": 0.1, "pool_bytes_by_ntok": {280: 900}, "captures": 7}  # type: ignore[attr-defined]
+    runtime = rt.ProtenixRuntime(_config(optimization="exact"), str(tmp_path))
+    native._SHARED = {280: {"workspace": "a"}}  # type: ignore[attr-defined]
+    runtime.predict("a.json", "a", _config(optimization="exact"))
+    native._SHARED = {}  # type: ignore[attr-defined]
+    runtime.predict("a.json", "a", _config(optimization="exact"))
+    reset.assert_called_once()
+    assert stack._BUDGET == {"pool_total": 0, "bytes": 1024, "per_tok2_max": 4}
+    assert stack.ST == {"pool_gb": 0, "pool_bytes_by_ntok": {}, "captures": 7}
+
+
+@pytest.mark.parametrize("native_present", [True, False])
+def test_padding_buffers_release_after_graphs_and_reset_allocation_stats(
+    rt, fake, monkeypatch, tmp_path, native_present
+) -> None:
+    kit = FakeKit(monkeypatch, fake)
+    _, reset = _fake_stack_graph_kit(monkeypatch)
+    if not native_present:
+        monkeypatch.delitem(sys.modules, rt.FoldRuntime.TRIMUL_NATIVE_MODULE)
+    order = []
+
+    class Buffers(dict):
+        def clear(self):
+            order.append("clear")
+            super().clear()
+
+    kit.blk2._PAD_BUFS = Buffers({(536, 4, 32): object()})  # type: ignore[attr-defined]
+    kit.blk2._STATS.update(blk_att_padded_bufs=3, blk_att_padded_buf_bytes=1024)
+    monkeypatch.setitem(
+        sys.modules,
+        "torch",
+        SimpleNamespace(
+            cuda=SimpleNamespace(
+                is_available=lambda: True,
+                synchronize=lambda: order.append("sync"),
+                empty_cache=lambda: order.append("flush"),
+            )
+        ),
+    )
+    reset.side_effect = lambda: order.append("reset")
+    runtime = rt.ProtenixRuntime(_config(optimization="exact"), str(tmp_path))
+    result = runtime.predict("a.json", "a", _config(optimization="exact"))
+    assert order == ["sync", "reset", "clear", "flush"]
+    assert result["kit.stack_graph_resets"] == "1"
+    assert not kit.blk2._PAD_BUFS
+    assert kit.blk2._STATS["blk_att_padded_bufs"] == kit.blk2._STATS["blk_att_padded_buf_bytes"] == 0
+    runtime.predict("a.json", "a", _config(optimization="exact"))
+    assert order == ["sync", "reset", "clear", "flush"]

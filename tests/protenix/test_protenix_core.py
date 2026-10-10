@@ -313,9 +313,7 @@ def _stub_outputs(core: Any) -> None:
     core._collect_outputs = lambda output_dir, metadata, config: Mock(metadata=metadata)
 
 
-@pytest.mark.parametrize(
-    ("mode", "layernorm"), [("vanilla", "openfold"), ("exact", "fast_layernorm"), ("fast", "fast_layernorm")]
-)
+@pytest.mark.parametrize(("mode", "layernorm"), [("vanilla", "openfold"), ("exact", "fast_layernorm")])
 def test_layernorm_is_set_per_mode_over_the_inherited_value(
     monkeypatch: pytest.MonkeyPatch, core_class, tmp_path: Path, mode: str, layernorm: str
 ) -> None:

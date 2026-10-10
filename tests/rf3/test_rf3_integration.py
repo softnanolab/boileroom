@@ -183,7 +183,7 @@ def test_rf3_modal_fold_basic(rf3_model: RF3) -> None:
 
     assert result.metadata.model_name == "RF3"
     assert result.metadata.sequence_lengths == [len(sequence)]
-    assert result.metadata.optimization is not None and result.metadata.optimization["active"] == "vanilla"
+    assert result.metadata.optimization is not None and result.metadata.optimization["mode"] == "vanilla"
     assert result.atom_array is not None and len(result.atom_array) == 1
     atoms = result.atom_array[0]
     assert len(atoms) > len(sequence)
@@ -227,7 +227,7 @@ def test_rf3_matches_stock_rf3_reference(rf3_model: RF3, reference_id: str) -> N
 
     result = rf3_model.fold(sequence, options=_stock_options())
 
-    assert result.metadata.optimization is not None and result.metadata.optimization["active"] == "vanilla"
+    assert result.metadata.optimization is not None and result.metadata.optimization["mode"] == "vanilla"
     _assert_matches_stock_reference(result, lengths, expected_atoms, confidences, summary, max_ca_rmsd=1.0)
 
 
@@ -330,7 +330,7 @@ def test_rf3_kit_matches_stock_rf3_reference(
     with output_ctx(), RF3(backend=backend_option, device=device, config=config) as model:
         result = model.fold(sequence, options=_stock_options())
 
-    assert result.metadata.optimization is not None and result.metadata.optimization["active"] == mode
+    assert result.metadata.optimization is not None and result.metadata.optimization["mode"] == mode
     _assert_ran_on(result, device)
     _assert_matches_stock_reference(result, lengths, expected_atoms, confidences, summary, max_ca_rmsd=1.5)
 
@@ -349,7 +349,7 @@ def test_rf3_kit_big_folds_an_input_too_large_for_fast(
             sequence, options={"seed": 0, "early_stopping_plddt_threshold": 0.0, "include_fields": ["plddt", "ptm"]}
         )
 
-    assert result.metadata.optimization is not None and result.metadata.optimization["active"] == "big"
+    assert result.metadata.optimization is not None and result.metadata.optimization["mode"] == "big"
     _assert_ran_on(result, device)
     assert result.plddt[0].shape == (LARGE_CHAIN_COUNT * len(LARGE_CHAIN),)
     assert 0.5 < float(np.mean(result.plddt[0])) <= 1.0 and 0.0 < float(result.ptm[0][0]) <= 1.0

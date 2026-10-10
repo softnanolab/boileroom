@@ -2,21 +2,24 @@
 
 Every model of the registry runs on one live model through its public wrapper, calling ``fold()`` / ``embed()`` with
 sequences of a few lengths for :data:`CYCLES` cycles. Every output records the GPU memory in use right after its call
-(``metadata.runtime["gpu.mem.used_mib"]``, see ``docs/optimization.md``); the peak of the last cycle may not exceed the
-peak of the second one by :data:`GROWTH_LIMIT_MIB`. The first cycle is the warm-up: allocator pools and caches keyed by
-length fill there, and a bounded cache stops growing once every length has been seen.
+(``metadata.runtime["gpu.mem.used_mib"]``, see ``docs/optimization.md``). After warm-up no measured cycle peak may rise
+by :data:`GROWTH_LIMIT_MIB`. Short traces start at cycle two; traces of ten or more cycles measure the entire second
+half, allowing bounded shape-dependent cache fill while rejecting continued growth.
 
 A leak grows on every call instead. The kits' TriMul geometry caches, which the kit's LRU evicted but whose weight
 finalizers still held them, grew ESMFold2 ``fast`` on an A100 by about 0.3 GB per new length (``docs/optimization.md``,
 "Memory across calls"); three lengths cycling past its two-entry LRU make every call a new one. The kit cases
-(``exact`` / ``fast``) fold lengths 280-360, where the H100 adapter runs its native kernel too.
+(``exact``) fold lengths 280-360, where the H100 adapter runs its native kernel too.
 
 Run from the repository root (kit cases also need ``--run-kit``; pull the kit images by their pinned digests)::
 
     # everything, about $4 on Modal (~25 A100-80GB, ~30 A100-40GB and ~20 small-GPU minutes)
     BOILEROOM_KIT_IMAGE_SOURCE=registry UV_CACHE_DIR=$TMPDIR/uv timeout 7200 uv run pytest \
         tests/test_memory_stability.py --run-kit -s -rs
-    # one model or mode: -k esm2 | -k "esmfold2 and fast" | -k "not kit"
+    # H100 PAD8, 60 folds; about $1 on Modal
+    BOILEROOM_MEMORY_CYCLES=20 BOILEROOM_KIT_IMAGE_SOURCE=registry uv run pytest \
+        tests/test_memory_stability.py --run-kit --gpu H100 -k padding -s
+    # one model or mode: -k esm2 | -k "esmfold2 and exact" | -k "not kit"
 
 ``--gpu`` / ``--device`` set the device of every case. On Modal the ESMFold2 / Protenix / OpenDDE cases default to
 their kit golden GPUs (``DEFAULT_MODAL_GPU``) and the others to their wrapper's default. Cases run one at a time
@@ -26,20 +29,24 @@ their kit golden GPUs (``DEFAULT_MODAL_GPU``) and the others to their wrapper's 
 from __future__ import annotations
 
 import importlib
+import os
 import random
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+import numpy as np
 import pytest
 from _kit_parity import DEFAULT_MODAL_GPU, wrapper_device
 
 from boileroom.models.registry import MODEL_SPECS, MODEL_SPECS_BY_KEY
 
-#: Cycles over a case's lengths; the first is the warm-up.
-CYCLES = 4
-#: Largest rise of the per-cycle peak of ``gpu.mem.used_mib`` from the second cycle to the last. A leak of the kit
-#: caches' size (about 0.3 GB per call) exceeds it within one call; allocator rounding stays far below it.
+#: Cycles over a case's lengths; use 20 for the long plateau gate.
+CYCLES = int(os.environ.get("BOILEROOM_MEMORY_CYCLES", "4"))
+if CYCLES < 3:
+    raise ValueError("BOILEROOM_MEMORY_CYCLES must be at least 3")
+#: Largest permitted rise of any settled per-cycle ``gpu.mem.used_mib`` peak.
+#: A 40 MiB/cycle leak fails the second-half window of a 20-cycle trace.
 GROWTH_LIMIT_MIB = 256
 _AMINO_ACIDS = "ACDEFGHIKLMNPQRSTVWY"
 
@@ -47,6 +54,8 @@ _AMINO_ACIDS = "ACDEFGHIKLMNPQRSTVWY"
 SHORT = (60, 90, 120)
 #: Lengths inside the native range of the kits' TriMul adapter on both A100 and H100.
 KIT = (280, 320, 360)
+# Non-aligned sizes exercise the H100 PAD8 path, whose buffers used to accumulate.
+PADDED = (529, 577, 625)
 
 
 @dataclass(frozen=True)
@@ -78,13 +87,14 @@ class MemoryCase:
 
     @property
     def id(self) -> str:
-        return self.model if self.mode == "vanilla" else f"{self.model}-{self.mode}"
+        name = self.model if self.mode == "vanilla" else f"{self.model}-{self.mode}"
+        return f"{name}-padding" if self.lengths == PADDED else name
 
 
 _ESMFOLD2_OPTIONS = {"num_loops": 3, "num_sampling_steps": 50, "num_diffusion_samples": 1, "include_fields": ["plddt"]}
 #: No MSA (no MSA server call), the reduced sampling budget of the Protenix-family integration tests.
 _PROTENIX_CONFIG = {"use_msa": False, "sample": 1, "cycle": 4, "step": 50}
-_PROTENIX_OPTIONS = {"include_fields": ["plddt"]}
+_PROTENIX_OPTIONS = {"include_fields": ["plddt", "pae"]}
 _MODES = ("vanilla", "exact")
 
 CASES: tuple[MemoryCase, ...] = (
@@ -92,12 +102,7 @@ CASES: tuple[MemoryCase, ...] = (
     MemoryCase("esm2", SHORT),
     MemoryCase("esmc", SHORT),
     MemoryCase("esm3", SHORT),
-    MemoryCase(
-        "sae",
-        SHORT,
-        config={"feature_source": "local"},
-        xfail="the local SAE checkpoint has no b_enc, so the model fails to load (softnanolab/boileroom#115)",
-    ),
+    MemoryCase("sae", SHORT, config={"feature_source": "local"}),
     *(
         MemoryCase("esmfold2", KIT, config={"optimization": mode}, options=_ESMFOLD2_OPTIONS, mode=mode)
         for mode in _MODES
@@ -116,6 +121,23 @@ CASES: tuple[MemoryCase, ...] = (
         MemoryCase(model, KIT, config={**_PROTENIX_CONFIG, "optimization": mode}, options=_PROTENIX_OPTIONS, mode=mode)
         for model in ("protenix", "opendde")
         for mode in _MODES
+    ),
+    MemoryCase(
+        "protenix",
+        PADDED,
+        config={**_PROTENIX_CONFIG, "optimization": "exact"},
+        options=_PROTENIX_OPTIONS,
+        mode="exact",
+    ),
+    *(
+        MemoryCase(
+            "rf3",
+            SHORT,
+            config={"optimization": mode, "diffusion_batch_size": 1, "n_recycles": 1, "num_steps": 20},
+            options={"include_fields": ["plddt", "pae"]},
+            mode=mode,
+        )
+        for mode in ("vanilla", "exact", "fast", "big")
     ),
     MemoryCase(
         "alphafold2_multimer",
@@ -146,6 +168,8 @@ def _wrapper(model: str) -> type:
 
 def _device(case: MemoryCase, backend: str, device_option: str | None) -> str | None:
     family = MODEL_SPECS_BY_KEY[case.model].family
+    if case.lengths == PADDED and backend == "modal" and device_option is None:
+        return "H100"
     if family in DEFAULT_MODAL_GPU:
         return wrapper_device(family, backend, device_option)
     return device_option
@@ -174,12 +198,41 @@ def test_gpu_memory_stays_flat_across_calls(
         for cycle in range(CYCLES):
             used.append([])
             for length in case.lengths:
-                runtime = task(_sequence(length, cycle), options=dict(case.options)).metadata.runtime or {}
+                result = task(_sequence(length, cycle), options=dict(case.options))
+                runtime = result.metadata.runtime or {}
+                for field_name in ("pae", "plddt", "embeddings", "pooled_features"):
+                    values = getattr(result, field_name, None)
+                    if values is None:
+                        continue
+                    for value in values if isinstance(values, list) else [values]:
+                        if value is not None:
+                            assert np.isfinite(value).all(), (
+                                f"{case.id}: non-finite {field_name} at cycle {cycle}, length {length}"
+                            )
                 assert "gpu.mem.used_mib" in runtime, f"{case.id}: the output records no GPU memory: {sorted(runtime)}"
                 used[-1].append(int(runtime["gpu.mem.used_mib"]))
 
     print(f"{case.id} gpu.mem.used_mib per cycle of {case.lengths}: {used}")
-    growth = max(used[-1]) - max(used[1])
+    _check_memory_plateau(used, case.id)
+
+
+def _check_memory_plateau(used: list[list[int]], name: str) -> None:
+    """A shape-dependent allocator may warm for several cycles; persistent growth must stop in the second half.
+
+    Long traces retain the original 256 MiB bound, applied to every settled peak.
+    This catches even 40 MiB/cycle leaks over a 20-cycle run while tolerating bounded initial cache fill.
+    """
+    start = len(used) // 2 if len(used) >= 10 else 1
+    settled = [max(cycle) for cycle in used[start:]]
+    growth = max(settled) - settled[0]
     assert growth < GROWTH_LIMIT_MIB, (
-        f"{case.id}: GPU memory grew {growth} MiB from cycle 2 to cycle {CYCLES} (limit {GROWTH_LIMIT_MIB} MiB): {used}"
+        f"{name}: GPU memory grew {growth} MiB after warm-up, cycles {start + 1}–{len(used)} "
+        f"(limit {GROWTH_LIMIT_MIB} MiB): {used}"
     )
+
+
+def test_memory_gate_accepts_bounded_cache_fill_and_rejects_continued_growth() -> None:
+    _check_memory_plateau([[4000 + min(i, 6) * 100] for i in range(20)], "bounded warm-up")
+    for per_cycle in (40, 75, 900):
+        with pytest.raises(AssertionError, match="GPU memory grew"):
+            _check_memory_plateau([[4000 + i * per_cycle] for i in range(20)], "leak")

@@ -194,3 +194,26 @@ def test_kit_kernel_guard(backend_option: str) -> None:
     assert report["retry_kept_failure"] is True, "a refusal was retried"
     assert report["reload_failure"] is not None and "before the weight fetch" in report["reload_failure"], report
     assert report["ready"] is False
+
+
+def test_full_kit_reads_caller_msa(backend_option: str, device_option: str | None, output_ctx) -> None:
+    """The full kit's MSA checkpoint serves caller alignments without silently using the no-MSA variant."""
+    from boileroom import ESMFold2
+
+    alignment = f">query\n{TARGET}\n>homolog\nA{TARGET[1:]}\n"
+    config = {"optimization": "exact", "kit_msa": True}
+    options = {**FOLD_OPTIONS, "msa": [alignment, None], "num_loops": 1, "num_sampling_steps": 20}
+    with (
+        output_ctx(),
+        ESMFold2(
+            backend=backend_option, device=wrapper_device(FAMILY, backend_option, device_option), config=config
+        ) as model,
+    ):
+        output = model.fold(heterodimer("p53"), options=options)
+    runtime = output.metadata.runtime or {}
+    assert runtime["kit.variant"] == "full_msa"
+    assert runtime["kit.partial"] == "false"
+    assert output.pae is not None and output.plddt is not None
+    assert np.isfinite(output.pae[0]).all() and np.isfinite(output.plddt[0]).all()
+    assert output.pae[0].shape == (len(TARGET) + len(BINDERS["p53"]),) * 2
+    print(f"Full-MSA kit passed on {runtime['gpu']}; checkpoint={runtime['kit.weights']}")

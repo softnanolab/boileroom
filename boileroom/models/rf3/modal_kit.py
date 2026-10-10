@@ -1,6 +1,5 @@
 """Modal entrypoint that runs RF3 on the optimization-kit image (``optimization="exact"``)."""
 
-from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 import modal

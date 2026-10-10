@@ -1,8 +1,8 @@
 """Public and Modal wrappers for RoseTTAFold 3."""
 
 import logging
-from typing import TYPE_CHECKING, Any
 from collections.abc import Sequence
+from typing import TYPE_CHECKING, Any
 
 import modal
 

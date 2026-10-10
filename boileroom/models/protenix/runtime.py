@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import gc
 import importlib
 import json
 import os
@@ -352,6 +353,12 @@ class FoldRuntime:
         stats = getattr(levers, "_STATS", None)
         if isinstance(stats, dict):
             stats.update(blk_att_padded_bufs=0, blk_att_padded_buf_bytes=0)
+        # The upstream graph reset flushes before these buffers are freed.
+        # Flush afterward through the kit's guarded API so idle PAD allocations
+        # do not accumulate in the caching allocator across requests.
+        gc.collect()
+        if torch is not None and torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     def _point_at_staged_templates(self, configs: Any, staging: dict[str, Any]) -> None:
         # Caller templates: point the featurizer at the staged directory and forbid it from fetching

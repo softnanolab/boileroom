@@ -3,21 +3,15 @@
 from __future__ import annotations
 
 import dataclasses
-import importlib
 import logging
 import math
 import os
 import sys
-from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
-from io import StringIO
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, ClassVar, cast
 
-import numpy as np
-
-from ...base import FoldingAlgorithm, PredictionMetadata
-from ...inputs import a3m_rows
+from ...base import FoldingAlgorithm
 from ...optimization import (
     DEFAULT_OPTIMIZATION,
     GpuInfo,
@@ -29,45 +23,24 @@ from ...optimization import (
     is_refusal,
     resolve_optimization,
 )
-from ...provenance import _ABSENT, _UNKNOWN, _joined, kit_provenance, runtime_provenance
-from ...utils import MODAL_MODEL_DIR, Timer, safe_mkdir, validate_sequence
+from ...provenance import _ABSENT, _UNKNOWN, runtime_provenance
+from ...utils import MODAL_MODEL_DIR, Timer, safe_mkdir
 from .._worker import release_evicted_kit_caches
-from .payloads import decode_structure_input
+from . import conversion, kit_reports
+from .conversion import (
+    ESMFold2FoldInput,
+    _FoldRequest,
+)
+from .kit_reports import KIT_COMMIT_ATTRIBUTES as KIT_COMMIT_ATTRIBUTES
+from .kit_reports import KIT_COMMIT_ENV as KIT_COMMIT_ENV
+from .kit_reports import _kit_commit as _kit_commit
 from .types import (
-    CovalentBond,
-    DistogramConditioning,
-    DNAInput,
     ESMFold2Output,
-    LigandInput,
-    Modification,
-    MSAInput,
-    PocketConditioning,
     ProteinInput,
-    RNAInput,
     StructurePredictionInput,
 )
 
 logger = logging.getLogger(__name__)
-
-SequenceInput = ProteinInput | RNAInput | DNAInput | LigandInput
-ESMFold2FoldInput = (
-    str
-    | Sequence[str]
-    | StructurePredictionInput
-    | Sequence[StructurePredictionInput]
-    | Sequence[SequenceInput]
-    | Mapping[str, Any]
-    | Sequence[Mapping[str, Any]]
-)
-
-
-@dataclass(frozen=True)
-class _FoldRequest:
-    """One normalized fold request plus its sequence-length metadata."""
-
-    input: StructurePredictionInput
-    sequence_length: int
-
 
 # Biohub re-bundled biohub/ESMFold2 in place on 2026-09-14, so unpinned loads silently
 # changed checkpoint layout under existing images. Pin the default model's snapshot.
@@ -85,11 +58,9 @@ KIT_WEIGHTS_MEMO_SUBDIR = "esmfold2/kit-digests"
 #: Set by the kit image (``kit/Dockerfile``): the kit commit and the compiled stack, recorded in ``metadata.runtime``.
 #: ``protenix/runtime.py`` keeps its own copy of the commit name because it must not import boileroom (Python 3.10
 #: worker); tests/contracts/test_kit_dockerfiles.py asserts the two are equal.
-KIT_COMMIT_ENV = "BOILEROOM_KIT_COMMIT"
 KIT_STACK_ENV = "BOILEROOM_KIT_STACK"
 #: Attributes of the installed ``esmfold2_opt`` that may carry its source commit, read before :data:`KIT_COMMIT_ENV`
 #: in the order ``protenix/runtime.py`` reads them.
-KIT_COMMIT_ATTRIBUTES = ("__commit__", "KIT_COMMIT", "COMMIT")
 #: The compute capabilities each kit stack (``kit/kit_wheels.sh``'s ``STACK``) compiles its CUDA kernels for. A known
 #: stack on a card outside its set is refused before any weight is fetched: the kernels would not launch there.
 KIT_STACK_CAPABILITIES: dict[str, frozenset[tuple[int, int]]] = {
@@ -113,72 +84,12 @@ VANILLA_KERNEL_FLAGS: tuple[tuple[str, tuple[str, ...]], ...] = (
 )
 #: The attention / MLP words a kit report carries, each recorded in ``metadata.runtime`` as ``kit.attn.<word>``.
 KIT_ATTN_WORDS = ("atom_attn", "esmc_mlp", "esmc_attn", "esmc_rope")
-#: Heavy atoms of an unmodified residue, as both esm builders (3.3.0 and 3.4.1) tokenize it: ``PROTEIN_HEAVY_ATOMS``,
-#: ``DNA_HEAVY_ATOMS`` and ``RNA_HEAVY_ATOMS`` in ``esm.models.esmfold2.constants``, by one-letter code. A covalent bond's
-#: atom index is bounded by these before either builder sees it (esm 3.3.0 drops an out-of-range bond silently). A
-#: protein letter outside the table becomes ``UNK``, whose four backbone atoms esm builds; an unknown nucleotide letter
-#: has no static count.
-# fmt: off
-PROTEIN_RESIDUE_ATOM_COUNTS: dict[str, int] = {
-    "A": 5, "R": 11, "N": 8, "D": 8, "C": 6, "Q": 9, "E": 9, "G": 4, "H": 10, "I": 8,
-    "L": 8, "K": 9, "M": 8, "F": 11, "P": 7, "S": 6, "T": 7, "W": 14, "Y": 12, "V": 7,
-}
-# fmt: on
-UNKNOWN_PROTEIN_RESIDUE_ATOMS = 4
-DNA_RESIDUE_ATOM_COUNTS: dict[str, int] = {"A": 21, "G": 22, "C": 19, "T": 20}
-RNA_RESIDUE_ATOM_COUNTS: dict[str, int] = {"A": 22, "G": 23, "C": 20, "U": 20}
 #: Hugging Face's offline switches: the environment variables, and the module attributes they are frozen into on import.
 HF_OFFLINE_ENV = ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE")
 HF_OFFLINE_ATTRIBUTES = (
     ("huggingface_hub.constants", "HF_HUB_OFFLINE"),
     ("transformers.utils.hub", "_is_offline_mode"),
 )
-
-
-def _polymer_residue_atoms(item: SequenceInput, res_idx: int) -> tuple[str, int] | None:
-    """The name and heavy-atom count of an unmodified protein, DNA or RNA residue, or ``None`` without a static count."""
-    if isinstance(item, LigandInput):
-        return None
-    if any(modification.position == res_idx for modification in item.modifications or []):
-        return None
-    letter = item.sequence[res_idx]
-    if isinstance(item, ProteinInput):
-        return f"protein {letter}", PROTEIN_RESIDUE_ATOM_COUNTS.get(letter, UNKNOWN_PROTEIN_RESIDUE_ATOMS)
-    table = DNA_RESIDUE_ATOM_COUNTS if isinstance(item, DNAInput) else RNA_RESIDUE_ATOM_COUNTS
-    if letter not in table:
-        return None
-    return f"{'DNA' if isinstance(item, DNAInput) else 'RNA'} {letter}", table[letter]
-
-
-def _atom_past_residue(index: int, atom_idx: int, res_idx: int, chain_id: str, residue: str, count: int) -> ValueError:
-    """The refusal of a covalent bond whose atom index is past the atoms esm builds for its residue."""
-    return ValueError(
-        f"ESMFold2 covalent bond {index}: atom index {atom_idx} is past residue {res_idx} of chain {chain_id!r} "
-        f"({residue}: {count} atoms, 0-based 0-{count - 1})"
-    )
-
-
-def _kit_commit(kit: Any) -> str | None:
-    """The kit's source commit: its own attribute (:data:`KIT_COMMIT_ATTRIBUTES`), else ``$BOILEROOM_KIT_COMMIT``.
-
-    The same order as ``protenix/runtime.py``, without its ``.git`` lookup: the ESMFold2 kit image installs the kit
-    without its repository, and a ``.git`` above an installed package would belong to some other project.
-
-    Parameters
-    ----------
-    kit : Any
-        The imported ``esmfold2_opt`` module, or ``None``.
-
-    Returns
-    -------
-    str | None
-        The commit, or ``None`` when neither source names one.
-    """
-    for attribute in KIT_COMMIT_ATTRIBUTES:
-        value = getattr(kit, attribute, None)
-        if isinstance(value, str) and value:
-            return value
-    return os.environ.get(KIT_COMMIT_ENV) or None
 
 
 class ESMFold2Core(FoldingAlgorithm):
@@ -246,6 +157,20 @@ class ESMFold2Core(FoldingAlgorithm):
     #: ``options["msa"]`` is one A3M text (or None) per entry of the input's ``sequences``; templates are not supported.
     SUPPORTS_USER_MSA: ClassVar[bool] = True
     SUPPORTS_USER_TEMPLATES: ClassVar[bool] = False
+
+    _kit_lever_words = staticmethod(kit_reports._kit_lever_words)
+    _gate_fallen_through_t16 = staticmethod(kit_reports._gate_fallen_through_t16)
+
+    # Stateless conversion entry points; runtime lifecycle remains in this core.
+    _attach_user_msa = staticmethod(conversion._attach_user_msa)
+    _check_covalent_bonds = staticmethod(conversion._check_covalent_bonds)
+    _check_ligand_bond_atoms = staticmethod(conversion._check_ligand_bond_atoms)
+    _coerce_requests = staticmethod(conversion._coerce_requests)
+    _convert_results = staticmethod(conversion._convert_results)
+    _has_user_msa = staticmethod(conversion._has_user_msa)
+    _request_from_structure_input = staticmethod(conversion._request_from_structure_input)
+    _to_esm_msa = staticmethod(conversion._to_esm_msa)
+    _to_esm_structure_prediction_input = staticmethod(conversion._to_esm_structure_prediction_input)
 
     def __init__(self, config: dict | None = None) -> None:
         """Create an ESMFold2 core instance."""
@@ -729,36 +654,6 @@ class ESMFold2Core(FoldingAlgorithm):
         extra.update(self._kit_lever_words(report, int(self.config["num_diffusion_samples"]), stack))
         return runtime_provenance(KIT_RUNTIME_PACKAGES, gpu=self._gpu, extra=extra)
 
-    @staticmethod
-    def _kit_lever_words(report: Mapping[str, Any], num_diffusion_samples: int, stack: Any) -> dict[str, str]:
-        """The ``metadata.runtime`` lever entries of a kit report, and the kit's scope notes at this sample count.
-
-        The keys every kit family shares (:func:`~boileroom.provenance.kit_provenance`: ``kit.commit``,
-        ``kit.levers_applied``, ``kit.levers_fallback``, ``kit.partial``), then ``kit.levers_gated`` / ``kit.gated``,
-        which name levers whose declared guard sent calls to the previous chain (e.g. ``mk`` at
-        ``num_diffusion_samples > 1``), ``kit.guards``, the verdict of every data-dependent guard the settle step read
-        (``<lever>=<kind>: <note>``), and ``kit.scope``, the kit's own plan note for this call's sample count.
-        """
-        words = kit_provenance(
-            commit=_kit_commit(sys.modules.get("esmfold2_opt")),
-            levers_applied=report.get("levers_applied") or [],
-            levers_fallback=report.get("levers_fallback") or [],
-            partial=bool(report.get("partial")),
-        )
-        words["kit.levers_gated"] = _joined(report.get("levers_gated") or [])
-        words["kit.gated"] = _joined(report.get("gated") or [], "; ")
-        guards = report.get("guards") or {}
-        words["kit.guards"] = _joined(
-            (f"{lever}={guard.get('kind')}: {guard.get('note')}" for lever, guard in sorted(guards.items())), "; "
-        )
-        notes = [
-            note(report.get("levers_planned"), num_diffusion_samples)
-            for note in (getattr(stack, "mk_plan_note", None), getattr(stack, "guards_plan_note", None))
-            if callable(note)
-        ]
-        words["kit.scope"] = _joined((note for note in notes if note), "; ")
-        return words
-
     def _settle_kit_report(self, num_diffusion_samples: int) -> dict[str, str]:
         """After a kit fold: settle the levers from the kit's own counters, refuse a partial set, return the runtime.
 
@@ -794,50 +689,6 @@ class ESMFold2Core(FoldingAlgorithm):
         self._check_kit_report("after the fold", report, attn)
         assert self._runtime is not None, "kit runtime not recorded"
         return {**self._runtime, **self._kit_lever_words(report, num_diffusion_samples, stack)}
-
-    @staticmethod
-    def _gate_fallen_through_t16(report: Mapping[str, Any]) -> Mapping[str, Any]:
-        """Settle ``t16`` as gated, not partial, when every call reached its wrapper and fell through by name.
-
-        ``stack.guards_after_run`` calls ``t16`` "unreached" whenever no Transition / PairTransition call was served by
-        the kernel, even when every call did reach the wrapper and fell through: a by-name refusal (the provider's
-        cell table names the statement for that size, or the shape is outside its envelope) or an ineligible call.
-        Each such call runs the previous statement, the fork's own fused forward, so the values are the previous
-        chain's and only the speed differs: the same evidence the kit settles as "inactive" for other levers. Such a
-        run is recorded (``t16`` in ``kit.levers_gated``, the counters and refusal reasons in ``kit.gated`` and
-        ``kit.guards``) rather than refused. Zero calls at the wrapper (``fallthrough == 0``) stays "unreached" and is
-        still refused: nothing shows the lever's code ever ran.
-        """
-        guard = (report.get("guards") or {}).get("t16") or {}
-        if guard.get("kind") != "unreached" or "t16" not in (report.get("partial") or []):
-            return report
-        cute = sys.modules.get("ef2_transition_cute")
-        stats = dict(getattr(cute, "STATS", None) or {})
-        served = int(stats.get("transition_calls", 0) or 0) + int(stats.get("pair_transition_calls", 0) or 0)
-        fell = int(stats.get("fallthrough_transition", 0) or 0) + int(stats.get("fallthrough_pair_transition", 0) or 0)
-        if served or not fell:
-            return report
-        describe = getattr(cute, "describe", None)
-        refused = (describe() or {}).get("refused") if callable(describe) else None
-        reasons = ",".join(f"{reason}={count}" for reason, count in sorted((refused or {}).items())) or _UNKNOWN
-        note = (
-            f"all {fell} Transition / PairTransition call(s) took the previous statements, none served "
-            f"(fallthrough_transition={int(stats.get('fallthrough_transition', 0) or 0)} "
-            f"fallthrough_pair_transition={int(stats.get('fallthrough_pair_transition', 0) or 0)} "
-            f"face_refused={int(stats.get('face_refused', 0) or 0)}; refused: {reasons}); "
-            "gated by boileroom, not partial"
-        )
-        fallback_reasons = dict(report.get("fallback_reasons") or {})
-        fallback_reasons.pop("t16", None)
-        return {
-            **report,
-            "partial": [lever for lever in report.get("partial") or [] if lever != "t16"],
-            "levers_fallback": [lever for lever in report.get("levers_fallback") or [] if lever != "t16"],
-            "fallback_reasons": fallback_reasons,
-            "levers_gated": sorted({*(report.get("levers_gated") or []), "t16"}),
-            "gated": [*(report.get("gated") or []), f"t16: {note}"],
-            "guards": {**(report.get("guards") or {}), "t16": {"kind": "inactive", "note": note}},
-        }
 
     @staticmethod
     def _ensure_ccd_cache(ccd_cache_dir: Path) -> Path:
@@ -906,15 +757,6 @@ class ESMFold2Core(FoldingAlgorithm):
             runtime=runtime,
         )
         return self._convert_results(results, metadata, effective_config)
-
-    @staticmethod
-    def _has_user_msa(msa: object) -> bool:
-        """Whether ``options['msa']`` carries an MSA: ``None`` and an all-``None`` list do not."""
-        if msa is None:
-            return False
-        if isinstance(msa, list | tuple):
-            return any(entry is not None for entry in msa)
-        return True
 
     def _check_msa_is_read(self, requests: list[_FoldRequest]) -> None:
         """Refuse an MSA (inline or from ``options['msa']``) that the loaded checkpoint has no encoder for.
@@ -1070,118 +912,6 @@ class ESMFold2Core(FoldingAlgorithm):
         ):
             raise ValueError("ESMFold2 option 'msa_max_depth' must be a positive integer or None.")
 
-    def _attach_user_msa(self, request: _FoldRequest, msa: object) -> _FoldRequest:
-        """Attach ``options['msa']`` (one A3M text or None per input entry) to the protein entries."""
-        items = request.input.sequences
-        if not isinstance(msa, list | tuple) or len(msa) != len(items):
-            raise ValueError("ESMFold2 option 'msa' must have one A3M string or None per input sequence entry.")
-        attached: list[SequenceInput] = []
-        for index, (item, text) in enumerate(zip(items, msa, strict=True)):
-            if text is None:
-                attached.append(item)
-                continue
-            if not isinstance(item, ProteinInput):
-                raise ValueError(f"ESMFold2 option 'msa' entry {index} targets a non-protein input; use None.")
-            if item.msa is not None:
-                raise ValueError(
-                    f"ESMFold2 input entry {index} already carries an MSA; do not also pass options['msa']."
-                )
-            if ":" in item.sequence or "|" in item.sequence:
-                raise ValueError(f"ESMFold2 option 'msa' entry {index} needs a single-chain input entry.")
-            rows = a3m_rows(text, item.sequence)
-            attached.append(dataclasses.replace(item, msa=MSAInput(sequences=rows)))
-        return dataclasses.replace(request, input=dataclasses.replace(request.input, sequences=attached))
-
-    @staticmethod
-    def _check_covalent_bonds(prediction_input: StructurePredictionInput) -> None:
-        """Validate covalent bonds before either esm builder sees them, and before any load.
-
-        esm 3.4.1 raises on a bond naming a missing chain, residue or atom; the kit's esm 3.3.0 silently drops it (and
-        reads a negative atom index from the end of the residue), folding the ligand unbonded. Residue and atom
-        indices are 0-based, as in esm. Bonds cannot be combined with ``:`` / ``|`` chainbreaks (esm 3.4.1 refuses
-        that too). The atom index of an unmodified protein, DNA or RNA residue is bounded here by its heavy-atom
-        count (:data:`PROTEIN_RESIDUE_ATOM_COUNTS` and the nucleotide tables); a CCD ligand's is bounded after load
-        by :meth:`_check_ligand_bond_atoms`. A modified residue, an unknown nucleotide and a SMILES ligand have no
-        count without esm's own tokenizer and stay with esm.
-        """
-        bonds = prediction_input.covalent_bonds
-        if not bonds:
-            return
-        chains: dict[str, tuple[SequenceInput, int]] = {}
-        for item in prediction_input.sequences:
-            if isinstance(item, ProteinInput | RNAInput | DNAInput):
-                if ":" in item.sequence or "|" in item.sequence:
-                    raise ValueError(
-                        f"ESMFold2 covalent bonds cannot be combined with chainbreaks (':' or '|') in entry "
-                        f"{item.id!r}; give each chain its own input entry."
-                    )
-                count = len(item.sequence)
-            else:
-                # A CCD list is one residue per code; a SMILES ligand is a single residue.
-                count = len(item.ccd) if isinstance(item.ccd, list) and item.ccd else 1
-            for chain_id in item.id if isinstance(item.id, list) else [item.id]:
-                chains[chain_id] = (item, count)
-        for index, bond in enumerate(bonds):
-            for chain_id, res_idx, atom_idx in (
-                (bond.chain_id1, bond.res_idx1, bond.atom_idx1),
-                (bond.chain_id2, bond.res_idx2, bond.atom_idx2),
-            ):
-                if chain_id not in chains:
-                    raise ValueError(
-                        f"ESMFold2 covalent bond {index}: chain_id {chain_id!r} does not exist; "
-                        f"available chain ids: {sorted(chains)}"
-                    )
-                item, count = chains[chain_id]
-                if not isinstance(res_idx, int) or isinstance(res_idx, bool) or not 0 <= res_idx < count:
-                    raise ValueError(
-                        f"ESMFold2 covalent bond {index}: residue index {res_idx!r} is not in chain {chain_id!r} "
-                        f"(0-based, 0-{count - 1})"
-                    )
-                if not isinstance(atom_idx, int) or isinstance(atom_idx, bool) or atom_idx < 0:
-                    raise ValueError(
-                        f"ESMFold2 covalent bond {index}: atom index {atom_idx!r} must be a non-negative integer "
-                        "(0-based within the residue)"
-                    )
-                atoms = _polymer_residue_atoms(item, res_idx)
-                if atoms is not None and atom_idx >= atoms[1]:
-                    raise _atom_past_residue(index, atom_idx, res_idx, chain_id, *atoms)
-
-    @staticmethod
-    def _check_ligand_bond_atoms(prediction_input: StructurePredictionInput) -> None:
-        """Bound the atom index of a covalent bond on a CCD ligand by the component's atoms in the loaded CCD.
-
-        Runs after load, when the input builder has loaded the CCD. Both esm builders read the same
-        ``esm.models.esmfold2.conformers`` (identical in esm 3.3.0 and 3.4.1) and tokenize a covalently bonded CCD
-        ligand as one token per atom without its leaving atoms, so the bound is that count. A code missing from the
-        CCD is left to esm, which refuses it.
-        """
-        bonds = prediction_input.covalent_bonds
-        if not bonds:
-            return
-        ligands: dict[str, list[str]] = {}
-        for item in prediction_input.sequences:
-            if isinstance(item, LigandInput) and isinstance(item.ccd, list) and item.ccd:
-                for chain_id in item.id if isinstance(item.id, list) else [item.id]:
-                    ligands[chain_id] = item.ccd
-        if not ligands:
-            return
-        conformers = importlib.import_module("esm.models.esmfold2.conformers")
-        for index, bond in enumerate(bonds):
-            for chain_id, res_idx, atom_idx in (
-                (bond.chain_id1, bond.res_idx1, bond.atom_idx1),
-                (bond.chain_id2, bond.res_idx2, bond.atom_idx2),
-            ):
-                if chain_id not in ligands:
-                    continue
-                code = ligands[chain_id][res_idx]
-                ccd_atoms = conformers.get_ligand_ccd_atoms_with_charges(code)
-                if ccd_atoms is None:
-                    continue
-                leaving = conformers.get_ccd_leaving_atoms(code)
-                count = sum(1 for atom in ccd_atoms if atom[0] not in leaving)
-                if atom_idx >= count:
-                    raise _atom_past_residue(index, atom_idx, res_idx, chain_id, f"CCD {code}", count)
-
     @staticmethod
     def _sampler_kwargs(config: dict[str, Any]) -> dict[str, Any]:
         """Return optional sampler controls accepted by vanilla esm 3.4.1's model call."""
@@ -1190,315 +920,3 @@ class ESMFold2Core(FoldingAlgorithm):
             if config.get(key) is not None:
                 kwargs[key] = config[key]
         return kwargs
-
-    def _coerce_requests(self, sequences: ESMFold2FoldInput) -> list[_FoldRequest]:
-        """Coerce public BoilerRoom inputs into one or more ESMFold2 structure inputs."""
-        if isinstance(sequences, str):
-            return [self._request_from_protein_string(sequences)]
-
-        if isinstance(sequences, StructurePredictionInput):
-            return [self._request_from_structure_input(sequences)]
-
-        if isinstance(sequences, Mapping):
-            return [self._request_from_structure_input(decode_structure_input(cast(Mapping[str, Any], sequences)))]
-
-        if not isinstance(sequences, Sequence):
-            raise TypeError("ESMFold2.fold expects a sequence string, structure input, or a sequence of those inputs.")
-
-        items = list(sequences)
-        if not items:
-            raise ValueError("ESMFold2.fold received an empty input sequence.")
-
-        if all(isinstance(item, str) for item in items):
-            return [self._request_from_protein_string(cast(str, item)) for item in items]
-
-        if all(isinstance(item, StructurePredictionInput) for item in items):
-            return [self._request_from_structure_input(cast(StructurePredictionInput, item)) for item in items]
-
-        if all(isinstance(item, Mapping) for item in items):
-            return [
-                self._request_from_structure_input(decode_structure_input(cast(Mapping[str, Any], item)))
-                for item in items
-            ]
-
-        if all(self._is_sequence_input(item) for item in items):
-            structure_input = StructurePredictionInput(sequences=cast(list[SequenceInput], items))
-            return [self._request_from_structure_input(structure_input)]
-
-        raise TypeError(
-            "ESMFold2.fold input lists must contain only strings, only StructurePredictionInput objects, "
-            "or only molecule input dataclasses."
-        )
-
-    @staticmethod
-    def _is_sequence_input(value: object) -> bool:
-        """Return whether a value is one lightweight molecule input dataclass."""
-        return isinstance(value, ProteinInput | RNAInput | DNAInput | LigandInput)
-
-    def _request_from_protein_string(self, sequence: str) -> _FoldRequest:
-        """Convert a colon-delimited protein string into one structure request."""
-        chains = sequence.replace("|", ":").split(":")
-        if any(chain == "" for chain in chains):
-            raise ValueError(f"Invalid ESMFold2 protein sequence {sequence!r}: empty chain near ':'.")
-        for chain in chains:
-            validate_sequence(chain)
-        structure_input = StructurePredictionInput(
-            sequences=[ProteinInput(id=self._chain_id(index), sequence=chain) for index, chain in enumerate(chains)]
-        )
-        return _FoldRequest(input=structure_input, sequence_length=sum(len(chain) for chain in chains))
-
-    def _request_from_structure_input(self, prediction_input: StructurePredictionInput) -> _FoldRequest:
-        """Validate a rich structure input and attach sequence-length metadata."""
-        if not prediction_input.sequences:
-            raise ValueError("StructurePredictionInput.sequences must not be empty.")
-        return _FoldRequest(input=prediction_input, sequence_length=self._structure_input_length(prediction_input))
-
-    @staticmethod
-    def _chain_id(index: int) -> str:
-        """Return spreadsheet-style chain IDs: A, B, ..., Z, AA, AB, ..."""
-        index += 1
-        parts = []
-        while index:
-            index, remainder = divmod(index - 1, 26)
-            parts.append(chr(65 + remainder))
-        return "".join(reversed(parts))
-
-    def _structure_input_length(self, prediction_input: StructurePredictionInput) -> int:
-        """Return the metadata length for all sequence-like entities in an input."""
-        return sum(self._sequence_input_length(item) for item in prediction_input.sequences)
-
-    def _sequence_input_length(self, item: SequenceInput) -> int:
-        """Return the metadata length contribution for one chain or ligand input."""
-        multiplier = self._id_count(item.id)
-        if isinstance(item, ProteinInput | RNAInput | DNAInput):
-            sequence = item.sequence.replace("|", ":")
-            chains = sequence.split(":")
-            if any(chain == "" for chain in chains):
-                raise ValueError(f"Invalid ESMFold2 sequence {sequence!r}: empty chain near ':'.")
-            if isinstance(item, ProteinInput):
-                for chain in chains:
-                    validate_sequence(chain)
-            return sum(len(chain) for chain in chains) * multiplier
-        ccd_count = len(item.ccd or [])
-        ligand_count = ccd_count or (1 if item.smiles else 0)
-        return max(multiplier, ligand_count)
-
-    @staticmethod
-    def _id_count(value: str | list[str]) -> int:
-        """Return how many entity copies an ESMFold2 id represents."""
-        return len(value) if isinstance(value, list) else 1
-
-    def _to_esm_structure_prediction_input(self, prediction_input: StructurePredictionInput) -> Any:
-        """Convert a lightweight structure input to Biohub's native dataclass."""
-        from esm.models.esmfold2 import StructurePredictionInput as ESMStructurePredictionInput
-
-        return ESMStructurePredictionInput(
-            sequences=[self._to_esm_sequence_input(item) for item in prediction_input.sequences],
-            pocket=self._to_esm_pocket_conditioning(prediction_input.pocket),
-            distogram_conditioning=self._to_esm_distogram_conditioning(prediction_input.distogram_conditioning),
-            covalent_bonds=self._to_esm_covalent_bonds(prediction_input.covalent_bonds),
-        )
-
-    def _to_esm_sequence_input(self, item: SequenceInput) -> Any:
-        """Convert one lightweight chain or ligand input to Biohub's native type."""
-        from esm.models.esmfold2 import DNAInput as ESMDNAInput
-        from esm.models.esmfold2 import LigandInput as ESMLigandInput
-        from esm.models.esmfold2 import ProteinInput as ESMProteinInput
-        from esm.models.esmfold2 import RNAInput as ESMRNAInput
-
-        if isinstance(item, ProteinInput):
-            return ESMProteinInput(
-                id=item.id,
-                sequence=item.sequence,
-                modifications=self._to_esm_modifications(item.modifications),
-                msa=self._to_esm_msa(item.msa),
-            )
-        if isinstance(item, RNAInput):
-            return ESMRNAInput(
-                id=item.id,
-                sequence=item.sequence,
-                modifications=self._to_esm_modifications(item.modifications),
-            )
-        if isinstance(item, DNAInput):
-            return ESMDNAInput(
-                id=item.id,
-                sequence=item.sequence,
-                modifications=self._to_esm_modifications(item.modifications),
-            )
-        return ESMLigandInput(id=item.id, smiles=item.smiles, ccd=item.ccd)
-
-    @staticmethod
-    def _to_esm_modifications(modifications: list[Modification] | None) -> list[Any] | None:
-        """Convert optional lightweight residue modifications to Biohub objects."""
-        if modifications is None:
-            return None
-        from esm.models.esmfold2 import Modification as ESMModification
-
-        return [
-            ESMModification(position=modification.position, ccd=modification.ccd, smiles=modification.smiles)
-            for modification in modifications
-        ]
-
-    @staticmethod
-    def _to_esm_msa(msa: MSAInput | Any | None) -> Any | None:
-        """Convert lightweight or native MSA inputs to Biohub's MSA object."""
-        if msa is None:
-            return None
-        if isinstance(msa, MSAInput):
-            if msa.sequences is None:
-                raise ValueError(
-                    "ESMFold2 currently requires in-memory MSA sequences; "
-                    "file-backed MSA paths are reserved for other model adapters."
-                )
-            from esm.models.esmfold2 import MSA
-
-            return MSA.from_sequences(msa.sequences, remove_insertions=msa.remove_insertions)
-        from esm.models.esmfold2 import MSA
-
-        if isinstance(msa, MSA):
-            return msa
-        if isinstance(msa, list):
-            return MSA.from_sequences(msa)
-        return msa
-
-    @staticmethod
-    def _to_esm_pocket_conditioning(pocket: PocketConditioning | None) -> Any | None:
-        """Convert optional pocket conditioning to Biohub's native dataclass."""
-        if pocket is None:
-            return None
-        from esm.utils.structure.input_builder import PocketConditioning as ESMPocketConditioning
-
-        return ESMPocketConditioning(binder_chain_id=pocket.binder_chain_id, contacts=pocket.contacts)
-
-    @staticmethod
-    def _to_esm_distogram_conditioning(
-        distograms: list[DistogramConditioning] | None,
-    ) -> list[Any] | None:
-        """Convert optional distogram conditioning entries to Biohub objects."""
-        if distograms is None:
-            return None
-        from esm.models.esmfold2 import DistogramConditioning as ESMDistogramConditioning
-
-        return [
-            ESMDistogramConditioning(chain_id=distogram.chain_id, distogram=distogram.distogram)
-            for distogram in distograms
-        ]
-
-    @staticmethod
-    def _to_esm_covalent_bonds(bonds: list[CovalentBond] | None) -> list[Any] | None:
-        """Convert optional covalent-bond constraints to Biohub objects."""
-        if bonds is None:
-            return None
-        from esm.models.esmfold2 import CovalentBond as ESMCovalentBond
-
-        return [
-            ESMCovalentBond(
-                chain_id1=bond.chain_id1,
-                res_idx1=bond.res_idx1,
-                atom_idx1=bond.atom_idx1,
-                chain_id2=bond.chain_id2,
-                res_idx2=bond.res_idx2,
-                atom_idx2=bond.atom_idx2,
-            )
-            for bond in bonds
-        ]
-
-    def _convert_results(
-        self,
-        results: list[Any],
-        metadata: PredictionMetadata,
-        config: dict[str, Any],
-    ) -> ESMFold2Output:
-        """Convert Biohub decoded outputs to BoilerRoom's normalized output type."""
-        include_fields = cast(list[str] | None, config.get("include_fields"))
-        atom_arrays: list[Any] = []
-        cif_values: list[str] | None = [] if self._wants_field(include_fields, "cif") else None
-        pdb_values: list[str] | None = [] if self._wants_field(include_fields, "pdb") else None
-
-        plddt: list[np.ndarray | None] | None = [] if self._wants_field(include_fields, "plddt") else None
-        ptm: list[Any] | None = [] if self._wants_field(include_fields, "ptm") else None
-        iptm: list[Any] | None = [] if self._wants_field(include_fields, "iptm") else None
-        pae: list[np.ndarray | None] | None = [] if self._wants_field(include_fields, "pae") else None
-        distogram: list[np.ndarray | None] | None = [] if self._wants_field(include_fields, "distogram") else None
-        pair_chains_iptm: list[np.ndarray | None] | None = (
-            [] if self._wants_field(include_fields, "pair_chains_iptm") else None
-        )
-        residue_index: list[np.ndarray | None] | None = (
-            [] if self._wants_field(include_fields, "residue_index") else None
-        )
-        entity_id: list[np.ndarray | None] | None = [] if self._wants_field(include_fields, "entity_id") else None
-
-        for result in results:
-            cif_string = result.complex.to_mmcif()
-            atom_array = self._cif_to_atom_array(cif_string)
-            atom_arrays.append(atom_array)
-
-            if cif_values is not None:
-                cif_values.append(cif_string)
-            if pdb_values is not None:
-                pdb_values.append(self._atom_array_to_pdb(atom_array))
-            if plddt is not None:
-                plddt.append(self._tensor_to_numpy(result.plddt))
-            if ptm is not None:
-                ptm.append(result.ptm)
-            if iptm is not None:
-                iptm.append(result.iptm)
-            if pae is not None:
-                pae.append(self._tensor_to_numpy(result.pae))
-            if distogram is not None:
-                distogram.append(self._tensor_to_numpy(result.distogram))
-            if pair_chains_iptm is not None:
-                pair_chains_iptm.append(self._tensor_to_numpy(result.pair_chains_iptm))
-            if residue_index is not None:
-                residue_index.append(self._tensor_to_numpy(result.residue_index))
-            if entity_id is not None:
-                entity_id.append(self._tensor_to_numpy(result.entity_id))
-
-        full_output = ESMFold2Output(
-            metadata=metadata,
-            atom_array=atom_arrays,
-            plddt=plddt,
-            ptm=ptm,
-            iptm=iptm,
-            pae=pae,
-            distogram=distogram,
-            pair_chains_iptm=pair_chains_iptm,
-            residue_index=residue_index,
-            entity_id=entity_id,
-            pdb=pdb_values,
-            cif=cif_values,
-        )
-        filtered = self._filter_include_fields(full_output, include_fields)
-        return cast(ESMFold2Output, filtered)
-
-    @staticmethod
-    def _wants_field(include_fields: list[str] | None, field: str) -> bool:
-        """Return whether a named optional output field was requested."""
-        return include_fields is not None and ("*" in include_fields or field in include_fields)
-
-    @staticmethod
-    def _tensor_to_numpy(value: Any) -> np.ndarray | None:
-        """Detach a tensor-like value and return it as a NumPy array."""
-        if value is None:
-            return None
-        if hasattr(value, "detach"):
-            value = value.detach().cpu()
-        return np.asarray(value)
-
-    @staticmethod
-    def _cif_to_atom_array(cif_string: str) -> Any:
-        """Parse an mmCIF string into a Biotite atom array."""
-        from biotite.structure.io.pdbx import CIFFile, get_structure
-
-        return get_structure(CIFFile.read(StringIO(cif_string)), model=1)
-
-    @staticmethod
-    def _atom_array_to_pdb(atom_array: Any) -> str:
-        """Serialize a Biotite atom array to PDB text."""
-        from biotite.structure.io.pdb import PDBFile, set_structure
-
-        pdb_file = PDBFile()
-        set_structure(pdb_file, atom_array)
-        buffer = StringIO()
-        pdb_file.write(buffer)
-        return buffer.getvalue()

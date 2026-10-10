@@ -20,7 +20,6 @@ DEFAULT_OPENDDE_PYTHON = "/opt/opendde/bin/python"
 OPENDDE_LAYERNORM: Final[Mapping[str, str]] = {
     "vanilla": "torch",
     "exact": "fast_layernorm",
-    "fast": "fast_layernorm",
 }
 #: The kit image's process environment (``opendde/environment/Dockerfile`` ENV at the kit commit): a fixed hash seed,
 #: unbuffered output, no bytecode written into the kit tree, no debug info in the launchers Triton builds at run time.

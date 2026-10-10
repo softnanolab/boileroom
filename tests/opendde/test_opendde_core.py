@@ -218,9 +218,7 @@ def test_default_kernels_are_protenix_defaults(module) -> None:
         assert module.OpenDDECore.DEFAULT_CONFIG[key] == ProtenixCore.DEFAULT_CONFIG[key] == "cuequivariance"
 
 
-@pytest.mark.parametrize(
-    ("mode", "layernorm"), [("vanilla", "torch"), ("exact", "fast_layernorm"), ("fast", "fast_layernorm")]
-)
+@pytest.mark.parametrize(("mode", "layernorm"), [("vanilla", "torch"), ("exact", "fast_layernorm")])
 def test_layernorm_is_set_per_mode_over_the_inherited_value(
     module: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, mode: str, layernorm: str
 ) -> None:

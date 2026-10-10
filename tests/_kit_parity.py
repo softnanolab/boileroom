@@ -27,7 +27,12 @@ from _structure_metrics import (
 
 #: GPU each family's kit goldens were measured on, used on Modal when ``--gpu`` is not given. ESMFold2's vanilla Modal
 #: default is a T4, which neither matches its golden nor serves the kit modes, so the class is always explicit.
-DEFAULT_MODAL_GPU: Mapping[str, str] = {"esmfold2": "A100-80GB", "protenix": "A100-40GB", "opendde": "A100-40GB"}
+DEFAULT_MODAL_GPU: Mapping[str, str] = {
+    "esmfold2": "A100-80GB",
+    "protenix": "A100-40GB",
+    "opendde": "A100-40GB",
+    "rf3": "A100-80GB",
+}
 
 
 def heterodimer(binder: str) -> str:

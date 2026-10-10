@@ -45,7 +45,6 @@ logger = logging.getLogger(__name__)
 PROTENIX_LAYERNORM: Final[Mapping[str, str]] = {
     "vanilla": "openfold",
     "exact": "fast_layernorm",
-    "fast": "fast_layernorm",
 }
 #: Checkpoints with a template embedder (``template_embedder.n_blocks > 0`` in upstream's model configs). Upstream's
 #: ``runner/batch_inference.py`` asserts the same list before template inference; on any other checkpoint a template

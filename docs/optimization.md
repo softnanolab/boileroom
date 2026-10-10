@@ -15,7 +15,7 @@ commit `f4f62fa`).
   boileroom's revision; Protenix: fused LayerNorm on torch 2.13/CUDA 13.0 instead of openfold LayerNorm on CUDA 12.6;
   OpenDDE: fused LayerNorm instead of torch's), so expect differences the size of seed-to-seed variation, not identical
   output.
-- `fast`: numerically different kernels. Their effect on PAE or ipSAE has not been measured in this repository.
+- RF3 `fast` / `big`: numerically different kernels, with the measured limits and comparisons below.
 
 A mode is all of its levers on a GPU class. The mode is resolved against the visible GPU before any
 weights load, and a GPU or stack the kit cannot serve fails by name with `OptimizationUnavailableError`.
@@ -69,10 +69,10 @@ Protenix and OpenDDE read `LAYERNORM_TYPE` when they import. The core's worker s
 image `ENV` or the caller's shell carries, so the mode alone decides it. The values are the cores' constants
 `PROTENIX_LAYERNORM` (`boileroom/models/protenix/core.py`) and `OPENDDE_LAYERNORM` (`boileroom/models/opendde/core.py`):
 
-| Family | `vanilla` | `exact` | `fast` |
-| --- | --- | --- | --- |
-| Protenix | `openfold` | `fast_layernorm` | `fast_layernorm` |
-| OpenDDE | `torch` | `fast_layernorm` | `fast_layernorm` |
+| Family | `vanilla` | `exact` |
+| --- | --- | --- |
+| Protenix | `openfold` | `fast_layernorm` |
+| OpenDDE | `torch` | `fast_layernorm` |
 
 `fast_layernorm` is upstream's fused LayerNorm CUDA extension, which the kits' LayerNorm lever needs. The Protenix kit image
 ships it compiled; OpenDDE builds it at first use with the venv's `ninja` and the CUDA 12.6 compiler. Upstream silently
@@ -217,8 +217,12 @@ each family. On 2026-10-07 the ESMFold2 parity and refusal tests (A100-80GB) and
 again on the images pinned in `KIT_IMAGE_DIGESTS`, which record `kit.commit`, and every kit mode passed the memory test
 below.
 
-Not exercised: the Apptainer kit path, `kit_msa` for ESMFold2, a Protenix or OpenDDE kit fold with a caller-supplied MSA,
-and OpenDDE kit modes on H100 with the current OpenDDE image.
+On 2026-10-10, ESMFold2 `kit_msa=True` passed a real full-MSA H100 fold with finite PAE, OpenDDE vanilla/exact
+passed the p53/decoy parity suite on H100, and the newly published RF3 kit digest passed both stock-reference
+comparisons in `exact` on A100-80GB. The GitHub image workflow now builds, import-smokes and publishes a selected
+kit family (`workflow_dispatch`, `kit_family`); its RF3 build completed successfully.
+
+A caller-supplied MSA on OpenDDE has not been exercised by these validations.
 
 ### Memory across calls
 
@@ -257,7 +261,7 @@ modes still grow 40–75 MiB per cycle of three folds, within the limit and not 
 `PredictionMetadata.optimization` records `mode`, `kit_config` (`a100`, `h100` or `null` for vanilla), `gpu_name` and
 `capability` (e.g. `sm80`; vanilla records the card too when it runs on one). A mode that cannot be served raises
 instead of falling back, so `mode` is both what was asked for and what ran. Models without a kit (everything but
-ESMFold2, Protenix and OpenDDE) accept only `optimization="vanilla"` and refuse `exact` / `fast` up front.
+ESMFold2, Protenix, OpenDDE and RF3) accept only `optimization="vanilla"` and refuse `exact` / `fast` up front.
 
 `PredictionMetadata.runtime` is a flat `dict[str, str]` describing the code, image, stack and GPU that produced the
 prediction (`boileroom.provenance.runtime_provenance`). Every model that fills it starts with:
@@ -270,7 +274,7 @@ prediction (`boileroom.provenance.runtime_provenance`). Every model that fills i
 | `gpu`, `gpu_capability` | the card and its class (`none` without a GPU) |
 | one key per recorded package | its installed version, or `absent` |
 
-In `exact` and `fast` every kit family (ESMFold2, Protenix, OpenDDE) also records the same kit entries, under the same
+In `exact` every kit family (ESMFold2, Protenix, OpenDDE and RF3) also records the same kit entries, under the same
 names and in the same format (`boileroom.provenance.kit_provenance`); `vanilla` records none of them:
 
 | Key | Value |

@@ -1874,14 +1874,14 @@ def test_esmfold2_covalent_atom_bounds_follow_esm_heavy_atoms() -> None:
 def test_esmfold2_residue_atom_tables_match_esm() -> None:
     """The static tables are esm's own heavy-atom lists, counted (runs where esm is installed)."""
     constants = pytest.importorskip("esm.models.esmfold2.constants")
-    core_module = pytest.importorskip("boileroom.models.esmfold2.core")
+    conversion_module = pytest.importorskip("boileroom.models.esmfold2.conversion")
     protein = {letter: len(constants.PROTEIN_HEAVY_ATOMS[name]) for letter, name in constants.PROTEIN_1TO3.items()}
     unknown = protein.pop("X")
-    assert protein == core_module.PROTEIN_RESIDUE_ATOM_COUNTS
-    assert unknown == core_module.UNKNOWN_PROTEIN_RESIDUE_ATOMS
+    assert protein == conversion_module.PROTEIN_RESIDUE_ATOM_COUNTS
+    assert unknown == conversion_module.UNKNOWN_PROTEIN_RESIDUE_ATOMS
     for one_to_three, atoms, table in [
-        (constants.DNA_1TO3, constants.DNA_HEAVY_ATOMS, core_module.DNA_RESIDUE_ATOM_COUNTS),
-        (constants.RNA_1TO3, constants.RNA_HEAVY_ATOMS, core_module.RNA_RESIDUE_ATOM_COUNTS),
+        (constants.DNA_1TO3, constants.DNA_HEAVY_ATOMS, conversion_module.DNA_RESIDUE_ATOM_COUNTS),
+        (constants.RNA_1TO3, constants.RNA_HEAVY_ATOMS, conversion_module.RNA_RESIDUE_ATOM_COUNTS),
     ]:
         assert {letter: len(atoms[name]) for letter, name in one_to_three.items()} == table
 
