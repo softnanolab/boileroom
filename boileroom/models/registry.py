@@ -392,6 +392,7 @@ SAE_SPEC = ModelSpec(
                 "activation",
                 "esmc_model_name",
                 "sae_repo_id",
+                "sae_revision",
                 "forge_model",
                 "forge_sae_model",
                 "forge_url",

@@ -33,7 +33,8 @@ class SAEFeaturesOutput:
     residue_index : np.ndarray
         Per-residue positions of shape ``(batch, residues)`` (``-1`` = padding).
     layer : int
-        ESM-C transformer layer the SAE was applied to.
+        Biohub SAE layer the features come from (layer ``N`` is the input of ESM-C
+        transformer block ``N``).
     num_features : int
         Size of the SAE feature (codebook) space.
     sae_model : str
