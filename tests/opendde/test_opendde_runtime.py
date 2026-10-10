@@ -147,6 +147,25 @@ class KernelsRefused(SystemExit):
         self.problems = problems
 
 
+class MemLeverRefused(RuntimeError):
+    """The allocator export's named refusal."""
+
+
+def test_worker_allocator_export_and_readback_refuse_unsupported_state(rt, fake, monkeypatch, tmp_path):
+    kit = FakeKit(monkeypatch, fake)
+    kit.allocator.export.side_effect = MemLeverRefused("CUDA already initialized")
+    with pytest.raises(rt.OptimizationUnavailableError, match="allocator refused.*already initialized"):
+        rt.OpenDDERuntime(_config(optimization="exact"), str(tmp_path))
+    assert fake.batch.get_default_runner.call_count == 0
+    kit.allocator.export.side_effect = None
+    kit.allocator.export.return_value = {"alloc_export": "exported"}
+    runtime = rt.OpenDDERuntime(_config(optimization="exact"), str(tmp_path))
+    assert runtime.describe()["allocator.source"] == "boileroom.OpenDDE"
+    kit.allocator.facts.return_value = {"alloc_effective": "false", "alloc_source": "unreadable"}
+    with pytest.raises(rt.OptimizationUnavailableError, match="allocator is not effective.*unreadable"):
+        runtime.describe()
+
+
 class FakeKit:
     """A fake ``opendde_opt`` and the submodules the runtime reads."""
 
@@ -158,6 +177,17 @@ class FakeKit:
         self.module.enable = self.enable  # type: ignore[attr-defined]
         self.module.status = lambda: dict(self.report)  # type: ignore[attr-defined]
         self.enable_calls: list[tuple[str, bool]] = []
+
+        def export_allocator(*args, **kwargs):
+            self.fake.order.append("allocator")
+            return {"alloc_export": "exported"}
+
+        self.allocator = SimpleNamespace(
+            MemLeverRefused=MemLeverRefused,
+            export=Mock(side_effect=export_allocator),
+            facts=Mock(return_value={"alloc": "expandable", "alloc_effective": "true", "alloc_source": "snapshot"}),
+        )
+        monkeypatch.setitem(sys.modules, "opt_core.mem.torch_alloc", self.allocator)
         self.lncensus = ModuleType("opendde_opt.lncensus")
         self.lncensus.census = Mock(side_effect=self._census)  # type: ignore[attr-defined]
         self.lncensus.arm = Mock(side_effect=self._arm)  # type: ignore[attr-defined]
@@ -449,7 +479,13 @@ def test_kit_activates_and_arms_its_census_before_the_runner_loads(rt, fake, mon
     kit = FakeKit(monkeypatch, fake)
     kit.report = {**HEALTHY_REPORT, "mode": mode}
     runtime = rt.OpenDDERuntime(_config(optimization=mode), str(tmp_path))
-    assert fake.order == ["enable", "census", "arm", "runner"]
+    assert fake.order == ["enable", "allocator", "census", "arm", "runner"]
+    kit.allocator.export.assert_called_once_with(
+        "expandable",
+        lever="boileroom.OpenDDE",
+        graphs_on=True,
+        allow_with_graphs=True,
+    )
     assert kit.enable_calls == [(mode, False)]
     kit.modes.resolve.assert_called_once()
     assert kit.modes.resolve.call_args.args[:2] == (mode, "/kit")

@@ -654,6 +654,18 @@ class OpenDDERuntime(FoldRuntime):
         self.jit_stack_key = NONE
         super().__init__(config, work_dir)
 
+    def _enable_kit(self) -> None:
+        super()._enable_kit()
+        # Activation clears allocator settings before choosing its query-free
+        # default. Export our worker policy afterwards, before any CUDA work.
+        self.allocator = importlib.import_module("opt_core.mem.torch_alloc")
+        try:
+            self.allocator_export = self.allocator.export(
+                "expandable", lever="boileroom.OpenDDE", graphs_on=True, allow_with_graphs=True
+            )
+        except self.allocator.MemLeverRefused as error:
+            raise OptimizationUnavailableError(f"OpenDDE worker allocator refused: {error}") from error
+
     def _prepare_jit_cache(self) -> None:
         # The kit's configs/<gpu>.env exports these in its shell launcher; boileroom enables the kit in-process, so the
         # runtime lays them out the same way: keyed by torch, CUDA and compute capability (opt_core.jit_cache.key_facts,
@@ -759,6 +771,12 @@ class OpenDDERuntime(FoldRuntime):
         }
         if self.layernorm_census:
             extra["layernorm.backend"] = _flat(self.layernorm_census.get("backend"))
+        if self.kit is not None:
+            facts = {**self.allocator_export, **self.allocator.facts("expandable")}
+            if facts["alloc_effective"] != "true":
+                raise OptimizationUnavailableError(f"OpenDDE worker allocator is not effective: {facts}")
+            extra.update({f"allocator.{key}": _flat(value) for key, value in facts.items()})
+            extra["allocator.source"] = "boileroom.OpenDDE"
         return extra
 
     def _late_kit_facts(self, input_json: str) -> dict[str, str]:
@@ -789,6 +807,7 @@ class OpenDDERuntime(FoldRuntime):
         result["kit.lnstream"] = _flat(state)
         self.kernels_record = dict(lncensus.record() or {})
         result["kit.kernels"] = _flat(self.kernels_record.get("line"))
+        result.update(self._describe_extra())
         return result
 
 

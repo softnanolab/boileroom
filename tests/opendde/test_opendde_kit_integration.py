@@ -108,6 +108,10 @@ def test_kit_parity_heterodimer(mode: str, folds: FoldCache) -> None:
     fold_set = folds.get(mode)
     for metadata in fold_set.metadata:
         check_worker_runtime(mode, metadata, LAYERNORM[mode])
+        if mode != "vanilla":
+            assert metadata.runtime["worker.allocator.alloc_effective"] == "true"
+            assert metadata.runtime["predict.allocator.alloc_effective"] == "true"
+            assert metadata.runtime["predict.allocator.source"] == "boileroom.OpenDDE"
     assert_parity(fold_set, None if mode == "vanilla" else folds.get("vanilla"))
 
 

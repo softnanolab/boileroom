@@ -215,6 +215,10 @@ def test_gpu_memory_stays_flat_across_calls(
             for length in case.lengths:
                 result = task(_sequence(length, cycle), options=dict(case.options))
                 runtime = result.metadata.runtime or {}
+                if case.model == "opendde" and case.mode != "vanilla":
+                    assert runtime["worker.allocator.alloc_effective"] == "true"
+                    assert runtime["predict.allocator.alloc_effective"] == "true"
+                    assert runtime["predict.allocator.source"] == "boileroom.OpenDDE"
                 for field_name in ("pae", "plddt", "embeddings", "pooled_features"):
                     values = getattr(result, field_name, None)
                     if values is None:

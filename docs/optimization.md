@@ -262,6 +262,12 @@ requires the sampler graph and conditioning-hoist contexts to be released, clear
 then clears cuBLAS workspaces through the pinned PyTorch API before flushing. Missing API or live sampler state
 refuses cleanup. This applies only to OpenDDE's isolated sequential worker; other models retain graphs across calls.
 
+Small packed weights can still pin large split allocator segments. OpenDDE kit modes therefore export the kit's
+documented expandable-segment policy after activation (which clears inherited allocator settings), before CUDA
+initializes. The policy explicitly permits OpenDDE's per-request graphs. Unavailable export or ineffective/unreadable
+allocator readback refuses the mode. Startup and per-call `allocator.*` facts record the export decision, effective
+policy and `allocator.source=boileroom.OpenDDE`; these are separate from the kit's query-free `alloc_auto` default.
+
 `tests/test_memory_stability.py` exercises every current model and supported mode on one live runtime. Each length
 uses a fixed amino-acid composition and fixed termini, shuffled differently on every cycle. This changes sequence
 identity and feature ordering while controlling atom-count allocation shapes. The three native lengths 280/320/360
@@ -346,7 +352,9 @@ Every output a backend returns, for every model, also records the GPU memory in 
 | --- | --- |
 | `gpu.mem.used_mib`, `gpu.mem.total_mib` | the device's used and total memory in MiB, every process on it counted (a model's worker child too) |
 | `gpu.mem.allocated_mib`, `gpu.mem.reserved_mib` | the serving process's live tensors and all the memory its torch caching allocator holds, in MiB; only when that process runs CUDA itself, so not for AlphaFold2-Multimer, Protenix and OpenDDE, which predict in a worker child |
-| `predict.gpu.mem.allocated_mib`, `predict.gpu.mem.reserved_mib` | post-cleanup allocator counters from the isolated Protenix, OpenDDE or RF3 worker that actually owns the model |
+
+The isolated Protenix, OpenDDE and RF3 workers additionally record their own post-cleanup allocator counters as
+`predict.gpu.mem.allocated_mib` and `predict.gpu.mem.reserved_mib`.
 
 RF3 additionally records its isolated worker's Python, torch/CUDA/GPU, `rc-foundry` version and the sha256 of the
 actual checkpoint, including a caller override. Its kit status is refreshed after imports and predictions;
