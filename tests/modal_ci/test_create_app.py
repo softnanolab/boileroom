@@ -191,6 +191,27 @@ def test_wait_for_installation_times_out(monkeypatch) -> None:
         C.wait_for_installation(Api(), org=ORG, allowed=REPOS, say=print, timeout_s=0.01, interval_s=0)  # type: ignore[arg-type]
 
 
+@pytest.mark.parametrize("status", [404, 422, 503])
+def test_installation_poll_recovers_from_transient_token_errors(monkeypatch, status) -> None:
+    monkeypatch.setattr(C.time, "sleep", lambda s: None)
+    attempts = 0
+
+    def http(method, url, headers, body):
+        nonlocal attempts
+        if url.endswith("/access_tokens"):
+            attempts += 1
+            return (status, {}) if attempts == 1 else (201, {"token": "ghs_x"})
+        if url.endswith("/installation/repositories?per_page=100"):
+            return 200, {"repositories": [{"full_name": r} for r in REPOS]}
+        return 200, [installation()]
+
+    api = C.AppApi(C.Credentials(123, "slug", PEM, HOOK_SECRET), http=http, sign=lambda claims, key: "jwt")
+    said: list[str] = []
+    assert C.wait_for_installation(api, org=ORG, allowed=REPOS, say=said.append, interval_s=0) == 77
+    assert attempts == 2
+    assert len(said) == 1 and f"HTTP {status}" in said[0]
+
+
 def test_app_api_scopes_its_installation_token_and_uses_a_jwt_for_app_calls() -> None:
     calls = []
 

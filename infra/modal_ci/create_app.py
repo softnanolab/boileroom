@@ -253,13 +253,12 @@ def wait_for_installation(
     last: list[str] | None = None
     while time.monotonic() < deadline:
         for installation in api.installations():
-            problems = installation_problems(
-                installation,
-                api.installation_repos(installation["id"]),
-                org=org,
-                app_id=api.creds.app_id,
-                allowed=allowed,
-            )
+            try:
+                repos = api.installation_repos(installation["id"])
+            except SetupError as e:
+                problems = [str(e)]
+            else:
+                problems = installation_problems(installation, repos, org=org, app_id=api.creds.app_id, allowed=allowed)
             if not problems:
                 return int(installation["id"])
             if problems != last:
