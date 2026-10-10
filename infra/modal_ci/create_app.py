@@ -300,8 +300,12 @@ def secret_values(
 def write_modal_secret(values: Mapping[str, str]) -> None:
     import modal
 
-    modal.Secret.objects.delete(SECRET_NAME, allow_missing=True)  # `create` never overwrites
-    modal.Secret.objects.create(SECRET_NAME, dict(values))
+    try:
+        modal.Secret.objects.create(SECRET_NAME, dict(values))
+    except modal.exception.AlreadyExistsError:
+        # One server-side update preserves the existing credentials if the
+        # request fails; deleting first would destroy their only saved copy.
+        modal.Secret.from_name(SECRET_NAME).update(dict(values))
 
 
 # -- command line ---------------------------------------------------------------------------------

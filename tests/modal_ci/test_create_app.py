@@ -266,6 +266,53 @@ def test_controller_reads_only_keys_this_helper_writes() -> None:
     assert wanted == set(values)
 
 
+@pytest.mark.parametrize("existing", [False, True])
+@pytest.mark.parametrize("fail_write", [False, True])
+def test_secret_write_never_deletes_existing_credentials(monkeypatch, existing, fail_write) -> None:
+    import modal
+
+    original = {"CI_APP_PRIVATE_KEY": PEM, "CI_INSTALLATION_ID": "0", "UNRELATED": "keep"}
+    stored = {C.SECRET_NAME: dict(original)} if existing else {}
+    operations = []
+
+    class FakeSecret:
+        @staticmethod
+        def from_name(name):
+            assert name == C.SECRET_NAME
+            return FakeSecret()
+
+        def update(self, values):
+            operations.append("update")
+            if fail_write:
+                raise RuntimeError("service unavailable")
+            stored[C.SECRET_NAME].update(values)
+
+        class objects:
+            @staticmethod
+            def create(name, values):
+                operations.append("create")
+                if name in stored:
+                    raise modal.exception.AlreadyExistsError("already exists")
+                if fail_write:
+                    raise RuntimeError("service unavailable")
+                stored[name] = dict(values)
+
+            @staticmethod
+            def delete(*args, **kwargs):
+                pytest.fail("credential storage must never delete the existing Secret")
+
+    monkeypatch.setattr(modal, "Secret", FakeSecret)
+    values = {"CI_APP_PRIVATE_KEY": PEM, "CI_INSTALLATION_ID": "77"}
+    if fail_write:
+        with pytest.raises(RuntimeError, match="service unavailable"):
+            C.write_modal_secret(values)
+        assert stored == ({C.SECRET_NAME: original} if existing else {})
+    else:
+        C.write_modal_secret(values)
+        assert stored[C.SECRET_NAME] == ({**original, **values} if existing else values)
+    assert operations == (["create", "update"] if existing else ["create"])
+
+
 # -- command line ---------------------------------------------------------------------------------
 
 
