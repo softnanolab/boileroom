@@ -160,6 +160,9 @@ def _serve(connection: Connection, runtime_path: str, runtime_class: str, work_d
                 break
             payload = runtime.predict(*request)
             release_evicted_kit_caches()
+            finish = getattr(runtime, "finish_request", None)
+            if callable(finish):
+                finish()
             connection.send(("ok", payload))
     except KeyboardInterrupt:
         raise

@@ -31,6 +31,7 @@ from __future__ import annotations
 import importlib
 import os
 import random
+from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
@@ -156,9 +157,20 @@ def _param(case: MemoryCase) -> Any:
 
 
 def _sequence(length: int, cycle: int) -> str:
-    """A new sequence per length and cycle, so a cache keyed by the sequence would grow too."""
+    """Unique sequences with fixed composition and termini, controlling allocation shapes at each length."""
     rng = random.Random(f"{length}-{cycle}")
-    return "".join(rng.choice(_AMINO_ACIDS) for _ in range(length))
+    residues = list((_AMINO_ACIDS * ((length + 19) // 20))[: length - 2])
+    rng.shuffle(residues)
+    return "A" + "".join(residues) + "A"
+
+
+def test_memory_sequences_change_identity_without_changing_composition() -> None:
+    for length in (*SHORT, *KIT, *PADDED):
+        sequences = [_sequence(length, cycle) for cycle in range(20)]
+        assert len(set(sequences)) == 20
+        assert all(len(sequence) == length for sequence in sequences)
+        assert all(Counter(sequence) == Counter(sequences[0]) for sequence in sequences)
+        assert all(sequence[0] == sequence[-1] == "A" for sequence in sequences)
 
 
 def _wrapper(model: str) -> type:

@@ -248,13 +248,28 @@ leaves the LRU, and the next fold recaptures them; `predict.kit.stack_graph_rese
 (OpenDDE's kit has no stack graph, so it stays `0` there). The upstream fix is for the stack graph to keep the TriMul
 workspaces of its live graphs alive.
 
-`gpu.mem.used_mib` in each output shows whether a runtime's memory grows. The opt-in GPU test
-`tests/test_memory_stability.py` checks this for every model and mode: four cycles over three lengths on one live model,
-and the peak of the last cycle may not exceed that of the second by 256 MiB. Its module docstring has the command and
-cost. On Modal (2026-10-07, with the release and the stack-graph reset) every model and mode passed it except SAE, whose
-local checkpoint fails to load (softnanolab/boileroom#115); ESMFold2 `fast` passed on both A100-80GB and H100; with the
-release disabled, ESMFold2 `fast` grew 1930 MiB on A100-80GB and 1160 MiB on H100. Protenix `exact` and both OpenDDE kit
-modes still grow 40–75 MiB per cycle of three folds, within the limit and not yet explained.
+The H100 PAD8 path has a separate lifetime problem at non-aligned lengths of at least 512 tokens. Clearing
+`_PAD_BUFS` alone does not release the sampler graph, its pool chain, hoisted conditioning tensors or bias buffers.
+The runtime synchronizes, resets stack graphs and their live budget, clears the padded buffers, then calls the kit's
+complete sampler `policy.release()` API. It refuses a kit missing that API instead of silently retaining the sampler.
+`predict.kit.sampler_releases` records this cleanup. On H100, 60 variable-composition folds at 529/577/625 tokens
+remained finite and grew only 62 MiB across cycles 11–20; the previous cleanup grew over 3.5 GiB in that window.
+OpenDDE's final allocator flush runs at the worker boundary, after orphan-cache release and request-frame teardown.
+
+`tests/test_memory_stability.py` exercises every current model and supported mode on one live runtime. Each length
+uses a fixed amino-acid composition and fixed termini, shuffled differently on every cycle. This changes sequence
+identity and feature ordering while controlling atom-count allocation shapes. The three native lengths 280/320/360
+exceed the geometry LRU of two; the H100 padded case uses 529/577/625. This is a controlled allocation-shape test,
+not a memory bound for arbitrary sequences. Short runs measure every peak from cycle two; runs of at least ten
+cycles measure every peak in the second half. The limit stays 256 MiB, and synthetic 40/75 MiB-per-cycle leaks fail
+the 20-cycle gate. Use `BOILEROOM_MEMORY_CYCLES=20` for the longer test.
+
+On 2026-10-10, variable-composition 20-cycle runs passed for ESMFold2 exact on A100-80GB and Protenix exact on
+A100-40GB (44 MiB of settled-window growth). The earlier OpenDDE H100 trace fluctuated nonmonotonically around
+7.3–9.1 GiB with changing atom counts and failed the strict bound; this does not establish a persistent linear leak
+or a universal plateau. SAE's released local checkpoints now load and pass CPU/GPU reference checks (#124); the
+memory case no longer marks their former missing-`b_enc` failure as expected. Historical ESMFold2 fast measurements
+above predate the current mode policy: fast is now supported only by RF3.
 
 ## What a prediction records
 

@@ -156,6 +156,7 @@ class FoldRuntime:
         #: The TriMul geometry caches live after the previous request, held so none is freed before the next check.
         self._trimul_caches: dict[Any, Any] = {}
         self.stack_graph_resets = 0
+        self.sampler_releases = 0
         self.requested_kernels = {
             "triangle_attention": str(config["triatt_kernel"]),
             "triangle_multiplicative": str(config["trimul_kernel"]),
@@ -294,6 +295,7 @@ class FoldRuntime:
         if self.kit is not None:
             payload.update(self._late_kit_facts(input_json))
             payload["kit.stack_graph_resets"] = str(self.stack_graph_resets)
+            payload["kit.sampler_releases"] = str(self.sampler_releases)
         return payload
 
     def _drop_stale_stack_graphs(self) -> None:
@@ -350,6 +352,17 @@ class FoldRuntime:
         if callable(getattr(stack_graph, "reset_cache", None)):
             self._reset_stack_graphs(stack_graph)
         buffers.clear()
+        # The sampler can chain private pools across shapes and retain its last
+        # hoist slots outside the entries. Use its complete release API rather
+        # than clearing the entry dict or bypassing its empty-cache guard.
+        sampler = getattr(self.runner.model, "_infopt_sampler", None)
+        if sampler is not None:
+            policy = sys.modules.get("fpf_clisampler.policy")
+            release = getattr(policy, "release", None)
+            if not callable(release):
+                raise OptimizationUnavailableError("the kit lacks the sampler release API needed for PAD8 cleanup")
+            release(sampler)
+            self.sampler_releases += 1
         stats = getattr(levers, "_STATS", None)
         if isinstance(stats, dict):
             stats.update(blk_att_padded_bufs=0, blk_att_padded_buf_bytes=0)
@@ -605,6 +618,18 @@ class OpenDDERuntime(FoldRuntime):
     _SITE_KEYS = {"triangle_attention": "triatt_kernel", "triangle_multiplicative": "trimul_kernel"}
     #: The compile caches keyed under ``$MODEL_OPT_JIT_ROOT/<stack key>/``, as the kit's ``configs/<gpu>.env`` lays them out.
     JIT_CACHE_DIRS = {"TRITON_CACHE_DIR": "triton", "TORCH_EXTENSIONS_DIR": "torch_ext"}
+
+    def finish_request(self) -> None:
+        """Flush idle allocations after sampler graphs and evicted TriMul caches have been released.
+
+        The kit skips flushes inside the forward; this call is outside it and
+        goes through its normal caller-aware empty-cache wrapper.
+        """
+        gc.collect()
+        torch = sys.modules.get("torch")
+        if torch is not None and torch.cuda.is_available():
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
 
     def __init__(self, config: dict[str, Any], work_dir: str) -> None:
         self.kernels_record: dict[str, Any] = {}

@@ -174,6 +174,21 @@ def test_evicted_kit_caches_are_released_after_every_request(worker, tmp_path) -
     assert instance.predict("kit_finalizers", str(tmp_path / "out"), config) == 0
 
 
+def test_finish_request_runs_after_cache_release_before_reply(worker, tmp_path) -> None:
+    """The last cleanup hook sees no orphan cache and completes before the caller receives its result."""
+    instance, config = worker
+    note = tmp_path / "finished"
+    runtime_path = tmp_path / "runtime.py"
+    runtime_path.write_text(
+        runtime_path.read_text()
+        + "    def finish_request(self):\n"
+        + "        assert _kit_finalizers() == 0\n"
+        + f"        Path({str(note)!r}).write_text('finished')\n"
+    )
+    assert instance.predict("kit_cache", str(tmp_path / "out"), config) == 1
+    assert note.read_text() == "finished"
+
+
 def test_predict_returns_the_runtime_payload(worker, tmp_path) -> None:
     instance, config = worker
     payload = instance.predict("ok", str(tmp_path / "out"), config)

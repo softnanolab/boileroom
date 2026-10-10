@@ -710,3 +710,48 @@ def test_padding_buffers_release_after_graphs_and_reset_allocation_stats(
     assert kit.blk2._STATS["blk_att_padded_bufs"] == kit.blk2._STATS["blk_att_padded_buf_bytes"] == 0
     runtime.predict("a.json", "a", _config(optimization="exact"))
     assert order == ["sync", "reset", "clear", "flush"]
+
+
+def test_padding_release_uses_complete_sampler_policy(rt, fake, monkeypatch, tmp_path) -> None:
+    kit = FakeKit(monkeypatch, fake)
+    _fake_stack_graph_kit(monkeypatch)
+    runtime = rt.ProtenixRuntime(_config(optimization="exact"), str(tmp_path))
+    sampler = object()
+    runtime.runner.model._infopt_sampler = sampler
+    release = Mock(side_effect=lambda loop: (not kit.blk2._PAD_BUFS) or pytest.fail("PAD buffers still live"))
+    monkeypatch.setitem(sys.modules, "fpf_clisampler.policy", SimpleNamespace(release=release))
+    kit.blk2._PAD_BUFS = {536: object()}  # type: ignore[attr-defined]
+    result = runtime.predict("a.json", "a", _config(optimization="exact"))
+    release.assert_called_once_with(sampler)
+    assert result["kit.sampler_releases"] == "1"
+    runtime.predict("a.json", "a", _config(optimization="exact"))
+    release.assert_called_once()
+
+
+def test_padding_release_refuses_missing_sampler_api(rt, fake, monkeypatch, tmp_path) -> None:
+    kit = FakeKit(monkeypatch, fake)
+    runtime = rt.ProtenixRuntime(_config(optimization="exact"), str(tmp_path))
+    runtime.runner.model._infopt_sampler = object()
+    monkeypatch.delitem(sys.modules, "fpf_clisampler.policy", raising=False)
+    kit.blk2._PAD_BUFS = {536: object()}  # type: ignore[attr-defined]
+    with pytest.raises(rt.OptimizationUnavailableError, match="sampler release API"):
+        runtime.predict("a.json", "a", _config(optimization="exact"))
+
+
+def test_opendde_flushes_after_upstream_request_returns(rt, fake, monkeypatch, tmp_path) -> None:
+    order = []
+    monkeypatch.setattr(rt.gc, "collect", lambda: order.append("collect"))
+    monkeypatch.setitem(
+        sys.modules,
+        "torch",
+        SimpleNamespace(
+            cuda=SimpleNamespace(
+                is_available=lambda: True,
+                synchronize=lambda: order.append("sync"),
+                empty_cache=lambda: order.append("flush"),
+            )
+        ),
+    )
+    runtime = object.__new__(rt.OpenDDERuntime)
+    runtime.finish_request()
+    assert order == ["collect", "sync", "flush"]
