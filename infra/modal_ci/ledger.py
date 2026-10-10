@@ -1,17 +1,16 @@
 """Spend ledger for the Modal CI controller.
 
 Every sandbox is reserved at its worst case *before* it is created and settled at its actual cost
-afterwards, so the committed total can never exceed the ceiling even if the controller dies
-mid-job. Launches must be serialised by the caller (the controller runs its webhook function with
+afterwards. Within one controller generation the committed ledger total cannot exceed its ceiling.
+Launches must be serialised by the caller (the controller runs its webhook function with
 `max_containers=1` behind a lock); the reaper runs inside that same container.
 
 The ledger prices what a sandbox can cost over its whole hard lifetime: CPU, memory, a startup
 allowance, and an egress allowance. It cannot see the controller's own containers, image builds or
 storage, so the controller also feeds in the measured spend of both CI apps as
-`external_spend_usd` and the ceiling is the *whole* CI budget, overhead included. Modal's billing
-report lags by an hour or more, so measured spend is an after-the-fact backstop: the reservations
-are what hold the line in real time. The egress allowance is a price estimate, not a cap; nothing
-here limits how much a job uploads.
+`external_spend_usd`. Modal's billing report lags by an hour or more, so this is a delayed backstop,
+not a strict all-in spend cap. Keep headroom for overhead and track other migration apps separately.
+The egress allowance is a price estimate, not a cap; nothing here limits how much a job uploads.
 """
 
 from __future__ import annotations

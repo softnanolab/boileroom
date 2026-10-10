@@ -18,9 +18,10 @@ mounting, where the registration credential can be read by workflow code.
   unset (no job asks for a self-hosted runner).
 - **This is not a production-ready claim.** The pieces below were exercised live on throwaway branches, but the
   [live validation](#live-validation-run-before-activating-a-repository) is incomplete (see its status column), the
-  cold-start limitation is unresolved, and the cost case is marginal (see [Cost evidence](#cost-evidence)).
+  cold-start recovery needs a deliberate live check, and net savings need measurement (see [Cost evidence](#cost-evidence)).
 - **Rollout recommendation: do not activate** unless the cost comparison is rerun against the then-current GitHub billing
-  situation and the open items are closed. Activation needs a person to set a repository variable; nothing here does it.
+  situation and the private-repository validation items are closed. An authorized operator must set the repository
+  variable; nothing here activates it automatically.
 
 ## How a job flows
 
@@ -68,13 +69,13 @@ GitHub-hosted** (see [Cost evidence](#cost-evidence)).
 | Runner outlives its job or escapes its process group | Supervisor ends the sandbox when the runner exits, the job never arrives, or the deadline passes; `pkill -u runner`; guard refuses PID/PGID 1 and kills with `kill(-1)` first; the hook's `EXIT` trap kills on *any* exit that is not an explicit allow | `supervisor.py`, `guard.py`, `job-started.sh` | `test_supervisor`, `test_guard`, `test_hook`, pilot (`setsid` escapee killed) |
 | Workflow overrides the hook or its environment (`env:` on a job or workflow, `BASH_ENV`, `GITHUB_*`) | The guard trusts only `/run/ci/binding.json` and the runner-written event payload; the runner sets the hook path and `GITHUB_*` identity itself; `env:` is applied to steps, which run after the hook. Needs a live check, see item 8 below | `guard.py`, `job-started.sh` | `test_guard`, `test_hook`; live validation 8 (not run) |
 | Setuid binaries inside the sandbox | The root supervisor clears every setuid/setgid bit and refuses to start the runner if any remains (stripping at image build does not persist: a mode-only change to a base-layer file was lost, verified in a real Sandbox); `sudo` is not installed; the runner user has no groups | `supervisor.strip_setuid` | `test_supervisor`, pilot |
-| Runaway spend | Reserve-before-launch ledger, concurrency and daily caps, whole-CI ceiling cross-checked against Modal's billing report. The ceiling cannot be configured above **$250** (`ledger.MAX_CEILING_USD`) and a retried job carries its earlier tries' spend (`prior_usd`) | `ledger.py`, `controller.BillingProbe` | `test_ledger`, `test_core` |
+| Runaway sandbox spend | Reserve-before-launch ledger, concurrency and daily caps, with a delayed CI-app billing cross-check. The **$250** configuration maximum is not an overall migration ledger; see budget limitations below. Retries carry earlier spend (`prior_usd`) | `ledger.py`, `controller.BillingProbe` | `test_ledger`, `test_core` |
 | Billing report unavailable or stale | The probe fails **closed**: with no successful reading in the last 6 h nothing launches (`503 spend unknown`) instead of assuming zero | `controller.BillingProbe`, `core._launch` | `test_controller`, `test_core` |
 | A job bursts past the CPU/memory it was priced for | Sandbox CPU and memory are `(request, limit)` with equal values, so the reservation is a true upper bound (OOM instead of overage) | `controller.ModalSandboxes.create` | `test_controller` |
 | Orphaned sandboxes or registrations | Reaper ends unreferenced sandboxes, past-deadline sandboxes, deletes runners, gives back stuck reservations; a sandbox is settled as gone only after a 120 s grace and a direct `running()` lookup | `core.reconcile` | `test_core` |
 | Wider GitHub token than needed | Tokens are requested for one repository with one permission set and refused if GitHub returns anything wider; GitHub API calls never follow redirects (the bearer token cannot leak to another host) and any non-2xx is an error | `github_api` | `test_github_api` |
 | Probing the webhook for valid runs | Runs rejected permanently (fork, wrong event, SHA mismatch) are remembered, so repeated deliveries cost no API calls | `core._check_run` | `test_core` |
-| Spend after the planned end of the credits | `CI_ACTIVE_UNTIL` (see [Expiry](#expiry-is-a-spend-stop-not-a-fallback)) refuses every launch and recovery at or after the deadline | `core.expired`, `policy.parse_deadline` | `test_core`, `test_policy` |
+| New sandboxes after the planned end of the credits | `CI_ACTIVE_UNTIL` (see [Expiry](#expiry-stops-admission-not-all-spend-or-routing)) refuses every launch and recovery at or after the deadline | `core.expired`, `policy.parse_deadline` | `test_core`, `test_policy` |
 
 ### Accepted risks
 
@@ -94,9 +95,9 @@ GitHub-hosted** (see [Cost evidence](#cost-evidence)).
   workflow code, which already runs arbitrary commands on the runner. A shared registration token (the `runner-modal`
   design) would be a reusable credential; this is not. Closing the `/proc` path would mean running the steps as a different user or PID
   namespace from the listener; that is not attempted here.
-- **A recovery relaunch (a second try for a job still queued after a lost delivery or a guard kill) can leave the first
-  try's runner registration behind** until the reaper deletes it; the first try's spend is carried into the retry's ledger
-  entry. Accepted: no registration remained after the live tests (0 runners listed at the end).
+- **Failed runner deletion is retried** before a recovery relaunch can replace the record. A cleanup record retains its
+  reservation and registration ID, while compute time is frozen once the sandbox is ended. An extended GitHub outage
+  can therefore temporarily consume admission capacity even though its sandbox has ended.
 - No `NPROC` limit or `no_new_privs` is applied in the sandbox: fork bombs end at the hard CPU/memory limits and the job
   timeout, and nothing is setuid when the runner starts.
 - The supervisor does not log why the guard denied a job; the denial is visible as the runner dying (the job fails with
@@ -116,9 +117,10 @@ GitHub-hosted** (see [Cost evidence](#cost-evidence)).
 
 ## Budget
 
-Everything the CI controller spends is bounded by one number, `CI_CEILING_USD` (default **$30**, daily `CI_DAILY_CAP_USD`
-**$10**, at most `CI_MAX_CONCURRENT` **4** sandboxes). It sits inside the migration's $250 all-in budget together with the
-earlier RoseTTAFold 3 testing; the workspace-wide figure is tracked separately.
+Sandbox admission uses `CI_CEILING_USD` (default **$30**), daily `CI_DAILY_CAP_USD` **$10**, and at most
+`CI_MAX_CONCURRENT` **4** reservations. These limits must stay within the migration's **$250 all-in budget**, including
+earlier RoseTTAFold 3 and pilot testing. The operator must reconcile that separate budget before spending more:
+`MAX_CEILING_USD=250` only rejects an oversized CI configuration; it does not account for the other work.
 
 - **Profile**: one profile, `modal-ci`, **0.5 CPU core / 2 GiB** (`ledger.PROFILES`). It is priced at Modal's published
   sandbox rates (`ledger.PRICE_*`): about $0.0000331 per second, about **$0.002 per minute**. A larger profile is not
@@ -128,27 +130,35 @@ earlier RoseTTAFold 3 testing; the workspace-wide figure is tracked separately.
   cost when the job ends, and given back if the launch fails. The 2 GiB egress allowance ($0.08) is a flat, conservative
   reservation, not a measurement.
 - **A launch is refused** (`budget_exhausted`, `daily_cap`, `capacity`) if `max(settled, measured) + reserved + this job`
-  would exceed the ceiling or a cap. At most 4 sandboxes can be live, so the real-time exposure is ≈ $0.86.
-- **Overhead the ledger cannot see** (controller container, image builds, storage, network) is covered by `measured`: the
+  would exceed the ceiling or a cap. Four simultaneous reservations total approximately $0.86, excluding overhead and
+  egress beyond the allowance. Failed cleanup retains its reservation until the registration is deleted.
+- **Overhead cross-check:** the
   controller reads Modal's billing report for the two CI apps (`softnanolab-ci-controller`, `softnanolab-ci-runners`)
-  since `CI_BUDGET_START` and uses `max(settled, measured)`, so the ceiling is the *whole* CI budget, overhead included.
-  The report lags real time by an hour or more and omits the current partial hour: it is an after-the-fact backstop, and
-  the reservations are the real-time guarantee.
-- **Controller floor**: the controller container scales down after 60 s and the reaper wakes it every 5 minutes, so an
-  idle deployment costs roughly **$0.04/day** (an analytical figure from Modal's Function rates for 0.125 core / 128 MiB;
-  not yet reconciled against a quiet day of the billing report). Stopping the app removes it.
+  since `CI_BUDGET_START` and uses `max(settled, measured)`. This is a delayed backstop, not a strict all-in spend cap:
+  the report lags by an hour or more, excludes other apps, and can omit recent overhead while the ledger is larger.
+  The daily cap counts ledger reservations and estimates, not controller overhead. Keep headroom for those costs and
+  reconcile the whole migration separately; do not describe the limits as a workspace billing guarantee.
+- **Controller overhead**: the controller and reaper now scale down after **2 s**, retaining the five-minute recovery
+  sweep. At 0.125 core / 128 MiB Function pricing, the controller's scheduled idle tails alone estimate **$0.0011/day**
+  (previously about $0.033/day with a 60 s tail). Add cold starts, API/reconcile work, webhook traffic, and the reaper:
+  this is not a measured all-in figure. Stopping the app removes recurring controller/reaper costs.
+- **Redeployment:** unset routing, drain existing jobs, stop the old deployment, then deploy and verify before enabling
+  routing again. The lock is local to one container; overlapping deployment generations do not share it, so a rolling
+  redeploy can race the shared capacity and budget checks.
 - **Not enforced**: egress above the 2 GiB allowance per job. Artifact-heavy workflows would show up in `measured` only
   after the billing lag.
 
-### Expiry is a spend stop, not a fallback
+### Expiry stops admission, not all spend or routing
 
 `CI_ACTIVE_UNTIL` (ISO-8601 with a time zone; currently `2026-10-31T00:00:00+00:00`, matching the end of October on which
 most of the Modal credits expire) makes the controller refuse every launch and every recovery at or after that instant.
-It stops *spend*. It does **not** send jobs back to GitHub-hosted runners: GitHub chooses the runner when the job is
+It stops new sandbox admission. Existing jobs may finish, and the scheduled controller/reaper still cost money until
+the app is stopped. It does **not** send jobs back to GitHub-hosted runners: GitHub chooses the runner when the job is
 queued, from `runs-on`, and the workflow expression language has no current-time function. A job already routed to
 `[self-hosted, modal-ci, …]` simply waits with no runner (GitHub fails it after about 24 hours).
 
-So **the only safe fallback is unsetting the repository variable** (`MODAL_CI_UNPRIVILEGED`) on or before the deadline.
+So **the safe cutoff procedure is unsetting the repository variable** (`MODAL_CI_UNPRIVILEGED`) before the deadline,
+draining or cancelling the already routed runs, verifying sandbox and registration cleanup, and stopping the controller.
 Cancelling queued runs from the controller would need an extra App permission, which was deliberately not added. If nobody
 will unset the variable in time, do not set it.
 
@@ -169,11 +179,17 @@ Bakeoff jobs over the observed window (2026-10-05 to 2026-10-10, 5.1 days, 356 h
 | routable subtotal | | | 287 | **$1.72** (≈ $0.34/day) | | ≈ $0.52 |
 | `browser-tests` (stays hosted) | 74 | 156 s | 230 | $1.38 | see below | |
 
-- Routed jobs run about 3× slower on Modal at 0.5 core (the runner downloads Python and starts cold), but cost about
-  a third of the rounded hosted minutes. On the observed volume that is about **$0.10/day of Modal compute against
-  $0.34/day hosted**, before the controller floor (≈ $0.04/day) and unmeasured egress: a saving of roughly **$0.20/day at
-  the paid rate**, i.e. cents per day. Break-even against the controller floor is about two five-job pushes per day. The
-  volume is contest-driven and expected to fall after the challenge closes on 2026-10-12.
+- The table is historical evidence, not an activation verdict. The three measured jobs passed in
+  [run 38069075769](https://github.com/softnanolab/bakeoff/actions/runs/38069075769), with estimated sandbox compute
+  around **$0.0105 per trio**, versus **$0.018–0.024** for equivalent paid hosted jobs. Earlier settlement timestamps
+  excluded the creation call; the implementation now includes it. Reconcile full sandbox lifetimes before relying on
+  this narrow margin. `title` and `same-repo` were not benchmarked; their table entries must not count as proven savings.
+  With the old illustrative $0.04/day overhead, the $0.018 baseline required about **5.3 trios/day** to break even.
+  The shorter idle tail should reduce that threshold, but cold starts and API work still need measurement.
+- **Activation cost gate:** compare equivalent successful jobs at the current paid GitHub rate against full sandbox
+  lifetimes plus controller/reaper work, attributable image builds/storage, and egress. Use realistic recent frequency,
+  account for retries, and require a positive margin after those costs. Recheck after included GitHub minutes reset or
+  Modal credits expire. A lower resource rate or an unused credit grant alone is insufficient evidence.
 - **`browser-tests` does not pay off on Modal.** The real six-file browser run (`BAKEOFF_BROWSER=1`) takes 6–9 minutes
   hosted; on Modal at 0.5 core / 2 GiB its pytest step had run for over 12 minutes without finishing when the run was
   cancelled at 14 minutes total (≈ $0.028 spent, not yet in the billing report). It stays hosted. Baking Playwright's OS
@@ -181,11 +197,11 @@ Bakeoff jobs over the observed window (2026-10-05 to 2026-10-10, 5.1 days, 356 h
 - **Measured benchmark spend** (billing report through the 16:00 UTC hour on 2026-10-10, setup and testing mixed, *not* the
   production profile): runners $0.1257, controller $0.0144, pilot $0.0041; total ≈ **$0.144**. Later hours had not been
   reported when this was written.
-- **Why the saving is not a verdict.** GitHub's included minutes for SoftNanoLab are exhausted (2,000 / 2,000) until the
-  allowance resets on 1 November, and the $0 spending limit makes hosted jobs *fail to start* rather than bill. The cash
-  cost of hosted CI is therefore $0 and Modal cash spend is $0 too (it consumes credits that expire on 31 October and
-  30 November). What routing to Modal would buy right now is CI that runs at all, not money; the paid-rate saving above
-  applies only if hosted minutes are paid for. No permanent saving is claimed.
+- **Billing context at measurement time:** GitHub's included minutes were exhausted (2,000 / 2,000), with the next reset
+  on 1 November. Its $0 spending limit prevents paid hosted jobs from starting. That $0 bill describes unavailable
+  service, not equivalent free completed CI. Compare the prospective cost of completing the same jobs. Modal's credits
+  expiring on 31 October and 30 November can cover near-term cash spend but have opportunity cost, and do not establish
+  permanent savings. Prior setup/testing spend remains in the migration budget even though it is sunk for this decision.
 
 ## Operating it
 
@@ -225,13 +241,14 @@ The live deployment additionally mounts a second, non-secret Secret, `softnanola
 Bakeoff after Boileroom was removed from the installation, without touching the credentials Secret (whose `CI_REPOS` may
 still name both repositories).
 
-### Activation (not done; needs a person)
+### Activation (not done; authorized operator only)
 
 1. Close the open items in the validation table below and re-run the cost comparison against the current GitHub billing.
 2. Redeploy the controller (`modal deploy -m infra.modal_ci.controller`); it is stopped.
 3. Set `MODAL_CI_UNPRIVILEGED=true` (Settings → Secrets and variables → Actions → Variables) on `softnanolab/bakeoff`. The
    next run routes its same-repo `push`/`pull_request`/`schedule` jobs to Modal; fork PRs stay hosted.
-4. Put an operator reminder on **unsetting the variable before `CI_ACTIVE_UNTIL`** (see above).
+4. Arrange the cutoff procedure **before `CI_ACTIVE_UNTIL`**: unset routing, drain or cancel already routed runs, verify
+   cleanup, and stop the controller. Admission expiry alone leaves jobs queued and recurring controller costs running.
 5. Workflows that use secrets (publishing, evaluation) need the separate `MODAL_CI_PRIVILEGED` variable and a separate
    review; they are not routed. Docker, ARM and integration-test jobs stay hosted.
 
@@ -258,9 +275,11 @@ Boileroom:
 | 6 | **Replay and signature:** redeliver a delivery (no second sandbox); wrong signature gets 401 | signature 401 passed; **replay not run** |
 | 7 | **Budget:** with a tiny `CI_CEILING_USD` the next job is refused with `budget_exhausted` and nothing starts | **not run** (unit-tested only) |
 | 8 | **Environment overrides cannot defeat the guard:** `env:` at workflow, job and step level for the hook, `BASH_ENV`, `GITHUB_*`, `RUNNER_NAME` | **not run** |
+| 9 | **Cold and missed delivery:** after scale-to-zero, a real queued job starts; with one queued delivery deliberately omitted, the five-minute sweep recovers it | **not run deliberately** |
 
-Items 4, 5 and 8 are **must-pass**: do not activate a public repository until they have passed against a real runner.
-Items 5 and 8 have not, so Bakeoff must not be activated on the strength of this document.
+For **private Bakeoff with forks disabled**, close items 6–9 before activation, then verify runner cleanup. Item 5 is
+required before any future public-repository rollout; its absence does not itself block private Bakeoff. Boileroom is
+outside this rollout. See [the live-check runbook](LIVE_VALIDATION.md) for bounded, reusable checks.
 
 Record the run URLs and outcomes in the pull request that activates a repository.
 

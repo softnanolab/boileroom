@@ -56,6 +56,8 @@ def test_strip_setuid_clears_setuid_and_setgid_bits(tmp_path) -> None:
     for name, mode in modes.items():
         (tmp_path / name).write_text("#!/bin/sh\n")
         os.chmod(tmp_path / name, mode)
+        if stat.S_IMODE((tmp_path / name).stat().st_mode) != mode:
+            pytest.skip("this filesystem does not preserve setuid/setgid on the test files")
     assert supervisor.strip_setuid(str(tmp_path)) == []
     assert {stat.S_IMODE((tmp_path / name).stat().st_mode) for name in modes} == {0o755}
 
@@ -64,6 +66,8 @@ def test_strip_setuid_reports_what_it_could_not_clear(monkeypatch, tmp_path) -> 
     """A `chmod` that does nothing (read-only mount, unsupported filesystem) must be visible, not assumed."""
     (tmp_path / "suid").write_text("#!/bin/sh\n")
     os.chmod(tmp_path / "suid", 0o4755)
+    if not (tmp_path / "suid").stat().st_mode & stat.S_ISUID:
+        pytest.skip("this filesystem does not preserve setuid on the test file")
     monkeypatch.setattr(supervisor, "_CHMOD", "/usr/bin/true")
     assert supervisor.strip_setuid(str(tmp_path)) == [str(tmp_path / "suid")]
 

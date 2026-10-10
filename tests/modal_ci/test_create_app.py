@@ -291,7 +291,8 @@ def test_main_refuses_when_the_confirmation_differs_and_prints_no_secrets(capsys
             "https://a.modal.run/github",
             "--confirm-webhook-url",
             "https://b.modal.run/github",
-            "--active-until", "2026-10-31T00:00:00+00:00",
+            "--active-until",
+            "2026-10-31T00:00:00+00:00",
         ]
     )
     out = capsys.readouterr()
@@ -308,7 +309,8 @@ def test_main_refuses_repositories_outside_the_org(capsys) -> None:
             "https://a.modal.run/github",
             "--repos",
             "evil/repo",
-            "--active-until", "2026-10-31T00:00:00+00:00",
+            "--active-until",
+            "2026-10-31T00:00:00+00:00",
         ]
     )
     assert code == 1 and "must belong" in capsys.readouterr().err
@@ -344,29 +346,41 @@ def test_full_flow_stores_credentials_before_install_and_never_prints_them(monke
             return [installation()]
 
         def installation_repos(self, installation_id):
-            return set(REPOS)
+            return set(C.DEFAULT_REPOS)
 
     monkeypatch.setattr(C, "check_endpoint", lambda url: None)
     monkeypatch.setattr(C, "exchange_code", lambda code: conversion())
     monkeypatch.setattr(C, "AppApi", Api)
     monkeypatch.setattr(C, "write_modal_secret", lambda values: written.append(dict(values)))
     monkeypatch.setattr(C.webbrowser, "open", lambda url: opened.append(url))
+    wait_for_installation = C.wait_for_installation
+    monkeypatch.setattr(
+        C,
+        "wait_for_installation",
+        lambda *args, **kwargs: wait_for_installation(*args, **kwargs, timeout_s=1, interval_s=0.01),
+    )
 
     def browser() -> None:
+        deadline = time.monotonic() + 5
         while not opened:
+            if time.monotonic() > deadline:
+                return
             time.sleep(0.01)
-        page = urllib.request.urlopen(opened[0]).read().decode()  # noqa: S310 -- local server
+        page = urllib.request.urlopen(opened[0], timeout=5).read().decode()  # noqa: S310 -- local server
         action = html.unescape(re.search(r'action="([^"]+)"', page).group(1))  # type: ignore[union-attr]
         state = urllib.parse.parse_qs(urllib.parse.urlsplit(action).query)["state"][0]
         manifest = json.loads(html.unescape(re.search(r'name="manifest" value="([^"]*)"', page).group(1)))  # type: ignore[union-attr]
-        urllib.request.urlopen(f"{manifest['redirect_url']}?code=abc&state={state}")  # noqa: S310
+        urllib.request.urlopen(f"{manifest['redirect_url']}?code=abc&state={state}", timeout=5)  # noqa: S310
 
-    t = threading.Thread(target=browser)
+    t = threading.Thread(target=browser, daemon=True)
     t.start()
     url = "https://a.modal.run/github"
-    assert C.main(["--webhook-url", url, "--confirm-webhook-url", url, "--active-until", "2026-10-31T00:00:00+00:00"]) == 0
+    assert (
+        C.main(["--webhook-url", url, "--confirm-webhook-url", url, "--active-until", "2026-10-31T00:00:00+00:00"]) == 0
+    )
     t.join()
     out = capsys.readouterr()
     assert [w["CI_INSTALLATION_ID"] for w in written] == ["0", "77"]  # usable by nothing until verified
     assert written[1]["CI_APP_PRIVATE_KEY"] == PEM
+    assert written[1]["CI_REPOS"] == "softnanolab/bakeoff"
     assert PEM not in out.out + out.err and HOOK_SECRET not in out.out + out.err

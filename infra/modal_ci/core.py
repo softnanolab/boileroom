@@ -148,7 +148,7 @@ class Core:
 
     def _launch(self, req: policy.JobRequest) -> Response:
         if self.expired():
-            # A spend stop, not a fallback: nothing is verified or spent past the deadline, but GitHub has already
+            # An admission stop, not a fallback: no new sandbox launches past the deadline, but GitHub has already
             # routed this job to a self-hosted label, so it stays queued with no runner (until GitHub's queue limit)
             # unless the repository variable that routes jobs here was unset beforehand.
             log.warning("not launched job=%s: activation expired", req.job_id)
@@ -190,6 +190,8 @@ class Core:
                 "head_sha": req.head_sha,
                 "runner_name": runner_name,
             }
+            # Creation can include billed startup work; keep this boundary before the API call.
+            launched = self.clock()
             sandbox_id = self.sandboxes.create(
                 profile=profile,
                 name=runner_name,
@@ -203,7 +205,7 @@ class Core:
         except Exception:
             self._abandon(req, runner_id)
             raise
-        self.ledger.update(req.job_id, state="running", sandbox_id=sandbox_id, launched=self.clock())
+        self.ledger.update(req.job_id, state="running", sandbox_id=sandbox_id, launched=launched)
         log.info("launched job=%s repo=%s sandbox=%s runner=%s", req.job_id, req.repo, sandbox_id, runner_name)
         return Response(200, "launched")
 
@@ -220,13 +222,9 @@ class Core:
         return reason
 
     def _abandon(self, req: policy.JobRequest, runner_id: int | None) -> None:
-        """Undo a half-finished launch: remove the registration and give the reservation back."""
-        if runner_id is not None:
-            try:
-                self.github.delete_runner(req.repo, runner_id)
-            except Exception:
-                log.exception("could not delete runner %s", runner_id)
-        self.ledger.settle(req.job_id, 0.0)
+        """Undo a half-finished launch, retaining failed registration cleanup for the sweep."""
+        self.ledger.update(req.job_id, state="cleanup", cleanup_seconds=0.0, runner_id=runner_id)
+        self._teardown(req.job_id, self.ledger.store.get(f"job:{req.job_id}"), sandbox_alive=False)
 
     def _cleanup(self, done: policy.Cleanup) -> Response:
         rec = self._record_to_clean(done)
@@ -246,19 +244,26 @@ class Core:
     def _teardown(self, job_id: int, rec: Mapping[str, Any], sandbox_alive: bool = True) -> bool:
         """End a job's sandbox and runner registration and settle its cost. `False` means it must be retried."""
         sandbox_id = rec.get("sandbox_id")
-        if sandbox_id and sandbox_alive:
+        seconds = rec.get("cleanup_seconds")
+        if seconds is None and sandbox_id and sandbox_alive:
             try:
                 self.sandboxes.terminate(sandbox_id)
             except Exception:
                 log.exception("could not terminate sandbox %s", sandbox_id)
                 return False  # keep the reservation; the next sweep retries
+        if seconds is None:
+            started = rec.get("launched") or rec["created"]
+            seconds = self.clock() - started
+            # Freeze compute time once the sandbox ends. A GitHub outage can delay deregistration,
+            # but must neither lose that cleanup obligation nor bill its waiting time as compute.
+            self.ledger.update(job_id, state="cleanup", cleanup_seconds=seconds)
         if rec.get("runner_id") is not None:
             try:
                 self.github.delete_runner(rec["repo"], rec["runner_id"])
             except Exception:
                 log.exception("could not delete runner %s", rec["runner_id"])
-        started = rec.get("launched") or rec["created"]
-        self.ledger.settle(job_id, self.clock() - started)
+                return False
+        self.ledger.settle(job_id, seconds)
         return True
 
     # -- periodic sweep -----------------------------------------------------------------------
@@ -286,20 +291,20 @@ class Core:
         for rec in records:
             if rec["state"] == "settled":
                 continue
+            if rec["state"] == "cleanup":
+                stats["settled"] += self._teardown(rec["job_id"], rec, sandbox_alive=False)
+                continue
             sandbox = states.get(rec.get("sandbox_id", ""))
             age = now - (rec.get("launched") or rec["created"])
             if rec["state"] == "reserved" and age > LAUNCH_GRACE_S:
                 # The launch never completed (controller died mid-way): give the reservation back.
-                self._teardown(rec["job_id"], rec, sandbox_alive=False)
-                stats["settled"] += 1
+                stats["settled"] += self._teardown(rec["job_id"], rec, sandbox_alive=False)
             elif rec["state"] != "running":
                 continue
             elif self._ended(rec, sandbox, age):
-                self._teardown(rec["job_id"], rec, sandbox_alive=False)
-                stats["settled"] += 1
+                stats["settled"] += self._teardown(rec["job_id"], rec, sandbox_alive=False)
             elif age > PROFILES[rec["profile"]].max_seconds + 120:
-                self._teardown(rec["job_id"], rec)
-                stats["terminated"] += 1
+                stats["terminated"] += self._teardown(rec["job_id"], rec)
         stats["recovered"] = self._recover_queued()
         stats["folded"] = self.ledger.fold()
         return stats

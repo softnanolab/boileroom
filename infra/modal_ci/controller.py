@@ -86,9 +86,9 @@ class ModalSandboxes:
 class BillingProbe:
     """Measured spend of both CI apps since `CI_BUDGET_START`, cached; a delayed cross-check on the ledger.
 
-    Includes the controller's own cost, which the ledger cannot see, so `CI_CEILING_USD` is the whole
-    CI budget. The report trails real time by an hour or more (and omits the current partial hour),
-    so the ledger's reservations, not this probe, are the real-time guarantee.
+    Includes reported controller cost that the ledger cannot see. The report trails real time by
+    an hour or more (and omits the current partial hour); it is a delayed backstop, not a strict
+    all-in cap. Other migration apps and unreported overhead need separate budget headroom.
 
     Fails closed: with no successful reading in the last `MAX_AGE_S`, the spend is unknown and
     nothing launches (`SpendUnknown`), rather than reserving against a stale or zero history.
@@ -151,8 +151,8 @@ def build_core() -> Core:
     # One container: ledger writes are serialised by Core.lock, which is what makes the
     # reserve-then-launch sequence safe without Dict transactions.
     max_containers=1,
-    # Shorter than the reaper's period, so the container is not kept warm (and billed) around the clock.
-    scaledown_window=60,
+    # Keep the five-minute recovery sweep without paying a minute of idle time after every sweep.
+    scaledown_window=2,
 )
 @modal.concurrent(max_inputs=8)
 class Controller:

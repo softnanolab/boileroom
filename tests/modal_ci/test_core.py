@@ -315,6 +315,68 @@ def test_completed_event_tears_down_sandbox_and_runner(world) -> None:
     assert core.handle_webhook(*delivery("completed", delivery_id="d3")).status == 204
 
 
+def test_runner_deletion_failure_retries_without_billing_cleanup_wait(world, monkeypatch) -> None:
+    core, gh, sandboxes, store, _, clock = world
+    core.handle_webhook(*delivery())
+    delete_runner = gh.delete_runner
+
+    def unavailable(*args):
+        raise GitHubError(503, "delete runner")
+
+    monkeypatch.setattr(gh, "delete_runner", unavailable)
+    clock.now += 30
+    assert core.handle_webhook(*delivery("completed", delivery_id="done")).status == 202
+    assert store["job:7"]["state"] == "cleanup"
+    assert store["job:7"]["runner_id"] == 555
+    assert sandboxes.terminated == ["sb-0"]
+    clock.now += 300
+    assert core.reconcile()["settled"] == 0
+    assert store["job:7"]["state"] == "cleanup"
+    monkeypatch.setattr(gh, "delete_runner", delete_runner)
+    assert core.reconcile()["settled"] == 1
+    assert gh.deleted == [555] and sandboxes.terminated == ["sb-0"]
+    assert store["job:7"]["actual_usd"] == pytest.approx(L.cost_usd(L.PROFILES["modal-ci"], 30))
+
+
+def test_failed_launch_retains_registration_cleanup_before_retry(world, monkeypatch) -> None:
+    core, gh, sandboxes, store, _, clock = world
+    delete_runner = gh.delete_runner
+
+    def unavailable(*args):
+        raise GitHubError(503, "delete runner")
+
+    sandboxes.fail_create = True
+    monkeypatch.setattr(gh, "delete_runner", unavailable)
+    assert core.handle_webhook(*delivery()).status == 503
+    assert store["job:7"]["state"] == "cleanup"
+    assert core.handle_webhook(*delivery(delivery_id="retry")).body == "already_launched"
+    assert len(gh.minted) == 1
+    clock.now += 300
+    assert core.reconcile()["settled"] == 0
+    monkeypatch.setattr(gh, "delete_runner", delete_runner)
+    assert core.reconcile()["settled"] == 1
+    assert gh.deleted == [555] and store["job:7"]["actual_usd"] == 0
+    sandboxes.fail_create = False
+    assert core.handle_webhook(*delivery(delivery_id="retry-after-cleanup")).status == 200
+
+
+def test_settlement_includes_sandbox_creation_time(world, monkeypatch) -> None:
+    core, _, sandboxes, store, _, clock = world
+    create = sandboxes.create
+
+    def slow_create(**kwargs):
+        clock.now += 20
+        return create(**kwargs)
+
+    monkeypatch.setattr(sandboxes, "create", slow_create)
+    started = clock.now
+    core.handle_webhook(*delivery())
+    assert store["job:7"]["launched"] == started
+    clock.now += 10
+    core.handle_webhook(*delivery("completed", delivery_id="done"))
+    assert store["job:7"]["actual_usd"] == pytest.approx(L.cost_usd(L.PROFILES["modal-ci"], 30))
+
+
 def test_completed_event_ends_the_runner_that_ran_the_job_not_the_one_bound_to_it(world) -> None:
     """Runner A (job 7) ended up running job 8; job 8 finishing must not kill job 7's own sibling B."""
     core, gh, sandboxes, store, *_ = world
