@@ -620,15 +620,31 @@ class OpenDDERuntime(FoldRuntime):
     JIT_CACHE_DIRS = {"TRITON_CACHE_DIR": "triton", "TORCH_EXTENSIONS_DIR": "torch_ext"}
 
     def finish_request(self) -> None:
-        """Flush idle allocations after sampler graphs and evicted TriMul caches have been released.
+        """Release stream-local BLAS workspaces after the sampler's graphs have been destroyed.
 
-        The kit skips flushes inside the forward; this call is outside it and
-        goes through its normal caller-aware empty-cache wrapper.
+        Each fresh warm-up stream otherwise retains a 32 MiB Hopper workspace,
+        pinning split allocator segments. This worker owns one sequential model;
+        unlike Protenix, its kit keeps no graphs between requests. Never clear
+        these workspaces while a sampler graph or hoist context is live.
         """
         gc.collect()
         torch = sys.modules.get("torch")
         if torch is not None and torch.cuda.is_available():
             torch.cuda.synchronize()
+            if self.kit is not None:
+                stepgraph = sys.modules.get("opendde_opt.stepgraph")
+                context = getattr(stepgraph, "_CUR", None)
+                hoist = getattr(sys.modules.get("odde_addon"), "_ACTIVE", {}).get("dit_hoist")
+                if context != [None] or (hoist is not None and (hoist.cur is not None or hoist.entries)):
+                    raise OptimizationUnavailableError("OpenDDE sampler state remains live at request cleanup")
+                prep = sys.modules.get("opendde_opt.zprephoist")
+                if prep is not None:
+                    prep.clear()  # its last pair copy is request-owned; the next request cannot reuse it
+                clear = getattr(getattr(torch, "_C", None), "_cuda_clearCublasWorkspaces", None)
+                if not callable(clear):
+                    raise OptimizationUnavailableError("OpenDDE needs the pinned torch cuBLAS workspace release API")
+                clear()
+                gc.collect()
             torch.cuda.empty_cache()
 
     def __init__(self, config: dict[str, Any], work_dir: str) -> None:

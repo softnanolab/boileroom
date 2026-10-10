@@ -753,5 +753,48 @@ def test_opendde_flushes_after_upstream_request_returns(rt, fake, monkeypatch, t
         ),
     )
     runtime = object.__new__(rt.OpenDDERuntime)
+    runtime.kit = None
     runtime.finish_request()
     assert order == ["collect", "sync", "flush"]
+
+
+@pytest.mark.parametrize("live", ["graph", "hoist", "missing-api", None])
+def test_opendde_workspace_cleanup_requires_released_graphs(rt, monkeypatch, live) -> None:
+    order = []
+    monkeypatch.setattr(rt.gc, "collect", lambda: order.append("collect"))
+    monkeypatch.setitem(sys.modules, "opendde_opt.zprephoist", SimpleNamespace(clear=lambda: order.append("prep")))
+    monkeypatch.setitem(
+        sys.modules, "opendde_opt.stepgraph", SimpleNamespace(_CUR=[object() if live == "graph" else None])
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "odde_addon",
+        SimpleNamespace(
+            _ACTIVE={
+                "dit_hoist": SimpleNamespace(cur=None, entries={1: object()} if live == "hoist" else {}),
+            }
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "torch",
+        SimpleNamespace(
+            cuda=SimpleNamespace(
+                is_available=lambda: True,
+                synchronize=lambda: order.append("sync"),
+                empty_cache=lambda: order.append("flush"),
+            ),
+            _C=SimpleNamespace()
+            if live == "missing-api"
+            else SimpleNamespace(_cuda_clearCublasWorkspaces=lambda: order.append("blas")),
+        ),
+    )
+    runtime = object.__new__(rt.OpenDDERuntime)
+    runtime.kit = object()
+    if live:
+        with pytest.raises(rt.OptimizationUnavailableError):
+            runtime.finish_request()
+        assert "blas" not in order and "flush" not in order
+    else:
+        runtime.finish_request()
+        assert order == ["collect", "sync", "prep", "blas", "collect", "flush"]

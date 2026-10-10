@@ -82,6 +82,7 @@ def fake_kit(monkeypatch: pytest.MonkeyPatch, events: list[str], result: Any = N
         return result if result is not None else {"active": True}
 
     module.enable = enable  # type: ignore[attr-defined]
+    module.status = lambda: result if result is not None else {"active": True}  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "rosettafold3_opt", module)
 
 
@@ -138,6 +139,47 @@ def test_vanilla_never_touches_the_kit(
 
 
 # -- Kit activation --------------------------------------------------------------------------------------------------
+
+
+def test_runtime_describes_the_loaded_worker_and_actual_checkpoint(
+    runtime, fake_rf3, checkpoint, tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setitem(
+        sys.modules,
+        "torch",
+        SimpleNamespace(
+            __version__="2.7.1+cu126",
+            version=SimpleNamespace(cuda="12.6"),
+            cuda=SimpleNamespace(
+                is_initialized=lambda: True,
+                current_device=lambda: 0,
+                get_device_name=lambda dev: "A100",
+                get_device_capability=lambda dev: (8, 0),
+            ),
+        ),
+    )
+    monkeypatch.setattr(runtime.importlib.metadata, "version", lambda name: "0.1.0")
+    built = runtime.RF3Runtime({**CONFIG, "checkpoint_path": str(checkpoint)}, str(tmp_path))
+    facts = built.describe()
+    assert facts["torch"] == "2.7.1+cu126" and facts["cuda"] == "12.6"
+    assert facts["gpu"] == "A100" and facts["gpu_capability"] == "sm80"
+    assert facts["rc-foundry"] == "0.1.0"
+    assert facts["weights.sha256"] == hashlib.sha256(b"weights").hexdigest()
+    assert built.predict("in.json", "out", CONFIG) == facts
+
+
+def test_runtime_refreshes_late_kit_levers_and_refuses_inactive_state(
+    runtime, fake_rf3, checkpoint, tmp_path, monkeypatch, events
+) -> None:
+    fake_kit(monkeypatch, events, {"active": True, "levers_applied": []})
+    built = runtime.RF3Runtime({**CONFIG, "checkpoint_path": str(checkpoint), "optimization": "exact"}, str(tmp_path))
+    kit = sys.modules["rosettafold3_opt"]
+    monkeypatch.setattr(kit, "status", lambda: {"active": True, "levers_applied": ["installed_after_import"]})
+    facts = built.predict("in.json", "out", CONFIG)
+    assert facts["kit.levers_applied"] == '["installed_after_import"]'
+    monkeypatch.setattr(kit, "status", lambda: {"active": False, "reason": "late refusal"})
+    with pytest.raises(RuntimeError, match="became inactive.*late refusal"):
+        built.predict("in2.json", "out", CONFIG)
 
 
 @pytest.mark.parametrize("mode", ["exact", "fast", "big"])

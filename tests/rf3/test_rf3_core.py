@@ -382,6 +382,7 @@ def test_ranking_score_must_be_numeric(module: ModuleType, bad_score: object) ->
 def fake_worker(module: ModuleType, monkeypatch: pytest.MonkeyPatch) -> Mock:
     """Replace the worker process with one that writes RF3-layout samples into the requested output directory."""
     worker = Mock()
+    worker.info = {"torch": "2.7.1", "gpu": "worker GPU"}
     factory = Mock(return_value=worker)
     monkeypatch.setattr(module, "ModelWorker", factory)
 
@@ -403,6 +404,8 @@ def test_fold_runs_the_worker_and_returns_ranked_samples(
     output = core.fold(real_sequence, options={"include_fields": ["*"]})
 
     fake_worker.predict.assert_called_once()
+    assert output.metadata.runtime["worker.torch"] == "2.7.1"
+    assert output.metadata.runtime["worker.gpu"] == "worker GPU"
     input_json, _, config = fake_worker.predict.call_args.args
     assert Path(input_json).name == "input.json" and config["msa"] is None
     assert output.sample_indices == [2, 1, 0]
@@ -548,12 +551,24 @@ def test_fold_records_the_resolved_optimization(
 ) -> None:
     monkeypatch.setattr(module, "detect_gpu", lambda device=None: A100)
 
+    fake_worker.info.update({"kit.levers_applied": '["startup"]', "kit.partial": "false"})
+    original = fake_worker.predict.side_effect
+
+    def predict(*args, **kwargs):
+        original(*args, **kwargs)
+        return {"kit.levers_applied": '["after_prediction"]', "kit.partial": "true"}
+
+    fake_worker.predict.side_effect = predict
+
     output = module.RF3Core({"optimization": mode, "diffusion_batch_size": 1}).fold(real_sequence)
 
     assert output.metadata.optimization is not None
     assert output.metadata.optimization["mode"] == mode
     assert output.metadata.optimization["kit_config"] == "a100"
     assert output.metadata.optimization["capability"] == "sm80"
+    assert output.metadata.runtime["kit.levers_applied"] == "after_prediction"
+    assert output.metadata.runtime["kit.partial"] == "true"
+    assert output.metadata.runtime["predict.kit.levers_applied"] == '["after_prediction"]'
 
 
 @pytest.mark.parametrize(

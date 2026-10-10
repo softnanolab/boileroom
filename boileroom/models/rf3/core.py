@@ -17,6 +17,7 @@ from biotite.structure.io.pdbx import CIFFile, get_structure
 from ...base import FoldingAlgorithm, PredictionMetadata
 from ...inputs import a3m_rows
 from ...optimization import OptimizationResolution, detect_gpu, resolve_optimization, validate_optimization
+from ...provenance import kit_provenance, runtime_provenance
 from ...utils import Timer, get_model_cache_dir
 from .._runtime_utils import command_env, include_field
 from .._worker import ModelWorker
@@ -147,7 +148,7 @@ class RF3Core(FoldingAlgorithm):
                 assert self._worker is not None
                 # The alignments are already staged as files the input JSON names.
                 try:
-                    self._worker.predict(str(input_json), str(output_dir), {**effective_config, "msa": None})
+                    payload = self._worker.predict(str(input_json), str(output_dir), {**effective_config, "msa": None})
                 except RuntimeError as error:
                     if self._is_fast_out_of_memory(error):
                         raise RuntimeError(
@@ -159,6 +160,19 @@ class RF3Core(FoldingAlgorithm):
 
             # Resolved by the first load, so it is only known once inference has started the worker.
             metadata.optimization = self.optimization.to_dict() if self.optimization else None
+            extra = {f"worker.{key}": value for key, value in self._worker.info.items()}
+            extra.update({f"predict.{key}": value for key, value in (payload or {}).items()})
+            if self.optimization is not None and self.optimization.kit:
+                info = {**self._worker.info, **(payload or {})}
+                extra.update(
+                    kit_provenance(
+                        commit=info.get("kit.commit"),
+                        levers_applied=json.loads(info.get("kit.levers_applied", "[]")) or [],
+                        levers_fallback=json.loads(info.get("kit.levers_fallback", "[]")) or [],
+                        partial=bool(json.loads(info.get("kit.partial", "false"))),
+                    )
+                )
+            metadata.runtime = runtime_provenance(extra=extra)
             with Timer(f"{self.DISPLAY_NAME} postprocessing") as postprocess_timer:
                 output = self._collect_outputs(output_dir, metadata, effective_config)
 

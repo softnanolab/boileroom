@@ -331,6 +331,10 @@ def test_rf3_kit_matches_stock_rf3_reference(
         result = model.fold(sequence, options=_stock_options())
 
     assert result.metadata.optimization is not None and result.metadata.optimization["mode"] == mode
+    facts = result.metadata.runtime
+    assert facts["worker.torch"] not in ("none", "not-loaded", "unknown")
+    assert facts["worker.gpu"] and facts["worker.rc-foundry"] != "absent"
+    assert facts["kit.commit"] and facts["worker.weights.sha256"]
     _assert_ran_on(result, device)
     _assert_matches_stock_reference(result, lengths, expected_atoms, confidences, summary, max_ca_rmsd=1.5)
 
