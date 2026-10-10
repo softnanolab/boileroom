@@ -81,7 +81,7 @@ def test_supported_shared_input_passes() -> None:
 
 def test_non_kit_core_accepts_vanilla_and_refuses_kit_modes() -> None:
     assert _Core({"optimization": "vanilla"}).config["optimization"] == "vanilla"
-    for mode in ("exact", "fast"):
+    for mode in ("exact",):
         with pytest.raises(
             OptimizationUnavailableError, match=rf"_Core has no optimization kit, so optimization={mode!r}"
         ):
@@ -92,14 +92,14 @@ def test_non_kit_core_accepts_vanilla_and_refuses_kit_modes() -> None:
 
 def test_kit_core_takes_every_mode_and_refuses_an_unknown_one_without_its_own_check() -> None:
     """The base validates ``optimization`` for a family that lists it too, so a new kit family cannot forget to."""
-    for mode in ("vanilla", "exact", "fast"):
+    for mode in ("vanilla", "exact"):
         assert _KitCore({"optimization": mode}).config["optimization"] == mode
-    with pytest.raises(ValueError, match=r"optimization must be one of \['vanilla', 'exact', 'fast'\], got 'turbo'"):
+    with pytest.raises(ValueError, match=r"optimization must be one of \['vanilla', 'exact'\], got 'turbo'"):
         _KitCore({"optimization": "turbo"})
-    core = _KitCore({"optimization": "fast"})
+    core = _KitCore({"optimization": "exact"})
     with pytest.raises(ValueError, match="optimization must be one of"):
         core.update_config({"optimization": "turbo"})
-    assert core.config["optimization"] == "fast"
+    assert core.config["optimization"] == "exact"
 
 
 def test_optimization_is_never_a_per_call_option() -> None:

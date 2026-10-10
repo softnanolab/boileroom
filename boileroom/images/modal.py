@@ -186,7 +186,7 @@ def _build_kit_image(spec: RuntimeImageSpec, build: KitBuild) -> Image:
 
 
 def get_modal_kit_image(identifier: str) -> Image:
-    """Return the Modal image that runs ``optimization="exact"`` and ``"fast"`` for a model family.
+    """Return the Modal image that runs the kit modes of a model family.
 
     By default Modal builds it from the kit Dockerfile in this repository (the first use takes tens of minutes, then
     Modal caches it). With ``BOILEROOM_KIT_IMAGE_SOURCE=registry`` it pulls the published kit image instead:

@@ -148,6 +148,7 @@ class FoldRuntime:
 
     def __init__(self, config: dict[str, Any], work_dir: str) -> None:
         self.mode = str(config.get("optimization") or "vanilla")
+        self.requested_dtype = str(config["dtype"])
         self.work_dir = work_dir
         self.kit: Any = None
         self.report: dict[str, Any] | None = None
@@ -281,6 +282,7 @@ class FoldRuntime:
             _guard(self.LABEL, "the prediction", infer_predict, self.runner, configs)
         if self.kit is not None:
             self._drop_stale_stack_graphs()
+            self._release_padding_buffers()
         errors = sorted(Path(self.runner.error_dir).glob("*.txt"))
         if errors:
             details = "\n".join(path.read_text(encoding="utf-8") for path in errors)
@@ -320,9 +322,36 @@ class FoldRuntime:
             torch = sys.modules.get("torch")
             if torch is not None and torch.cuda.is_available():
                 torch.cuda.synchronize()  # no replay in flight while the graphs are released
-            reset_cache()
-            self.stack_graph_resets += 1
+            self._reset_stack_graphs(stack_graph)
         self._trimul_caches = live
+
+    def _reset_stack_graphs(self, stack_graph: Any) -> None:
+        """Release captured graphs and their live pool accounting before freeing workspaces."""
+        stack_graph.reset_cache()
+        budget = getattr(stack_graph, "_BUDGET", None)
+        if isinstance(budget, dict):
+            budget["pool_total"] = 0
+        stats = getattr(stack_graph, "ST", None)
+        if isinstance(stats, dict):
+            stats.update(pool_gb=0, pool_bytes_by_ntok={})
+        self.stack_graph_resets += 1
+
+    def _release_padding_buffers(self) -> None:
+        """Bound H100 PAD8 workspaces to one request, dropping any graph that captured them first."""
+        levers = sys.modules.get("ptx_trunk2_levers")
+        buffers = getattr(levers, "_PAD_BUFS", None)
+        if not isinstance(buffers, dict) or not buffers:
+            return
+        torch = sys.modules.get("torch")
+        if torch is not None and torch.cuda.is_available():
+            torch.cuda.synchronize()
+        stack_graph = sys.modules.get(self.STACK_GRAPH_MODULE)
+        if callable(getattr(stack_graph, "reset_cache", None)):
+            self._reset_stack_graphs(stack_graph)
+        buffers.clear()
+        stats = getattr(levers, "_STATS", None)
+        if isinstance(stats, dict):
+            stats.update(blk_att_padded_bufs=0, blk_att_padded_buf_bytes=0)
 
     def _point_at_staged_templates(self, configs: Any, staging: dict[str, Any]) -> None:
         # Caller templates: point the featurizer at the staged directory and forbid it from fetching
@@ -456,7 +485,7 @@ class ProtenixRuntime(FoldRuntime):
     UPSTREAM_MODULE = "protenix"
     TEMPLATE_UTILS = "protenix.data.template.template_utils"
     # protenix/model/triangular/layers.py:33 reads fast_layernorm when unset; any other value is a non-fused LN.
-    LAYERNORM_BY_MODE = {"vanilla": "openfold", "exact": "fast_layernorm", "fast": "fast_layernorm"}
+    LAYERNORM_BY_MODE = {"vanilla": "openfold", "exact": "fast_layernorm"}
     # Protenix's process() returns an empty hit, silently, for a cache directory without the pickle.
     TEMPLATE_CACHE_PER_REQUEST = False
     #: The lever report the kit's modules dump at exit, and ``late_records`` reads back.
@@ -464,6 +493,35 @@ class ProtenixRuntime(FoldRuntime):
     LEVER_REPORT_NAME = "opt_lever_report.jsonl"
     #: The forward kit's BLK2 module and its counters.
     BLK2_MODULE = "ptx_trunk2_levers"
+
+    def _arm_kit_census(self) -> None:
+        for site, value in self.requested_kernels.items():
+            if value not in _CUEQ_REQUESTS:
+                key = "triatt_kernel" if site == "triangle_attention" else "trimul_kernel"
+                raise OptimizationUnavailableError(
+                    f"Protenix optimization={self.mode!r} requires cuEquivariance triangle kernels; "
+                    f"{key}={value!r} needs optimization='vanilla'"
+                )
+        self._request_dtype({"dtype": self.requested_dtype})
+
+    def _request_dtype(self, config: dict[str, Any]) -> str:
+        dtype = str(config["dtype"])
+        if self.mode != "vanilla" and dtype != "bf16":
+            raise OptimizationUnavailableError(
+                f"Protenix optimization={self.mode!r} requires dtype='bf16'; dtype={dtype!r} needs optimization='vanilla'"
+            )
+        return dtype
+
+    def _check_loaded(self) -> None:
+        if self.mode == "vanilla":
+            return
+        for site in self.requested_kernels:
+            if self.resolved.get(site) != "cuequivariance":
+                raise OptimizationUnavailableError(
+                    f"Protenix optimization={self.mode!r} requires {site}='cuequivariance'; "
+                    f"the runner resolved {self.resolved.get(site)!r}"
+                )
+        self._request_dtype({"dtype": self.resolved["dtype"]})
 
     def _load_runner(self, config: dict[str, Any], work_dir: str) -> Any:
         from runner.batch_inference import get_default_runner, inference_configs, init_logging
@@ -533,7 +591,7 @@ class OpenDDERuntime(FoldRuntime):
     UPSTREAM_MODULE = "opendde"
     TEMPLATE_UTILS = "opendde.data.template.template_utils"
     # opendde/model/triangular/layers.py:25 reads torch when unset.
-    LAYERNORM_BY_MODE = {"vanilla": "torch", "exact": "fast_layernorm", "fast": "fast_layernorm"}
+    LAYERNORM_BY_MODE = {"vanilla": "torch", "exact": "fast_layernorm"}
     # OpenDDE's process() writes <id>_<chain>.pkl into the cache and reads it back on the next request.
     TEMPLATE_CACHE_PER_REQUEST = True
     #: runner.configs attribute -> the config key that requested it.

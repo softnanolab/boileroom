@@ -63,7 +63,7 @@ class OpenDDE(ModelWrapper):
         selecting the chain) to supply mmCIF templates; the other chains get none. Results retain
         numeric seeds and within-seed confidence ranks. Request ``pae``,
         ``token_chain_ids`` and ``token_res_ids`` to compute interface scores.
-        Set ``config={"optimization": "exact" | "fast"}`` at initialization to
+        Set ``config={"optimization": "exact"}`` at initialization to
         run the Anthropic kit kernels (A100/H100/H200 only).
         """
         validated_sequences = [sequences] if isinstance(sequences, str) else list(sequences)

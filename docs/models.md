@@ -126,7 +126,7 @@ and RNA-MSA searches require the external tools and databases expected by Proten
 `hmmer` and `kalign`, but database paths still need to be available inside the container when those features are
 enabled.
 
-Optimization: `config={"optimization": "vanilla" | "exact" | "fast"}` (default `"vanilla"`, initialization-only) switches
+Optimization: `config={"optimization": "vanilla" | "exact"}` (default `"vanilla"`, initialization-only) switches
 to the Anthropic kit kernels on A100 or H100/H200 GPUs only; other GPUs are refused by name. See
 [optimization.md](optimization.md) for the requirements, kit image and measured speedups.
 
@@ -144,13 +144,41 @@ The prerelease CLI setting `protenix_command` has been removed. `model_name`, `d
 ```python
 from boileroom import OpenDDE
 
-with OpenDDE(backend="modal", config={"optimization": "fast"}) as model:
+with OpenDDE(backend="modal", config={"optimization": "exact"}) as model:
     result = model.fold("SEQ_A:SEQ_B", options={"include_fields": ["pae", "token_chain_ids", "ptm", "iptm"]})
 ```
 
 LayerNorm depends on the mode (`OPENDDE_LAYERNORM` in `boileroom/models/opendde/core.py`): `vanilla` runs torch LayerNorm (`LAYERNORM_TYPE=torch`, upstream's default), and `exact` / `fast` run upstream's fused LayerNorm (`fast_layernorm`), which the worker JIT-builds at first use with the venv's `ninja` and CUDA 12.6 `nvcc`, caching it under `$MODEL_DIR/opendde/jit/<stack key>/torch_ext` (keyed by torch, CUDA and compute capability; see [optimization.md](optimization.md#jit-compile-caches)). The image sets no `LAYERNORM_TYPE`; the worker sets it per mode and refuses any other value. A kit mode whose fused LayerNorm does not load is refused. See [optimization.md](optimization.md#layernorm-per-mode).
 
 On compute capability 7.x cards (V100, T4) upstream runs both triangle sites on its torch kernels in fp32, whatever `trimul_kernel`, `triatt_kernel` and `dtype` ask for. `vanilla` serves that stock behaviour and records it as `worker.kernel.cc7_fallback=true` in `metadata.runtime` (with `predict.kernel.resolved.*` showing `torch` and `fp32`); on every other card a requested kernel that resolves to something else is still refused. The kit modes run on A100 or H100/H200 only.
+
+### RF3
+`RF3` wraps [RoseTTAFold 3](https://github.com/RosettaCommons/foundry) (`rc-foundry`, checkpoint `rf3_foundry_01_24`), run through its Python inference engine in a persistent worker with its own Python 3.12 virtualenv (`rf3_python`, initialization-only). One sequence entry per call, with `:` joining protein chains (up to 26). The adapter is protein-only: the input is protein sequences, so ligands, nucleic acids and non-canonical residues cannot be requested. On Modal it defaults to an `A100-40GB` GPU.
+
+RF3 has no MSA search. Without an alignment each chain is folded from its sequence alone; to supply alignments pass `options={"msa": [a3m_chain_a, None, ...]}`, one A3M string or `None` per chain. One call returns `diffusion_batch_size` samples (default 5), listed best first by RF3's `ranking_score` (`0.8 * ipTM + 0.2 * pTM - 100 * has_clash`); `sample_ranks` is the position by that score and `sample_indices` the index RF3 gave the sample within its batch. RF3 reports ipTM `0` for a single chain, so a monomer ranks by `0.2 * pTM`.
+
+`RF3Output` has the same fields as the other AF3-style families: `atom_array`, `confidence` (RF3's summary scores per sample), `plddt` (per residue, 0-1), `atom_plddt`, `ptm`, `iptm`, `pae`, `token_chain_ids` and `token_res_ids` (CIF chain letter and chain-local residue number for every PAE row), `seeds`, `sample_ranks`, `sample_indices`, `pdb` and `cif`. Select fields with `options["include_fields"]`.
+
+- **Per call:** `seed` and `early_stopping_plddt_threshold`. When RF3 stops early because the mean pLDDT is below the threshold it writes no structure, so boileroom raises a `RuntimeError` naming the pLDDT instead of returning an empty result.
+- **Initialization-only:** `n_recycles` (10), `num_steps` (50), `diffusion_batch_size` (5), `device`, `checkpoint_path`, `rf3_python` and `optimization`. Create a new instance to change them.
+- **Weights:** `rf3_foundry_01_24_latest_remapped.ckpt` (about 3.0 GB) is downloaded on first use into `$MODEL_DIR/rf3` and verified against a pinned sha256. It is deliberately **not** baked into the images, because the weights' license has not been confirmed from a primary source (the foundry code is BSD-3-Clause; `files.ipd.uw.edu`, which hosts the checkpoint, was not readable when this was written). Check the license before redistributing images or outputs, or point `checkpoint_path` at a copy you already hold.
+- **Optimization:** `config={"optimization": "vanilla" | "exact" | "fast" | "big"}` (default `"vanilla"`, initialization-only). The kit modes run the Anthropic RF3 kit in its patched interpreter on A100 or H100/H200 only (other GPUs are refused by name). `exact` is the safe choice for small inputs; `fast` pays off from about 1,000 residues on A100 and 650 on H100; `big` is the lowest-memory mode, for inputs that run `fast` out of memory (a CUDA out-of-memory under `fast` is re-raised with that advice). On an A100-40GB `exact` itself runs out of memory at about 1,000 residues. Measurements and caveats in [optimization.md](optimization.md#rf3-fast-and-big-measured-2026-10-09); `fast` and `big` are not available for the other families.
+- **Timeout:** `timeout_seconds` (3500 by default, `None` disables it). A timeout or inference failure discards the worker and the next call reloads cleanly.
+
+```python
+from boileroom import RF3
+
+with RF3(backend="modal", config={"diffusion_batch_size": 5, "optimization": "exact"}) as model:
+    result = model.fold(
+        "MKQLEDKVEELLSKNYHLENEVARLKKLVGER:MKQLEDKVEELLSKNYHLENEVARLKKLVGER",
+        options={"seed": 0, "include_fields": ["pae", "token_chain_ids", "token_res_ids", "ptm", "iptm", "cif"]},
+    )
+
+best = result.atom_array[0]      # sample_ranks == 0
+result.iptm[0], result.ptm[0]
+```
+
+The unit tests compare against real RF3 output: PDB 5VHT (the upstream regression baseline) and stock `rf3 fold` runs on 1UBQ (monomer) and 2ZTA (GCN4 homodimer), vendored under `tests/data/rf3/` with `manifest.json` recording the foundry commit, checkpoint, GPU and settings. `scripts/testing/rf3_stock_reference.py` regenerates the stock references on Modal (`uv run python scripts/testing/rf3_stock_reference.py`). Compared with those references on an A100, boileroom's C-alpha RMSD is 0.19 A (1UBQ) and 0.34 A (2ZTA) at seed 0, with scores within 6e-4; other seeds differ by sampler noise (up to 0.73 A for ubiquitin, and 2ZTA reached 2.7 A for one seed of eight, measured on A100-80GB).
 
 ### AlphaFold2-Multimer
 `AlphaFold2Multimer` keeps ColabFold's Python model runners and parameters resident, using `alphafold2_multimer_v3`
@@ -333,7 +361,7 @@ from boileroom import ESMFold2
 from boileroom.inputs import MSAInput
 from boileroom.models.esmfold2.types import DNAInput, LigandInput, ProteinInput, StructurePredictionInput
 
-# Vanilla runs on any GPU. For the kit kernels use config={"optimization": "fast"} with an A100 or H100/H200; L4 is refused.
+# Vanilla runs on any GPU. For the kit kernels use config={"optimization": "exact"} with an A100 or H100/H200; L4 is refused.
 model = ESMFold2(
     backend="modal",
     device="L4",

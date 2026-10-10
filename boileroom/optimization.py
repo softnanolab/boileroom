@@ -1,6 +1,7 @@
-"""Static ``optimization`` option: vanilla | exact | fast, resolved per GPU.
+"""Static ``optimization`` option: vanilla | exact (| fast, big for some families), resolved per GPU.
 
-``exact`` and ``fast`` drive the kits of anthropics/uplifting-biomolecular-modeling (Apache-2.0).
+The kit modes (``exact``, plus ``fast`` and ``big`` for RF3) drive the kits of
+anthropics/uplifting-biomolecular-modeling (Apache-2.0).
 A kit mode is all of its levers on a GPU class, so a card the kit cannot fully serve is refused
 by name here, before any weights load, instead of the kit's own ``os._exit(3)``.
 """
@@ -14,11 +15,15 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from typing import Any, Generic, TypeVar
 
-OPTIMIZATION_MODES = ("vanilla", "exact", "fast")
+OPTIMIZATION_MODES = ("vanilla", "exact")
 DEFAULT_OPTIMIZATION = "vanilla"
+# Kit modes a family accepts on top of OPTIMIZATION_MODES. ``fast`` was withdrawn for every family in #125 (memory
+# problems on A100); a family is listed here once those modes have been run on the cards it is served on (RF3: see
+# docs/optimization.md, where ``big`` is the fallback for inputs that run ``fast`` out of memory).
+FAMILY_EXTRA_MODES: dict[str, tuple[str, ...]] = {"rf3": ("fast", "big")}
 
 #: Model families that have an optimization kit; every other family runs ``vanilla`` only.
-KIT_FAMILIES: frozenset[str] = frozenset({"esmfold2", "protenix", "opendde"})
+KIT_FAMILIES: frozenset[str] = frozenset({"esmfold2", "protenix", "opendde", "rf3"})
 # Compute capabilities the kits were benchmarked on here, mapped to the kit's per-card config.
 _KIT_CONFIG_BY_CAPABILITY: dict[tuple[int, int], str] = {(8, 0): "a100", (9, 0): "h100"}
 # Card names each kit config was validated on, matched as whole tokens of the device name; H200 is the same Hopper
@@ -32,6 +37,7 @@ _UNSERVED_REASON: dict[str, str] = {
     ),
     "protenix": "the kit has no BLK2 launch cells for sm89 (blk2_block_path, blk2_chunked_*), so it refuses the mode",
     "opendde": "the kit ships configs only for a100, h100 and h200 (no sm89 launch cells)",
+    "rf3": "the kit ships configs only for a100, h100 and h200 (no sm89 launch cells)",
 }
 #: Exit status of a *process* that refused the optimization mode: the boileroom worker/server contract. A kit that
 #: refuses at interpreter start ends the model worker's child with ``os._exit(3)``, and the Apptainer model server
@@ -230,10 +236,16 @@ class OptimizationResolution:
         return asdict(self)
 
 
-def validate_optimization(mode: object) -> str:
-    """Return ``mode`` if it is a known optimization mode, else raise ``ValueError``."""
-    if mode not in OPTIMIZATION_MODES:
-        raise ValueError(f"optimization must be one of {list(OPTIMIZATION_MODES)}, got {mode!r}")
+def optimization_modes(family: str | None = None) -> tuple[str, ...]:
+    """Return the ``optimization`` modes ``family`` accepts (the shared ones when ``family`` is ``None``)."""
+    return OPTIMIZATION_MODES + FAMILY_EXTRA_MODES.get(family or "", ())
+
+
+def validate_optimization(mode: object, family: str | None = None) -> str:
+    """Return ``mode`` if ``family`` accepts it as an optimization mode, else raise ``ValueError``."""
+    modes = optimization_modes(family)
+    if mode not in modes:
+        raise ValueError(f"optimization must be one of {list(modes)}, got {mode!r}")
     return str(mode)
 
 
@@ -328,7 +340,7 @@ def _detect_gpu_nvidia_smi(index: int) -> GpuInfo:
         rows = [_parse_nvidia_smi_row(line) for line in lines if line.strip()]
     except (OSError, subprocess.SubprocessError, ValueError) as error:
         raise OptimizationUnavailableError(
-            "optimization exact/fast could not read the GPU (nvidia-smi failed)"
+            "a kit optimization mode could not read the GPU (nvidia-smi failed)"
         ) from error
 
     visible = os.environ.get("CUDA_VISIBLE_DEVICES")
@@ -394,7 +406,7 @@ def _served_by(config: str, gpu: GpuInfo) -> bool:
 
 def resolve_optimization(family: str, mode: str, gpu: GpuInfo | None = None) -> OptimizationResolution:
     """Resolve ``mode`` for a model family on ``gpu``; raise by name when it cannot be served."""
-    validate_optimization(mode)
+    validate_optimization(mode, family)
     if mode == "vanilla":
         return OptimizationResolution("vanilla", None, gpu.name if gpu else None, gpu.sm if gpu else None)
     if family not in KIT_FAMILIES:

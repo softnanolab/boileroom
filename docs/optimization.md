@@ -1,9 +1,12 @@
 # Kit optimization modes (`optimization`)
 
-ESMFold2 (including ESMFold2-Fast), Protenix and OpenDDE accept a static init option
-`optimization = "vanilla" | "exact" | "fast"` (default `"vanilla"`). `exact` and `fast` drive the
-prebuilt kernels of [anthropics/uplifting-biomolecular-modeling](https://github.com/anthropics/uplifting-biomolecular-modeling)
-(Apache-2.0, kit commit `f4f62fa`).
+ESMFold2 (including ESMFold2-Fast), Protenix, OpenDDE and RF3 accept a static init option
+`optimization = "vanilla" | "exact"` (default `"vanilla"`). RF3 also accepts `"fast"` and `"big"`. #125 removed `fast` for
+the other families after memory problems on A100, and boileroom still refuses it there; RF3's `fast` and `big` were run on
+A100 and H100 over a range of input sizes before being offered (see [RF3](#rf3-fast-and-big-measured-2026-10-09)). The kit modes
+drive the prebuilt kernels of
+[anthropics/uplifting-biomolecular-modeling](https://github.com/anthropics/uplifting-biomolecular-modeling) (Apache-2.0, kit
+commit `f4f62fa`).
 
 - `vanilla`: the stock model on the stock image, unchanged.
 - `exact`: the kit's kernels that reproduce the kit's own unoptimized route bit for bit, but only under the kit's
@@ -31,7 +34,7 @@ restarting the container.
 - `boileroom.optimization.is_refusal(error)` tells a refusal from a failure: an exception class named
   `OptimizationUnavailableError`, or a kit's refusal `SystemExit` (code 3 or 5, `KIT_REFUSAL_EXIT_CODES`).
 
-| GPU | class | `exact` / `fast` |
+| GPU | class | `exact` / `fast` / `big` |
 | --- | --- | --- |
 | A100 | sm80 | served (kit config `a100`) |
 | H100, H200 | sm90 | served (kit config `h100`; Modal may schedule an H100 request onto an H200) |
@@ -45,7 +48,7 @@ cards fastest first; set `CUDA_DEVICE_ORDER=PCI_BUS_ID` or select the GPU by UUI
 
 ## Requirements
 
-The kit ships its own pinned stack, so `exact` and `fast` need a kit image, not the default boileroom image:
+The kit ships its own pinned stack, so the kit modes need a kit image, not the default boileroom image:
 
 - ESMFold2: python 3.12, torch 2.13+cu130, esm 3.3.0 and the kit's transformers fork (`ESMFold2Model`),
   flash-attn / TransformerEngine / xformers built from source. Kit modes load the fork's model class and fold through
@@ -55,6 +58,10 @@ The kit ships its own pinned stack, so `exact` and `fast` need a kit image, not 
 - OpenDDE: python 3.11, torch 2.7.1+cu126, cuequivariance 0.10.0, opendde 1.1.1, CUDA 12.6 `nvcc` and gcc at run time
   (Triton JIT), libstdc++ from GCC 13 for `exact`, driver 560+. Unlike the other two families it has no separate kit image: the
   stock `boileroom-opendde` image installs the pinned kit commit, and the kit is enabled in the worker before `runner` is imported.
+- RF3: python 3.12, torch 2.13.0+cu130, cuequivariance 0.11.1, rc-foundry (RF3 `4010e3e`), driver 580+. The kit is enabled
+  (`rosettafold3_opt.enable(<mode>, strict=True)`) before the first `rf3` import, in the kit image's patched interpreter
+  `/kit/rosettafold3/opt/venv/bin/python`. `vanilla` runs in the stock `boileroom-rf3` image (torch 2.7.1+cu126,
+  cuequivariance 0.10.0, `/opt/rf3` virtualenv), which the kit image does not replace.
 
 ### LayerNorm per mode
 
@@ -96,6 +103,7 @@ touches it:
 | --- | --- | --- | --- |
 | ESMFold2 | [`boileroom/models/esmfold2/kit/Dockerfile`](../boileroom/models/esmfold2/kit/Dockerfile) (+ `kit_wheels.sh`, `kit_sass.sh`, `kit_finish.sh`, `kit_smoke.py`) | `boileroom-esmfold2-kit` | `python:3.12.10-slim-bookworm` |
 | Protenix | [`boileroom/models/protenix/kit/Dockerfile`](../boileroom/models/protenix/kit/Dockerfile) | `boileroom-protenix-kit` | `nvidia/cuda:13.0.1-cudnn-devel-ubuntu24.04` |
+| RF3 | [`boileroom/models/rf3/kit/Dockerfile`](../boileroom/models/rf3/kit/Dockerfile) | `boileroom-rf3-kit` | `nvidia/cuda:12.6.3-runtime-ubuntu22.04` (the kit's CUDA 13 stack is installed from wheels) |
 
 Both Dockerfiles fetch the kit at the pinned commit `f4f62fa6592ae4938d49b1757bea0cfeff9f468e` and follow the kit's own
 `<family>/environment/Dockerfile` at that commit: the same lock, versions, checksums and compile recipe. The changes are the
@@ -109,10 +117,10 @@ LayerNorm and the kit import, plus an `ldd` check of cuEquivariance's `libcue_op
 (`BOILEROOM_KIT_COMMIT`) for the runtime's provenance.
 
 **Routing.** The wrapper picks the image from `optimization`: `vanilla` (the default) runs the stock `boileroom-esmfold2` /
-`boileroom-protenix` image and Modal class as before, and `exact` / `fast` run `ModalESMFold2Kit` / `ModalProtenixKit` (Modal)
-or the kit image (Apptainer). The kit classes live on their own Modal apps (`boileroom-esmfold2-kit`,
-`boileroom-protenix-kit`), so using vanilla never builds a kit image. A kit class asks for an A100 (ESMFold2 `A100-80GB`,
-Protenix `A100-40GB`); pass `device="H100"` (or `H200`) to run on those.
+`boileroom-protenix` / `boileroom-rf3` image and Modal class as before, and a kit mode (`exact`, or RF3's `fast` / `big`) runs `ModalESMFold2Kit` /
+`ModalProtenixKit` / `ModalRF3Kit` (Modal) or the kit image (Apptainer). The kit classes live on their own Modal apps
+(`boileroom-esmfold2-kit`, `boileroom-protenix-kit`, `boileroom-rf3-kit`), so using vanilla never builds a kit image. A kit
+class asks for an A100 (ESMFold2 and RF3 `A100-80GB`, Protenix `A100-40GB`); pass `device="H100"` (or `H200`) to run on those.
 
 **Where the image comes from.** The published kit images are pinned by content digest in `KIT_IMAGE_DIGESTS`
 (`boileroom/images/metadata.py`), so a re-pushed tag cannot change what a kit mode runs:

@@ -132,7 +132,7 @@ def test_goldens_are_complete_and_consistent() -> None:
     """Every family has every mode; measured kit goldens sit within the tolerance of vanilla and clear separation."""
     assert set(GOLDENS) == set(SEPARATION) == {"esmfold2", "protenix", "opendde"}
     for family, by_mode in GOLDENS.items():
-        assert set(by_mode) == set(OPTIMIZATION_MODES), family
+        assert set(OPTIMIZATION_MODES) <= set(by_mode), family
         vanilla = by_mode["vanilla"]["p53"]
         separation = SEPARATION[family]
         for mode, golden in by_mode.items():

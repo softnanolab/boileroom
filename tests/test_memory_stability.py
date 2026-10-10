@@ -85,7 +85,7 @@ _ESMFOLD2_OPTIONS = {"num_loops": 3, "num_sampling_steps": 50, "num_diffusion_sa
 #: No MSA (no MSA server call), the reduced sampling budget of the Protenix-family integration tests.
 _PROTENIX_CONFIG = {"use_msa": False, "sample": 1, "cycle": 4, "step": 50}
 _PROTENIX_OPTIONS = {"include_fields": ["plddt"]}
-_MODES = ("vanilla", "exact", "fast")
+_MODES = ("vanilla", "exact")
 
 CASES: tuple[MemoryCase, ...] = (
     MemoryCase("esmfold", SHORT),

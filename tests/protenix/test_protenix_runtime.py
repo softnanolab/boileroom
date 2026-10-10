@@ -287,7 +287,7 @@ def test_describe_records_the_vanilla_stack(rt, fake, tmp_path) -> None:
     assert all(isinstance(value, str) for value in info.values())
 
 
-@pytest.mark.parametrize("mode", ["exact", "fast"])
+@pytest.mark.parametrize("mode", ["exact"])
 def test_healthy_kit_mode_loads_and_records_its_report(rt, fake, monkeypatch, tmp_path, mode) -> None:
     """The kit activates before any upstream import; a report with levers outside the card's arm still runs."""
     kit = FakeKit(monkeypatch, fake, {**A100_EXACT_REPORT, "mode": mode})
@@ -359,7 +359,7 @@ def test_kit_mode_without_kit_image_refuses_by_name(rt, fake, monkeypatch, tmp_p
     monkeypatch.setitem(sys.modules, "protenix_opt", None)
     monkeypatch.setenv("LAYERNORM_TYPE", "fast_layernorm")
     with pytest.raises(rt.OptimizationUnavailableError, match="needs the Protenix kit image"):
-        rt.ProtenixRuntime(_config(optimization="fast"), str(tmp_path))
+        rt.ProtenixRuntime(_config(optimization="exact"), str(tmp_path))
 
 
 def test_kit_mode_without_cuequivariance_ops_refuses(rt, fake, monkeypatch, tmp_path) -> None:
@@ -435,10 +435,10 @@ def test_late_kit_fallback_refuses(rt, fake, monkeypatch, tmp_path, late) -> Non
 
 def test_blk2_stock_fallback_refuses(rt, fake, monkeypatch, tmp_path) -> None:
     kit = FakeKit(monkeypatch, fake)
-    runtime = rt.ProtenixRuntime(_config(optimization="fast"), str(tmp_path))
+    runtime = rt.ProtenixRuntime(_config(optimization="exact"), str(tmp_path))
     kit.blk2._STATS["blk2_tri_stock_fallback"] = 1
     with pytest.raises(rt.OptimizationUnavailableError, match="BLK2 fused triangle attention failed"):
-        runtime.predict("a.json", "a", _config(optimization="fast"))
+        runtime.predict("a.json", "a", _config(optimization="exact"))
 
 
 def test_blk2_module_never_loaded_refuses_when_its_levers_were_applied(rt, fake, monkeypatch, tmp_path) -> None:

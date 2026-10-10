@@ -30,7 +30,7 @@ DECOY_SEED: Final[int] = 0
 PAE_CUTOFF: Final[float] = 10.0
 #: Allowed distance of a seed-averaged ipSAE from its golden, and of a kit mode's mean from the vanilla mean.
 TOLERANCE: Final[float] = 0.02
-OPTIMIZATION_MODES: Final[tuple[str, ...]] = ("vanilla", "exact", "fast")
+OPTIMIZATION_MODES: Final[tuple[str, ...]] = ("vanilla", "exact")
 
 #: Golden ipSAE (min of both directions, PAE cutoff 10 Å) per family and mode: ``p53`` is the mean over :data:`SEEDS`
 #: with one diffusion sample each, ``decoy`` the value at :data:`DECOY_SEED`. ``None`` = not measured yet; a test that

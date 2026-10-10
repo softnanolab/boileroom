@@ -178,7 +178,7 @@ class Algorithm(ABC):
         # Every family validates the mode here, so a kit family needs no check of its own to refuse an unknown one.
         if "optimization" in config:
             if "optimization" in self.DEFAULT_CONFIG:
-                validate_optimization(config["optimization"])
+                validate_optimization(config["optimization"], getattr(self, "FAMILY", None))
             else:
                 refuse_without_kit(name, config["optimization"])
 
@@ -480,7 +480,7 @@ class ModelWrapper:
         mode = resolved_config.get("optimization", DEFAULT_OPTIMIZATION)
         if "optimization" not in model_spec.contract.static_config_keys:
             refuse_without_kit(model_spec.public_name, mode)
-        elif validate_optimization(mode) != DEFAULT_OPTIMIZATION:
+        elif validate_optimization(mode, model_spec.family) != DEFAULT_OPTIMIZATION:
             uses_kit_image = model_spec.kit_modal_class_path is not None
         if backend_type == "modal":
             modal_class_path = model_spec.kit_modal_class_path if uses_kit_image else model_spec.modal_class_path

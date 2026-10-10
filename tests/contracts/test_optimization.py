@@ -12,6 +12,7 @@ from boileroom.models.registry import ESMFOLD2_SPEC, OPENDDE_SPEC, PROTENIX_SPEC
 from boileroom.optimization import (
     DEFAULT_OPTIMIZATION,
     KIT_FAMILIES,
+    OPTIMIZATION_MODES,
     GpuInfo,
     OptimizationResolution,
     OptimizationUnavailableError,
@@ -19,6 +20,7 @@ from boileroom.optimization import (
     detect_gpu,
     initialize_core,
     is_refusal,
+    optimization_modes,
     resolve_optimization,
     retry_initialize,
     validate_optimization,
@@ -39,7 +41,7 @@ FAMILIES = sorted(KIT_FAMILIES)
 
 
 @pytest.mark.parametrize("family", FAMILIES)
-@pytest.mark.parametrize("mode", ["exact", "fast"])
+@pytest.mark.parametrize("mode", ["exact"])
 @pytest.mark.parametrize("gpu", [A30, GH200, A10G], ids=lambda gpu: gpu.name)
 def test_unvalidated_card_is_refused_by_name(family: str, mode: str, gpu: GpuInfo) -> None:
     """A30 shares sm80 and GH200 sm90 with served cards, and GH200 contains the substring "H200"."""
@@ -48,7 +50,7 @@ def test_unvalidated_card_is_refused_by_name(family: str, mode: str, gpu: GpuInf
 
 
 @pytest.mark.parametrize("family", FAMILIES)
-@pytest.mark.parametrize("mode", ["exact", "fast"])
+@pytest.mark.parametrize("mode", ["exact"])
 @pytest.mark.parametrize(
     ("gpu", "config"), [(A100, "a100"), (A100_PCIE, "a100"), (H100, "h100"), (H200, "h100")], ids=lambda x: str(x)
 )
@@ -67,9 +69,50 @@ def test_optimization_is_a_static_option(spec: ModelSpec) -> None:
     assert "optimization" in spec.contract.static_config_keys
 
 
-def test_unknown_mode_is_rejected() -> None:
+@pytest.mark.parametrize("mode", ["turbo", "fast", "big"])
+def test_unknown_mode_is_rejected(mode: str) -> None:
+    """``fast`` was withdrawn for every family (#125) and is only offered where a family lists it."""
     with pytest.raises(ValueError, match="optimization must be one of"):
-        validate_optimization("turbo")
+        validate_optimization(mode)
+
+
+@pytest.mark.parametrize("mode", ["fast", "big"])
+@pytest.mark.parametrize("family", ["esmfold2", "protenix", "opendde", "boltz2", None])
+def test_fast_and_big_are_refused_outside_the_families_that_list_them(family: str | None, mode: str) -> None:
+    assert optimization_modes(family) == OPTIMIZATION_MODES
+    with pytest.raises(ValueError, match=rf"optimization must be one of \['vanilla', 'exact'\], got '{mode}'"):
+        validate_optimization(mode, family)
+    if family is not None:
+        with pytest.raises(ValueError, match="optimization must be one of"):
+            resolve_optimization(family, mode, A100)
+
+
+def test_rf3_lists_fast_and_big_next_to_the_shared_modes() -> None:
+    assert optimization_modes("rf3") == (*OPTIMIZATION_MODES, "fast", "big")
+    assert [validate_optimization(mode, "rf3") for mode in optimization_modes("rf3")] == list(optimization_modes("rf3"))
+    with pytest.raises(ValueError, match="optimization must be one of"):
+        validate_optimization("turbo", "rf3")
+
+
+@pytest.mark.parametrize("mode", ["fast", "big"])
+@pytest.mark.parametrize("gpu", [A100, H100, H200])
+def test_rf3_kit_modes_resolve_on_a100_and_h100(gpu: GpuInfo, mode: str) -> None:
+    resolution = resolve_optimization("rf3", mode, gpu)
+    assert resolution.mode == mode
+    assert resolution.kit_config == ("a100" if gpu is A100 else "h100")
+
+
+@pytest.mark.parametrize("mode", ["fast", "big"])
+@pytest.mark.parametrize("gpu", [L4, L40S])
+def test_rf3_kit_modes_are_refused_by_name_on_sm89(gpu: GpuInfo, mode: str) -> None:
+    with pytest.raises(OptimizationUnavailableError, match=rf"'{mode}' cannot run rf3 on {gpu.name} \(sm89\)"):
+        resolve_optimization("rf3", mode, gpu)
+
+
+@pytest.mark.parametrize("mode", ["fast", "big"])
+def test_rf3_kit_modes_are_refused_on_another_sm80_card(mode: str) -> None:
+    with pytest.raises(OptimizationUnavailableError, match="NVIDIA A30"):
+        resolve_optimization("rf3", mode, A30)
 
 
 @pytest.mark.parametrize("family", [*FAMILIES, "boltz2"])
@@ -84,17 +127,17 @@ def test_vanilla_resolves_on_any_gpu_and_records_it(family: str, gpu: GpuInfo | 
 
 def test_resolution_record_has_one_mode_field() -> None:
     """``requested`` always equalled ``active`` (a mode that cannot run raises), so the record keeps one ``mode``."""
-    assert resolve_optimization("protenix", "fast", A100).to_dict() == {
-        "mode": "fast",
+    assert resolve_optimization("protenix", "exact", A100).to_dict() == {
+        "mode": "exact",
         "kit_config": "a100",
         "gpu_name": "NVIDIA A100-SXM4-80GB",
         "capability": "sm80",
     }
-    assert resolve_optimization("protenix", "fast", A100).kit
+    assert resolve_optimization("protenix", "exact", A100).kit
 
 
 @pytest.mark.parametrize("family", ["esmfold2", "protenix", "opendde"])
-@pytest.mark.parametrize("mode", ["exact", "fast"])
+@pytest.mark.parametrize("mode", ["exact"])
 @pytest.mark.parametrize("gpu", [A100, H100, H200])
 def test_kit_modes_resolve_on_a100_and_h100(family: str, mode: str, gpu: GpuInfo) -> None:
     resolution = resolve_optimization(family, mode, gpu)
@@ -103,7 +146,7 @@ def test_kit_modes_resolve_on_a100_and_h100(family: str, mode: str, gpu: GpuInfo
 
 
 @pytest.mark.parametrize("family", ["esmfold2", "protenix", "opendde"])
-@pytest.mark.parametrize("mode", ["exact", "fast"])
+@pytest.mark.parametrize("mode", ["exact"])
 @pytest.mark.parametrize("gpu", [L4, L40S])
 def test_kit_modes_refused_by_name_on_sm89(family: str, mode: str, gpu: GpuInfo) -> None:
     with pytest.raises(OptimizationUnavailableError, match=rf"{mode!r} cannot run {family} on {gpu.name} \(sm89\)"):
@@ -163,7 +206,7 @@ def _install_weight_loaders_that_must_not_run(monkeypatch: pytest.MonkeyPatch) -
     return calls
 
 
-@pytest.mark.parametrize("mode", ["exact", "fast"])
+@pytest.mark.parametrize("mode", ["exact"])
 def test_esmfold2_core_refuses_before_loading_weights(monkeypatch: pytest.MonkeyPatch, mode: str) -> None:
     """Driven through ``_load()``: a reorder that loads weights before resolving the mode fails here."""
     pytest.importorskip("torch")
@@ -250,7 +293,7 @@ class _FailingCore:
             raise self.error
 
 
-@pytest.mark.parametrize("mode", ["vanilla", "exact", "fast"])
+@pytest.mark.parametrize("mode", ["vanilla", "exact"])
 @pytest.mark.parametrize(
     "error", [OptimizationUnavailableError("needs the kit image"), ValueError("bad config"), TypeError("boom")]
 )

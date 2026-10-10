@@ -443,7 +443,7 @@ def test_unset_layernorm_type_refuses_even_where_upstream_defaults_to_the_table_
     assert "runner" not in fake.order
 
 
-@pytest.mark.parametrize("mode", ["exact", "fast"])
+@pytest.mark.parametrize("mode", ["exact"])
 def test_kit_activates_and_arms_its_census_before_the_runner_loads(rt, fake, monkeypatch, tmp_path, mode) -> None:
     """The kit refuses late activation, and its kernel census wraps the runner's init, so both come first."""
     kit = FakeKit(monkeypatch, fake)
@@ -548,7 +548,7 @@ def test_layernorm_census_not_loaded_refuses(rt, fake, monkeypatch, tmp_path) ->
 
     kit.lncensus.census.side_effect = NotLoaded("fused LayerNorm module did not load")
     with pytest.raises(rt.OptimizationUnavailableError, match="LayerNorm census refused: fused LayerNorm"):
-        rt.OpenDDERuntime(_config(optimization="fast"), str(tmp_path))
+        rt.OpenDDERuntime(_config(optimization="exact"), str(tmp_path))
 
 
 def test_kit_mode_with_a_stock_kernel_refuses(rt, fake, monkeypatch, tmp_path) -> None:
@@ -602,14 +602,14 @@ def test_kit_refusal_subclass_is_a_refusal(rt, fake, monkeypatch, tmp_path) -> N
 
     kit.module.enable = refuse  # type: ignore[attr-defined]
     with pytest.raises(rt.OptimizationUnavailableError, match="refused: 2400 tokens exceed"):
-        rt.OpenDDERuntime(_config(optimization="fast"), str(tmp_path))
+        rt.OpenDDERuntime(_config(optimization="exact"), str(tmp_path))
 
 
 def test_kit_mode_without_kit_image_refuses_by_name(rt, fake, monkeypatch, tmp_path) -> None:
     """A vanilla-only image must say so instead of silently running unoptimized."""
     monkeypatch.setitem(sys.modules, "opendde_opt", None)
     with pytest.raises(rt.OptimizationUnavailableError, match="needs the OpenDDE kit image"):
-        rt.OpenDDERuntime(_config(optimization="fast"), str(tmp_path))
+        rt.OpenDDERuntime(_config(optimization="exact"), str(tmp_path))
 
 
 def test_kit_inactive_report_refuses(rt, fake, monkeypatch, tmp_path) -> None:

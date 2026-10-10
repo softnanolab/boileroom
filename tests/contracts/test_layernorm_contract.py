@@ -27,8 +27,8 @@ REPO = Path(__file__).resolve().parents[2]
 RUNTIME = REPO / "boileroom/models/protenix/runtime.py"
 #: The decided table: vanilla runs what each stock release runs, the kit modes run the fused LayerNorm they patch.
 EXPECTED = {
-    "protenix": {"vanilla": "openfold", "exact": "fast_layernorm", "fast": "fast_layernorm"},
-    "opendde": {"vanilla": "torch", "exact": "fast_layernorm", "fast": "fast_layernorm"},
+    "protenix": {"vanilla": "openfold", "exact": "fast_layernorm"},
+    "opendde": {"vanilla": "torch", "exact": "fast_layernorm"},
 }
 #: Per family: the core module, its table constant, its core class and the worker runtime class.
 FAMILIES = {
@@ -66,7 +66,7 @@ def _served_images() -> list[tuple[str, metadata.RuntimeImageSpec, tuple[str, ..
         stock = metadata.get_model_image_spec(spec.family)
         if spec.kit_modal_class_path is not None:
             images.append((spec.family, stock, ("vanilla",)))
-            images.append((spec.family, metadata.get_kit_image_spec(spec.family), ("exact", "fast")))
+            images.append((spec.family, metadata.get_kit_image_spec(spec.family), ("exact",)))
         else:
             assert spec.family in KIT_FAMILIES
             images.append((spec.family, stock, OPTIMIZATION_MODES))

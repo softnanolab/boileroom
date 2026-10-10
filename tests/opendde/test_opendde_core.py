@@ -295,7 +295,7 @@ def test_kit_env_names_the_resolved_gpu(module, monkeypatch, tmp_path: Path) -> 
 
     monkeypatch.setenv("MODEL_DIR", str(tmp_path))
     monkeypatch.delenv("MODEL_OPT_TARGET_GPU", raising=False)
-    resolution = resolve_optimization("opendde", "fast", GpuInfo("NVIDIA H200", (9, 0)))
+    resolution = resolve_optimization("opendde", "exact", GpuInfo("NVIDIA H200", (9, 0)))
     assert _worker_env(module, module.OpenDDECore().config, resolution)["MODEL_OPT_TARGET_GPU"] == "H100"
 
 
@@ -326,7 +326,7 @@ def test_kit_mode_refused_on_unserved_gpu_before_worker(module, monkeypatch) -> 
     monkeypatch.setattr(protenix_core, "ModelWorker", factory)
     monkeypatch.setattr(protenix_core, "detect_gpu", lambda device=None: GpuInfo("NVIDIA L40S", (8, 9)))
     with pytest.raises(OptimizationUnavailableError, match="cannot run opendde on NVIDIA L40S"):
-        module.OpenDDECore({"optimization": "fast"})._initialize()
+        module.OpenDDECore({"optimization": "exact"})._initialize()
     factory.assert_not_called()
 
 

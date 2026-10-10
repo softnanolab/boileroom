@@ -125,7 +125,7 @@ def test_protenix_family_records_the_shared_kit_keys_from_the_settled_report(fam
     }
     # The family's own prefixed detail stays.
     assert runtime["worker.kit.levers_applied"] == "lnstream,cueq_tri" and runtime["predict.kit.partial"] == "true"
-    runtime = _protenix_family_record(family, "fast", info, {})
+    runtime = _protenix_family_record(family, "exact", info, {})
     assert runtime["kit.levers_applied"] == "lnstream,cueq_tri" and runtime["kit.levers_fallback"] == "none"
 
 

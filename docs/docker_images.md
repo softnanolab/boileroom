@@ -8,6 +8,7 @@
 - **esm**: `boileroom/models/esm/Dockerfile` → installs ESM runtime dependencies from `requirements.txt` shared by esm2/esmfold. Tag: `docker.io/jakublala/boileroom-esm`.
 - **opendde**: `boileroom/models/opendde/Dockerfile` → OpenDDE 1.1.1 and the Anthropic kit stack (Python 3.11, torch 2.7.1+cu126, cuequivariance 0.10.0) in `/opt/opendde`, CUDA 12.6 `nvcc` for the Triton JIT, GCC 13 libstdc++ for `exact`, HMMER/Kalign. No `LAYERNORM_TYPE` is set image-wide: the worker sets it per mode (torch LayerNorm for `vanilla`, upstream's fused `fast_layernorm` for `exact` and `fast`, JIT-built at first use with the venv's `ninja`; see [optimization.md](optimization.md#layernorm-per-mode)). Python 3.11.5 there is python-build-standalone; the boileroom server runs on the base image's Python 3.12. Tag: `docker.io/jakublala/boileroom-opendde`. Platform: `linux/amd64`.
 - **protenix**: `boileroom/models/protenix/Dockerfile` → installs Protenix plus HMMER/Kalign CLI dependencies. Tag: `docker.io/jakublala/boileroom-protenix`. Platform: `linux/amd64`.
+- **rf3**: `boileroom/models/rf3/Dockerfile` → RoseTTAFold 3 (`rc-foundry` at the pinned foundry commit, `atomworks==2.2.1`, Python 3.12, torch 2.7.1+cu126, cuequivariance 0.10.0) in its own virtualenv at `/opt/rf3`, with `git` for the pinned install. The checkpoint (about 3 GB) is **not** in the image: it is downloaded on first use into `$MODEL_DIR/rf3` and verified by sha256, because the weights' license has not been confirmed. Tag: `docker.io/jakublala/boileroom-rf3`. Platform: `linux/amd64`.
 - **esmfold2**: `boileroom/models/esmfold2/Dockerfile` → installs the MIT-licensed 2026 Chan Zuckerberg Biohub `esm` package (`esm==3.4.1.post1`, torch 2.11, CUDA 12.6 only) from `requirements.txt`. Tag: `docker.io/jakublala/boileroom-esmfold2`. **Shared by ESMFold2, ESM-C, and ESM3** — all three use the same Biohub `esm` package, so ESM-C/ESM3 run on this image instead of a separate one.
 
 - **esmfold2-kit** and **protenix-kit** (opt-in, built by hand rather than by CI): `boileroom/models/esmfold2/kit/Dockerfile` and `boileroom/models/protenix/kit/Dockerfile` → the stack of the Anthropic optimization kit (torch 2.13+cu130, kit commit `f4f62fa`) behind `optimization="exact"` and `"fast"`. Names: `boileroom-esmfold2-kit` and `boileroom-protenix-kit`. Used only when a kit mode is requested; `optimization="vanilla"` (the default) keeps using the stock images above. Registry pulls name them by the digest pinned in `KIT_IMAGE_DIGESTS`, not by the release tag, and `BOILEROOM_IMAGE_TAG` does not apply to them. They are not built or smoke-tested by `build_model_images.py` or CI; a full release tags their pinned digests with `X.Y.Z` (`promote_image_tags.py --kit-images-only`) and the tag cleanup keeps every digest ever pinned: see [Kit images](#kit-images-optimizationexact-and-fast).
@@ -200,8 +201,10 @@ To use your own build, build and push it, then point the runtime at it:
 ```bash
 docker build -f boileroom/models/protenix/kit/Dockerfile boileroom/models/protenix/kit -t <repository>/boileroom-protenix-kit:<tag>
 docker build -f boileroom/models/esmfold2/kit/Dockerfile boileroom/models/esmfold2/kit -t <repository>/boileroom-esmfold2-kit:<tag>
+docker build -f boileroom/models/rf3/kit/Dockerfile boileroom/models/rf3/kit -t <repository>/boileroom-rf3-kit:<tag>
 docker push <repository>/boileroom-protenix-kit:<tag>
 docker push <repository>/boileroom-esmfold2-kit:<tag>
+docker push <repository>/boileroom-rf3-kit:<tag>
 
 export BOILEROOM_KIT_IMAGE_SOURCE=registry BOILEROOM_DOCKER_REPOSITORY=<repository> BOILEROOM_KIT_IMAGE_TAG=<tag>
 ```

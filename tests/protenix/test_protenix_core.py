@@ -384,7 +384,7 @@ def test_vanilla_uses_the_lenient_gpu_probe_and_runs_without_a_card(
     assert core._refusal is None and len(fake_runtime) == 1
 
 
-@pytest.mark.parametrize("mode", ["exact", "fast"])
+@pytest.mark.parametrize("mode", ["exact"])
 def test_kit_modes_use_the_strict_gpu_probe(monkeypatch: pytest.MonkeyPatch, core_class, fake_runtime, mode) -> None:
     """A kit mode never falls back to the lenient probe: an unreadable GPU refuses before any worker starts."""
     import boileroom.models.protenix.core as core_module
@@ -404,7 +404,7 @@ def test_kit_modes_use_the_strict_gpu_probe(monkeypatch: pytest.MonkeyPatch, cor
 
 def test_refused_predict_closes_the_worker_and_the_refusal_stands(core_class, fake_runtime) -> None:
     """A run the kit refused is not retried on a restarted worker: every later call raises the refusal."""
-    core = core_class({"optimization": "fast"})
+    core = core_class({"optimization": "exact"})
     _stub_outputs(core)
     core._initialize()
     worker = fake_runtime[0]

@@ -489,7 +489,7 @@ def test_esmfold2_kit_accepts_a_user_msa_like_an_inline_one(monkeypatch: pytest.
     assert options_entry.msa == inline_entry.msa == MSAInput(sequences=["ACD", "ACD", "A-D"])
 
 
-@pytest.mark.parametrize("optimization", ["vanilla", "fast"])
+@pytest.mark.parametrize("optimization", ["vanilla", "exact"])
 def test_esmfold2_checkpoint_without_an_msa_encoder_refuses_an_msa(
     monkeypatch: pytest.MonkeyPatch, optimization: str
 ) -> None:
@@ -787,7 +787,7 @@ def test_esmfold2_kit_weights_for_the_fast_checkpoint_skip_the_full_model(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     log = _fake_kit(monkeypatch, FILES)
-    core = _core_cls()(config={"device": "cpu", "optimization": "fast", "model_name": "biohub/ESMFold2-Fast"})
+    core = _core_cls()(config={"device": "cpu", "optimization": "exact", "model_name": "biohub/ESMFold2-Fast"})
 
     core._ensure_kit_weights(tmp_path)
 
@@ -1582,7 +1582,7 @@ def test_kit_refuses_sampler_overrides(monkeypatch: pytest.MonkeyPatch, key: str
     """The kit's fold() would not apply these, so they are refused at construction and per call, not dropped."""
     with pytest.raises(ValueError, match=key):
         _core_cls()(config={"device": "cpu", "optimization": "exact", key: 1.0})
-    core = _core_cls()(config={"device": "cpu", "optimization": "fast", "model_name": "biohub/ESMFold2-Fast"})
+    core = _core_cls()(config={"device": "cpu", "optimization": "exact", "model_name": "biohub/ESMFold2-Fast"})
     with pytest.raises(ValueError, match=key):
         core.fold("ACD", options={key: 1.0})
     assert core.model is None
@@ -1622,7 +1622,7 @@ def test_kit_refuses_config_it_would_ignore_at_construction(config: dict, match:
 
 @pytest.mark.parametrize("model_name", ["biohub/ESMFold2", "biohub/ESMFold2-Fast"])
 def test_kit_accepts_the_checkpoints_it_serves(model_name: str) -> None:
-    core = _core_cls()(config={"device": "cpu", "optimization": "fast", "model_name": model_name})
+    core = _core_cls()(config={"device": "cpu", "optimization": "exact", "model_name": model_name})
     assert core.config["model_name"] == model_name
 
 
@@ -1956,6 +1956,6 @@ def test_esmfold2_kit_ccd_comes_from_the_pinned_snapshot(
     """Kit mode reads ccd.pkl beside the kit weights, never fetching from the hub (it is offline by then)."""
     _fake_kit(monkeypatch, FILES)
     monkeypatch.setenv("HF_HOME", str(tmp_path))
-    core = _core_cls()(config={"device": "cpu", "optimization": "fast", "model_name": model_name})
+    core = _core_cls()(config={"device": "cpu", "optimization": "exact", "model_name": model_name})
 
     assert core._kit_ccd_dir() == tmp_path / "hub" / "models--biohub--ESMFold2" / "snapshots" / ("c" * 40)

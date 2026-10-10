@@ -37,6 +37,10 @@ def __getattr__(name: str):
         from .models import OpenDDE
 
         return OpenDDE
+    if name == "RF3":
+        from .models import RF3
+
+        return RF3
     if name == "AlphaFold2Multimer":
         from .models import AlphaFold2Multimer
 
@@ -59,5 +63,6 @@ __all__ = [
     "SAE",
     "Protenix",
     "OpenDDE",
+    "RF3",
     "AlphaFold2Multimer",
 ]
