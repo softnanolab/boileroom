@@ -191,3 +191,12 @@ def test_folding_keeps_the_prior_spend_and_rewrites_the_rollup_when_idle() -> No
     store.put = recording_put
     assert ledger.fold() == 0
     assert puts == [L.ROLLUP_KEY]  # an idle sweep still rewrites it, so Dict expiry cannot erase the total
+
+
+def test_resource_profiles_match_admission_and_are_bounded() -> None:
+    from infra.modal_ci.policy import PROFILE_LABELS
+
+    assert set(L.PROFILES) == {"modal-ci", *PROFILE_LABELS}
+    for profile in L.PROFILES.values():
+        assert profile.max_seconds <= 210 * 60
+        assert L.worst_case_usd(profile) < 3

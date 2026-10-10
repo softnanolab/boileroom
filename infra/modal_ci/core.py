@@ -163,7 +163,8 @@ class Core:
             log.info("rejected job=%s repo=%s reason=%s", req.job_id, req.repo, reason)
             return Response(204, reason)
 
-        profile = PROFILES[policy.RUNNER_LABEL]
+        profile_label = next((label for label in req.labels if label in policy.PROFILE_LABELS), policy.RUNNER_LABEL)
+        profile = PROFILES[profile_label]
         job_label = next(label for label in req.labels if policy.JOB_LABEL_RE.match(label))
         runner_name = f"modal-{req.job_id}-{secrets.token_hex(16)}"
         meta = {"repo": req.repo, "run_id": req.run_id, "job_key": req.job_key, "runner_name": runner_name}
@@ -179,7 +180,10 @@ class Core:
 
         runner_id: int | None = None
         try:
-            jit, runner_id = self.github.generate_jit(req.repo, runner_name, [*policy.RUNNER_LABELS, job_label])
+            labels = [*policy.RUNNER_LABELS, job_label]
+            if profile_label != policy.RUNNER_LABEL:
+                labels.append(profile_label)
+            jit, runner_id = self.github.generate_jit(req.repo, runner_name, labels)
             self.ledger.update(req.job_id, runner_id=runner_id)
         except Exception:
             self._abandon(req, runner_id)

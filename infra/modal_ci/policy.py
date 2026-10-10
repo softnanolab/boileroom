@@ -24,6 +24,7 @@ ALLOWED_EVENTS = frozenset({"push", "pull_request", "workflow_dispatch", "schedu
 RUNNER_LABEL = "modal-ci"
 # GitHub's JIT endpoint registers exactly the labels it is given, so the defaults are spelled out.
 RUNNER_LABELS = ("self-hosted", "Linux", "X64", RUNNER_LABEL)
+PROFILE_LABELS = frozenset({"modal-ci-medium", "modal-ci-long", "modal-ci-heavy"})
 JOB_LABEL_RE = re.compile(
     r"^job-(?P<run_id>[0-9]{1,18})-(?P<attempt>[0-9]{1,4})-(?P<key>[A-Za-z0-9_][A-Za-z0-9_-]{0,99})$"
 )
@@ -103,6 +104,9 @@ def modal_labels(job: Mapping[str, Any]) -> list[str] | Rejected:
         return Rejected("bad_labels")
     if RUNNER_LABEL not in labels or "self-hosted" not in labels:
         return Rejected("not_a_modal_ci_job")
+    resource_labels = [label for label in labels if label.startswith("modal-ci-")]
+    if len(resource_labels) > 1 or any(label not in PROFILE_LABELS for label in resource_labels):
+        return Rejected("unknown_or_ambiguous_profile")
     return labels
 
 
