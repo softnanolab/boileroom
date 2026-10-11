@@ -3,6 +3,24 @@ name: Integration Tests
 on:
   workflow_dispatch:
     inputs:
+      run-target:
+        description: "Manual target (none does no paid work; full-suite is the legacy broad suite)"
+        required: true
+        default: "none"
+        type: choice
+        options:
+          - none
+          - minifold
+          - profam
+          - full-suite
+      minifold-size:
+        description: "Exactly one MiniFold variant; ignored for other targets"
+        required: false
+        default: "12L"
+        type: choice
+        options:
+          - 12L
+          - 48L
       execution-mode:
         description: "Run integration tests in parallel model shards or in series"
         required: false
@@ -35,8 +53,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 240
     if: >-
-      github.event_name != 'workflow_run' ||
-      github.event.workflow_run.conclusion == 'success'
+      (github.event_name == 'schedule') ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') ||
+      (github.event_name == 'workflow_dispatch' && inputs.run-target == 'full-suite')
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -84,15 +103,84 @@ jobs:
       - name: Install the package
         run: uv pip install -e .
 
-      - name: Authenticate Modal
-        shell: bash -l {0}
-        run: uv run modal token set --token-id ${{ secrets.MODAL_API_TOKEN_ID }} --token-secret ${{ secrets.MODAL_API_TOKEN_SECRET }}
-
       - name: Run integration tests
         shell: bash -l {0}
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_API_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_API_TOKEN_SECRET }}
+          MODAL_CONFIG_PATH: /dev/null
         run: |
           if [ "${{ inputs.execution-mode || 'parallel' }}" = "series" ]; then
             uv run pytest -v -m integration --image-tag "${{ steps.resolve_tag.outputs.docker_tag }}"
           else
             uv run pytest -v -n 4 --dist loadgroup -m integration --image-tag "${{ steps.resolve_tag.outputs.docker_tag }}"
           fi
+
+  model-validation:
+    # This route never runs on push, schedule, workflow_run, or a default dispatch.
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      (inputs.run-target == 'minifold' || inputs.run-target == 'profam')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      VALIDATION_MODEL: ${{ inputs.run-target }}
+      MINIFOLD_SIZE: ${{ inputs.minifold-size || '12L' }}
+      MODAL_CONFIG_PATH: /dev/null
+      ARTIFACT_DIR: ${{ runner.temp }}/model-validation
+    steps:
+      - name: Checkout exact selected commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: false
+
+      - name: Plan selected validation without contacting Modal
+        run: |
+          uv run --no-project python scripts/testing/run_model_validation.py \
+            --model "$VALIDATION_MODEL" --minifold-size "$MINIFOLD_SIZE" \
+            --expected-sha "$GITHUB_SHA" --output-dir "$ARTIFACT_DIR"
+
+      - name: Run one bounded source-image validation
+        timeout-minutes: 55
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_API_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_API_TOKEN_SECRET }}
+        shell: bash
+        run: |
+          set -o pipefail
+          uv run --no-project --with modal==1.3.0.post1 \
+            python -u scripts/testing/run_model_validation.py \
+            --model "$VALIDATION_MODEL" --minifold-size "$MINIFOLD_SIZE" \
+            --expected-sha "$GITHUB_SHA" --output-dir "$ARTIFACT_DIR" --execute \
+            2>&1 | tee "$ARTIFACT_DIR/launcher.log"
+
+      - name: Stop only this validation's temporary apps
+        if: always()
+        timeout-minutes: 3
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_API_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_API_TOKEN_SECRET }}
+        run: |
+          uv run --no-project --with modal==1.3.0.post1 \
+            python scripts/testing/run_model_validation.py \
+            --output-dir "$ARTIFACT_DIR" --cleanup-only
+
+      - name: Upload validation reports, logs and resource evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: model-validation-${{ inputs.run-target }}-${{ inputs.minifold-size || '12L' }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/model-validation/
+          if-no-files-found: warn
+          retention-days: 14
