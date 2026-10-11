@@ -39,6 +39,8 @@ ROOT = Path(__file__).resolve().parents[2]
 BUILD_TIMEOUT = 20 * 60
 TOTAL_TIMEOUT = 53 * 60  # Leave room for cleanup and artifact upload in the 60-minute job.
 MODAL_VERSION = "1.3.0.post1"
+CLEANUP_VERIFY_SECONDS = 30
+CLEANUP_POLL_SECONDS = 2
 MODEL_LIMITS: dict[str, dict[str, Any]] = {
     "minifold": {"gpu": "L4", "memory_mib": 32768, "remote_timeout_seconds": 20 * 60},
     "profam": {"gpu": "T4", "memory_mib": 16384, "remote_timeout_seconds": 30 * 60},
@@ -149,11 +151,15 @@ def build_image(modal: Any, root: Path, plan: dict[str, Any]) -> Any:
     )
     tracked = {str((root / name).resolve()) for name in plan["source_files_sha256"]}
 
-    def ignore(path: Path) -> bool:
-        return not path.is_dir() and str(path.resolve()) not in tracked
-
     for directory in ("boileroom", "tests", "scripts"):
-        image = image.add_local_dir(root / directory, f"/validation/{directory}", copy=False, ignore=ignore)
+        local_dir = root / directory
+
+        def ignore(path: Path, local_dir: Path = local_dir) -> bool:
+            # Modal passes paths relative to this mount, not the process cwd.
+            local = local_dir / path
+            return not local.is_dir() and str(local.resolve()) not in tracked
+
+        image = image.add_local_dir(local_dir, f"/validation/{directory}", copy=False, ignore=ignore)
     return image.add_local_file(root / "pyproject.toml", "/validation/pyproject.toml", copy=False)
 
 
@@ -287,21 +293,30 @@ def cleanup(output: Path) -> bool:
             evidence["stop_results"].append({"app_id": app_id, "returncode": result.returncode})
         except subprocess.TimeoutExpired:
             evidence["stop_results"].append({"app_id": app_id, "error": "stop request timed out"})
-    if ids:
+    deadline = time.monotonic() + CLEANUP_VERIFY_SECONDS
+    while ids and time.monotonic() < deadline:
         try:
             result = subprocess.run(
                 [sys.executable, "-m", "modal", "app", "list", "--json"],
                 env=env,
                 capture_output=True,
                 text=True,
-                timeout=30,
+                timeout=max(0.001, min(10, deadline - time.monotonic())),
                 check=True,
             )
             rows = [row for row in json.loads(result.stdout) if row.get("App ID") in ids]
             evidence["apps"] = rows  # Never save other apps from the workspace.
-            evidence["verified_stopped"] = len(rows) == len(ids) and all(row.get("State") == "stopped" for row in rows)
+            evidence.setdefault("verification_checks", []).append({"at": utc_now(), "apps": rows})
+            # A stopped App may still have containers winding down. The pinned
+            # CLI's Tasks column is n_running_tasks, so zero must be observed.
+            evidence["verified_stopped"] = len(rows) == len(ids) and all(
+                row.get("State") == "stopped" and str(row.get("Tasks", "")) == "0" for row in rows
+            )
+            if evidence["verified_stopped"]:
+                break
         except (subprocess.SubprocessError, ValueError) as exc:
             evidence["verification_error"] = type(exc).__name__
+        time.sleep(min(CLEANUP_POLL_SECONDS, max(0, deadline - time.monotonic())))
     write_json(output / "cleanup.json", evidence)
     return bool(evidence["verified_stopped"])
 

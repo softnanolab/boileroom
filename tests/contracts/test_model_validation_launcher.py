@@ -198,7 +198,9 @@ def test_cleanup_stops_only_recorded_ids_and_filters_workspace_evidence(
         calls.append(command)
         assert kwargs["env"]["MODAL_CONFIG_PATH"] == "/dev/null"
         return subprocess.CompletedProcess(
-            command, 0, json.dumps([{"App ID": own, "State": "stopped"}, {"App ID": "other", "State": "deployed"}])
+            command,
+            0,
+            json.dumps([{"App ID": own, "State": "stopped", "Tasks": "0"}, {"App ID": "other", "State": "deployed"}]),
         )
 
     monkeypatch.setattr(launcher.subprocess, "run", run)
@@ -206,10 +208,11 @@ def test_cleanup_stops_only_recorded_ids_and_filters_workspace_evidence(
     assert calls[0][-2:] == ["stop", own]
     assert len(calls) == 2
     evidence = json.loads((tmp_path / "cleanup.json").read_text())
-    assert evidence["apps"] == [{"App ID": own, "State": "stopped"}]
+    assert evidence["apps"] == [{"App ID": own, "State": "stopped", "Tasks": "0"}]
 
 
 def test_cleanup_never_treats_missing_state_as_verified(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(launcher, "CLEANUP_VERIFY_SECONDS", 0.01)
     launcher.write_json(tmp_path / "run.json", {"apps": [{"app_id": "ap-" + "x" * 22}]})
     monkeypatch.setattr(launcher.subprocess, "run", lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 0, "[]"))
     assert not launcher.cleanup(tmp_path)
@@ -262,3 +265,73 @@ def test_source_build_sdk_context_contains_canonical_copy_inputs(monkeypatch: py
         )()
         is None
     )
+
+
+def test_sdk_runtime_mounts_contain_every_tracked_source_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Enumerate real SDK directory mounts, which call ignore with relative paths."""
+    import modal
+    from modal.mount import _select_files
+
+    model = next(model for model in launcher.MODEL_LIMITS if (ROOT / f"boileroom/models/{model}/Dockerfile").is_file())
+    plan = launcher.make_plan(ROOT, model, "12L", None)
+    # Source selection must not depend on the launching process's working directory.
+    monkeypatch.chdir(tmp_path)
+    current = launcher.build_image(modal, ROOT, plan)
+    selected: dict[str, Path] = {}
+    # Three directory mounts and pyproject.toml, in the actual lazy Image graph.
+    for _ in range(4):
+        image, mount = current.deps()
+        selected.update({str(remote): local for local, remote in _select_files(mount.entries)})
+        current = image
+    expected = {f"/validation/{name}" for name in plan["source_files_sha256"]}
+    assert set(selected) == expected
+    assert selected[f"/validation/boileroom/models/{model}/core.py"] == ROOT / f"boileroom/models/{model}/core.py"
+    runtime_modules = [
+        name
+        for name in expected
+        if name.startswith(f"/validation/tests/{model}/") and name.endswith("runtime_validation.py")
+    ]
+    assert runtime_modules, "The actual validation entrypoint must be present in the source mount"
+    assert all(selected[name].is_file() for name in runtime_modules)
+    assert not any("__pycache__" in name or ".model_cache" in name or name.endswith(".env") for name in selected)
+
+
+def test_cleanup_waits_for_stopped_app_tasks_to_reach_zero(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    own = "ap-" + "x" * 22
+    launcher.write_json(tmp_path / "run.json", {"apps": [{"app_id": own}]})
+    rows = iter(
+        [
+            [{"App ID": own, "State": "stopped", "Tasks": "1"}],
+            [{"App ID": own, "State": "stopped", "Tasks": "0"}],
+        ]
+    )
+
+    def run(command: list[str], **kwargs: Any) -> Any:
+        if "stop" in command:
+            return subprocess.CompletedProcess(command, 0, "")
+        return subprocess.CompletedProcess(command, 0, json.dumps(next(rows)))
+
+    monkeypatch.setattr(launcher.subprocess, "run", run)
+    monkeypatch.setattr(launcher, "CLEANUP_POLL_SECONDS", 0)
+    assert launcher.cleanup(tmp_path)
+    evidence = json.loads((tmp_path / "cleanup.json").read_text())
+    assert len(evidence["verification_checks"]) == 2
+    assert evidence["verification_checks"][0]["apps"][0]["Tasks"] == "1"
+    assert evidence["apps"][0]["Tasks"] == "0"
+
+
+@pytest.mark.parametrize("tasks", ["1", None])
+def test_cleanup_refuses_stopped_state_without_zero_tasks(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, tasks: str | None
+) -> None:
+    own = "ap-" + "x" * 22
+    launcher.write_json(tmp_path / "run.json", {"apps": [{"app_id": own}]})
+    monkeypatch.setattr(launcher, "CLEANUP_VERIFY_SECONDS", 0.01)
+    monkeypatch.setattr(
+        launcher.subprocess,
+        "run",
+        lambda command, **kwargs: subprocess.CompletedProcess(
+            command, 0, json.dumps([{"App ID": own, "State": "stopped", "Tasks": tasks}])
+        ),
+    )
+    assert not launcher.cleanup(tmp_path)
