@@ -458,10 +458,13 @@ def public_worker(root: Path, plan: dict[str, Any], output: Path) -> int:
 def check_public_source_reference(report: dict[str, Any], expected: str) -> None:
     """Refuse a passing public result whose remote provenance drifted from the built image."""
     actual = report.get("reported_image_reference", report.get("provenance", {}).get("image_ref"))
-    report["source_reference_verified"] = actual == expected
-    if report.get("passed") is True and actual != expected:
+    references = [actual]
+    for result in report.get("results", []):
+        references.append(result.get("metadata", {}).get("runtime", {}).get("image_ref"))
+    report["source_reference_verified"] = all(value == expected for value in references)
+    if report.get("passed") is True and not report["source_reference_verified"]:
         report["passed"] = False
-        report["source_reference_error"] = {"expected": expected, "actual": actual}
+        report["source_reference_error"] = {"expected": expected, "actual": references}
 
 
 async def execute(root: Path, plan: dict[str, Any], output: Path, state: dict[str, Any]) -> None:
