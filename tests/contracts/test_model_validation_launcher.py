@@ -697,3 +697,19 @@ def test_sigint_cleanup_recovers_unmerged_public_ledger(tmp_path: Path) -> None:
         if process.poll() is None:
             process.kill()
             process.communicate(timeout=5)
+
+
+@pytest.mark.parametrize("field", ["reported_image_reference", "provenance"])
+def test_public_image_provenance_must_match_exact_built_source(field: str) -> None:
+    expected = "source:reviewed-exact-build"
+    report = {"passed": True, field: expected if field == "reported_image_reference" else {"image_ref": expected}}
+    launcher.check_public_source_reference(report, expected)
+    assert report["passed"] and report["source_reference_verified"]
+    launcher.check_public_source_reference(report, "source:different")
+    assert not report["passed"] and not report["source_reference_verified"]
+    missing = {"passed": True}
+    launcher.check_public_source_reference(missing, expected)
+    assert not missing["passed"]
+    failed = {"passed": False, "error": "original model failure"}
+    launcher.check_public_source_reference(failed, expected)
+    assert failed["error"] == "original model failure"
