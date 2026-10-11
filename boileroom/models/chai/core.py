@@ -1,21 +1,25 @@
 """Core Chai1 algorithm implementation without modal dependencies."""
 
-import os
 import csv
+import dataclasses
 import logging
+import os
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any, Mapping, Optional, Sequence, Union, cast
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 import numpy as np
 import torch
 from biotite.structure import AtomArray
 from biotite.structure.io.pdbx import CIFFile, get_structure
-from chai_lab.chai1 import run_inference, StructureCandidates
 
-from ...base import FoldingAlgorithm
+from ...base import FoldingAlgorithm, PredictionMetadata
 from ...utils import MODAL_MODEL_DIR, Timer
 from .types import Chai1Output
+
+if TYPE_CHECKING:
+    from chai_lab.chai1 import StructureCandidates
 
 logger = logging.getLogger(__name__)
 
@@ -23,19 +27,21 @@ logger = logging.getLogger(__name__)
 class Chai1Core(FoldingAlgorithm):
     """Chai-1 protein structure prediction model."""
 
-    DEFAULT_CONFIG: dict[str, Any] = {
+    DEFAULT_CONFIG: ClassVar[dict[str, Any]] = {
         "device": "cuda:0",
         "num_trunk_recycles": 3,
         "num_diffn_timesteps": 200,
         "num_diffn_samples": 5,
         "num_trunk_samples": 1,
+        "seed": None,
         "use_esm_embeddings": False,
         "use_msa_server": False,
         "use_templates_server": False,
+        "constraint_path": None,  # optional per-call restraints: a CSV path or a sequence of restraint mappings
         "include_fields": None,  # Optional[List[str]] - controls which fields to include in output
     }
     # Static config keys that can only be set at initialization
-    STATIC_CONFIG_KEYS = {"device"}
+    STATIC_CONFIG_KEYS: ClassVar[frozenset[str]] = frozenset({"device"})
 
     def __init__(self, config: dict[str, Any] | None = None) -> None:
         """Initialize the Chai1Core folding algorithm with the given configuration.
@@ -50,11 +56,11 @@ class Chai1Core(FoldingAlgorithm):
             Configuration overrides for the algorithm; keys merge with defaults and control runtime behavior (e.g., device, sampling, and output options).
         """
         super().__init__(config or {})
-        self.metadata = self._initialize_metadata(
+        self._metadata_template = self._initialize_metadata(
             model_name="Chai-1",
             model_version="v0.6.1",
         )
-        self.model_dir: Optional[str] = os.environ.get("MODEL_DIR", MODAL_MODEL_DIR)
+        self.model_dir: str | None = os.environ.get("MODEL_DIR", MODAL_MODEL_DIR)
         self._device: torch.device | None = None
         self._trunk: Any | None = None
 
@@ -73,18 +79,18 @@ class Chai1Core(FoldingAlgorithm):
         self._device = self._resolve_device()
         self.ready = True
 
-    def fold(self, sequences: Union[str, Sequence[str]], options: Optional[dict] = None) -> Chai1Output:
+    def fold(self, sequences: str | Sequence[str], options: dict | None = None) -> Chai1Output:
         # TODO: ADD msa_directory: Path | None = None,
         # TODO: constraint path not tested properly
         # TODO: ADD template_hits_path: Path | None = None,
 
         # Merge static config with per-call options
-        """Run structure prediction for the given sequence(s) and return the assembled Chai1Output.
+        """Run structure prediction for a single top-level sequence entry and return the assembled Chai1Output.
 
         Parameters
         ----------
         sequences : str | Sequence[str]
-            A single amino-acid sequence or a sequence of sequences. A single sequence may contain multiple chains separated by ':'; otherwise provide one entry per sample.
+            A single amino-acid sequence or a one-item sequence containing a single amino-acid sequence. Use ":" inside that sequence to join multiple chains for multimer prediction.
         options : dict | None, optional
             Per-call configuration overrides merged with the algorithm's defaults (e.g., sampling, recycling, include_fields). Only keys recognized by the algorithm are applied.
 
@@ -92,11 +98,23 @@ class Chai1Core(FoldingAlgorithm):
         -------
         Chai1Output
             Prediction result including metadata (with prediction time), a list of AtomArray structures, and any requested confidence metrics and CIF representations as dictated by `options` / include_fields.
+
+        Raises
+        ------
+        ValueError
+            If more than one top-level sequence entry is provided. Chai-1 currently supports exactly one input per call; use ":" to join chains for multimers.
         """
         effective_config = self._merge_options(options)
 
         validated_sequences = self._validate_sequences(sequences)
-        self.metadata.sequence_lengths = self._compute_sequence_lengths(validated_sequences)
+        if len(validated_sequences) != 1:
+            raise ValueError(
+                "Chai-1 currently supports exactly one top-level sequence per call; use ':' to join chains."
+            )
+        metadata = dataclasses.replace(
+            self._metadata_template,
+            sequence_lengths=self._compute_sequence_lengths(validated_sequences),
+        )
 
         with TemporaryDirectory() as buffer_dir:
             buffer_path = Path(buffer_dir)
@@ -105,6 +123,8 @@ class Chai1Core(FoldingAlgorithm):
                 constraint_path = self._write_constraint(buffer_path, effective_config)
                 output_dir = buffer_path / "outputs"
                 output_dir.mkdir(parents=True, exist_ok=True)
+            from chai_lab.chai1 import run_inference
+
             with Timer("Model Inference") as inference_timer:
                 candidate = run_inference(
                     fasta_file=fasta_path,
@@ -114,6 +134,7 @@ class Chai1Core(FoldingAlgorithm):
                     num_trunk_recycles=effective_config["num_trunk_recycles"],
                     num_diffn_timesteps=effective_config["num_diffn_timesteps"],
                     num_diffn_samples=effective_config["num_diffn_samples"],
+                    seed=effective_config["seed"],
                     use_esm_embeddings=effective_config["use_esm_embeddings"],
                     use_msa_server=effective_config["use_msa_server"],
                     use_templates_server=effective_config["use_templates_server"],
@@ -123,6 +144,7 @@ class Chai1Core(FoldingAlgorithm):
             with Timer("Chai-1 postprocessing") as postprocess_timer:
                 output = self._convert_outputs(
                     candidate,
+                    metadata=metadata,
                     preprocessing_time=preprocess_timer.duration,
                     inference_time=inference_timer.duration,
                     postprocessing_time=postprocess_timer.duration,
@@ -131,7 +153,7 @@ class Chai1Core(FoldingAlgorithm):
 
         return output
 
-    def _write_constraint(self, buffer_path: Path, config: dict) -> Optional[Path]:
+    def _write_constraint(self, buffer_path: Path, config: dict) -> Path | None:
         """Write a constraint CSV file into buffer_path when constraint definitions are present in config.
 
         If config["constraint_path"] is a path-like string or Path, the file is copied to buffer_path/constraint.csv.
@@ -160,7 +182,7 @@ class Chai1Core(FoldingAlgorithm):
 
         constraint_path = buffer_path / "constraint.csv"
 
-        if isinstance(constraint_definition, (str, Path)):
+        if isinstance(constraint_definition, str | Path):
             source_path = Path(constraint_definition).expanduser().resolve()
             constraint_path.write_text(source_path.read_text())
             return constraint_path
@@ -210,6 +232,7 @@ class Chai1Core(FoldingAlgorithm):
     def _convert_outputs(
         self,
         candidate: "StructureCandidates",
+        metadata: PredictionMetadata,
         preprocessing_time: float,
         inference_time: float,
         postprocessing_time: float,
@@ -240,19 +263,19 @@ class Chai1Core(FoldingAlgorithm):
         if not candidate.cif_paths:
             raise RuntimeError("Inference produced no CIF output files")
         cif_string_list, atom_array = self._process_cif(candidate.cif_paths[0], effective_config)
-        self.metadata.preprocessing_time = preprocessing_time
-        self.metadata.inference_time = inference_time
-        self.metadata.postprocessing_time = postprocessing_time
+        metadata.preprocessing_time = preprocessing_time
+        metadata.inference_time = inference_time
+        metadata.postprocessing_time = postprocessing_time
 
         # Build full output with all attributes
         # cif_string_list is a list with one element; convert [None] to None, keep [string] as [string]
         # Filter out None values to match type list[str]
-        cif: Optional[list[str]] = None
+        cif: list[str] | None = None
         if cif_string_list and cif_string_list[0] is not None:
             cif = [s for s in cif_string_list if s is not None]
 
         full_output = Chai1Output(
-            metadata=self.metadata,
+            metadata=metadata,
             pae=pae if pae else None,
             pde=pde if pde else None,
             plddt=plddt if plddt else None,
@@ -270,12 +293,12 @@ class Chai1Core(FoldingAlgorithm):
 
     def _write_fasta(self, sequences: list[str], buffer_dir: Path) -> Path:
         # assert that a single batch only
-        """Write a FASTA file for a single-batch sequence input, splitting multiple chains in the batch by ':'.
+        """Write a FASTA file for a single top-level sequence input, splitting multiple chains by ':'.
 
         Parameters
         ----------
         sequences : list[str]
-            A single-item list containing the sequence batch; if that string contains ':' it is split into multiple chain sequences.
+            A single-item list containing the input sequence; if that string contains ':' it is split into multiple chain sequences.
         buffer_dir : Path
             Directory where the file named "input.fasta" will be written.
 
@@ -284,7 +307,10 @@ class Chai1Core(FoldingAlgorithm):
         Path
             The path to the created FASTA file ("input.fasta" in buffer_dir).
         """
-        assert len(sequences) == 1, "Chai-1 only supports a single batch for now."
+        if len(sequences) != 1:
+            raise ValueError(
+                "Chai-1 currently supports exactly one top-level sequence per call; use ':' to join chains."
+            )
         seqs = sequences[0].split(":") if ":" in sequences[0] else [sequences[0]]
         fasta_path = buffer_dir / "input.fasta"
         # TODO: naming of the chains should be synchronized with how ESMFold did that
@@ -292,7 +318,7 @@ class Chai1Core(FoldingAlgorithm):
         fasta_path.write_text("\n".join(entries))
         return fasta_path
 
-    def _process_cif(self, cif_path: Path, config: dict) -> tuple[list[Optional[str]], list[AtomArray]]:
+    def _process_cif(self, cif_path: Path, config: dict) -> tuple[list[str | None], list[AtomArray]]:
         """Read a CIF file and produce its AtomArray representation, optionally including the CIF text.
 
         Parameters
@@ -320,7 +346,7 @@ class Chai1Core(FoldingAlgorithm):
         cif_string = None
         include_fields = config.get("include_fields")
         if include_fields and ("*" in include_fields or "cif" in include_fields):
-            with open(cif_path, "r") as f:
+            with open(cif_path) as f:
                 cif_string = f.read()
 
         return [cif_string], atom_array
@@ -332,9 +358,9 @@ class Chai1Core(FoldingAlgorithm):
         list[np.ndarray],
         list[np.ndarray],
         list[np.ndarray],
-        Optional[list[np.ndarray]],
-        Optional[list[np.ndarray]],
-        Optional[list[np.ndarray]],
+        list[np.ndarray] | None,
+        list[np.ndarray] | None,
+        list[np.ndarray] | None,
     ]:
         """Extract confidence metrics from a StructureCandidates object.
 

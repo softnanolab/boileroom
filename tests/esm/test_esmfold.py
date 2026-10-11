@@ -1,40 +1,45 @@
-import pytest
 import pathlib
-import numpy as np
-import torch
-from typing import Generator, Optional
-from modal import enable_output
-
-from boileroom import ESMFold
-from boileroom.models.esm.types import ESMFoldOutput
-from boileroom.models.esm.linker import store_multimer_properties
-from boileroom.convert import pdb_string_to_atomarray
-from boileroom.constants import restype_3to1
-from biotite.structure import AtomArray, rmsd
+from collections.abc import Callable, Generator
 from io import StringIO
+from typing import Any
+
+import numpy as np
+import pytest
+import torch
+from biotite.structure import AtomArray, rmsd
 from biotite.structure.io.pdb import PDBFile
 
+from boileroom import ESMFold
+from boileroom.constants import restype_3to1
+from boileroom.convert import pdb_string_to_atomarray
+from boileroom.models.esm.linker import store_multimer_properties
+from boileroom.models.esm.types import ESMFoldOutput
 
-# Module scope keeps a single Modal container alive for the duration of the suite.
+pytestmark = [pytest.mark.integration, pytest.mark.slow, pytest.mark.gpu, pytest.mark.xdist_group("esmfold")]
+
+
+# Module scope keeps a single backend container alive for the duration of the suite.
 @pytest.fixture(scope="module")
-def esmfold_model(config: Optional[dict] = None, gpu_device: Optional[str] = None) -> Generator[ESMFold, None, None]:
+def esmfold_model(backend_option: str, device_option: str | None, output_ctx) -> Generator[ESMFold, None, None]:
     """Provide a configured ESMFold model instance for tests.
 
     Parameters
     ----------
-    config : Optional[dict]
-        Optional configuration overrides passed to the ESMFold constructor.
-    gpu_device : Optional[str]
-        Optional device identifier (e.g., "cuda:0" or "cpu") to initialize the model on.
+    backend_option : str
+        Backend selector ("modal" or "apptainer[:<tag>]").
+    device_option : Optional[str]
+        Backend-resolved device string (e.g. "T4" for Modal, "cuda:0" for Apptainer).
+    output_ctx : Callable
+        Factory yielding a backend-appropriate context manager.
 
     Yields
     ------
     ESMFold
         A configured ESMFold instance ready for use in tests.
     """
-    model_config = dict(config) if config is not None else {}
-    with enable_output():
-        yield ESMFold(backend="modal", device=gpu_device, config=model_config)
+    model_config: dict[str, object] = {}
+    with output_ctx():
+        yield ESMFold(backend=backend_option, device=device_option, config=model_config)
 
 
 def test_esmfold_basic(test_sequences: dict[str, str], esmfold_model: ESMFold):
@@ -50,23 +55,32 @@ def test_esmfold_basic(test_sequences: dict[str, str], esmfold_model: ESMFold):
     assert result.plddt is None, "plddt should be None in minimal output"
 
 
-def test_esmfold_full_output(test_sequences: dict[str, str], gpu_device: Optional[str]):
+def test_esmfold_full_output(
+    test_sequences: dict[str, str],
+    backend_option: str,
+    device_option: str | None,
+    output_ctx,
+):
     """Test ESMFold with full output requested."""
-    with enable_output():
-        model = ESMFold(backend="modal", device=gpu_device, config={"include_fields": ["*"]})
+    with output_ctx():
+        model = ESMFold(backend=backend_option, device=device_option, config={"include_fields": ["*"]})
         result = model.fold(test_sequences["short"])
 
     assert isinstance(result, ESMFoldOutput), "Result should be an ESMFoldOutput"
 
     assert result.plddt is not None, "plddt should be present in full output"
-    assert np.all(result.plddt >= 0), "pLDDT scores should be non-negative"
-    assert np.all(result.plddt <= 100), "pLDDT scores should be less than or equal to 100"
+    plddt = np.asarray(result.plddt[0], dtype=float)
+    assert plddt.ndim == 1, "pLDDT should be a per-residue vector"
+    assert np.all(plddt >= 0), "pLDDT scores should be non-negative"
+    assert np.all(plddt <= 1), "pLDDT scores should be less than or equal to 1"
 
 
-def test_esmfold_multimer(test_sequences, gpu_device: Optional[str]):
+def test_esmfold_multimer(test_sequences, backend_option: str, device_option: str | None, output_ctx):
     """Test ESMFold multimer functionality."""
-    with enable_output():  # TODO: make this better with a fixture, re-using the logic
-        model = ESMFold(backend="modal", device=gpu_device, config={"include_fields": ["*"]})  # Request all fields
+    with output_ctx():
+        model = ESMFold(
+            backend=backend_option, device=device_option, config={"include_fields": ["*"]}
+        )  # Request all fields
         result = model.fold(test_sequences["multimer"])
 
     assert result.pdb is not None, "PDB output should be generated"
@@ -106,7 +120,9 @@ def test_esmfold_multimer(test_sequences, gpu_device: Optional[str]):
     assert result.lm_logits is not None, "lm_logits should be generated"
     assert result.lddt_head is not None, "lddt_head should be generated"
     assert result.pae.shape == (1, n_residues, n_residues), "PAE matrix shape mismatch"
-    assert result.plddt.shape == (1, n_residues, 37), "pLDDT matrix shape mismatch"
+    assert len(result.plddt) == 1, "pLDDT batch size mismatch"
+    assert result.plddt[0] is not None
+    assert result.plddt[0].shape == (n_residues,), "pLDDT vector shape mismatch"
     assert result.ptm_logits.shape == (1, n_residues, n_residues, 64), "pTM matrix shape mismatch"
     assert result.aligned_confidence_probs.shape == (1, n_residues, n_residues, 64), "aligned confidence shape mismatch"
     assert result.s_z.shape == (1, n_residues, n_residues, 128), "s_z matrix shape mismatch"
@@ -114,7 +130,7 @@ def test_esmfold_multimer(test_sequences, gpu_device: Optional[str]):
     assert result.distogram_logits.shape == (1, n_residues, n_residues, 64), "distogram logits matrix shape mismatch"
     assert result.lm_logits.shape == (1, n_residues, 23), "lm logits matrix shape mismatch"
     assert result.lddt_head.shape == (8, 1, n_residues, 37, 50), "lddt head matrix shape mismatch"
-    assert result.plddt.shape == (1, n_residues, 37), "pLDDT matrix shape mismatch"
+    assert result.plddt[0].shape == (n_residues,), "pLDDT vector shape mismatch"
 
 
 def test_esmfold_linker_map():
@@ -139,18 +155,23 @@ def test_esmfold_linker_map():
     assert torch.all(linker_map == gt_map), "Linker map mismatch"
 
 
-def test_esmfold_no_glycine_linker(test_sequences, gpu_device: Optional[str]):
+def test_esmfold_no_glycine_linker(
+    test_sequences,
+    backend_option: str,
+    device_option: str | None,
+    output_ctx,
+):
     """Test ESMFold no glycine linker."""
     model = ESMFold(
-        backend="modal",
-        device=gpu_device,
+        backend=backend_option,
+        device=device_option,
         config={
             "glycine_linker": "",
             "include_fields": ["*"],  # Request all fields
         },
     )
 
-    with enable_output():
+    with output_ctx():
         result = model.fold(test_sequences["multimer"])
 
     assert result.residue_index is not None, "Residue index should be generated"
@@ -160,9 +181,9 @@ def test_esmfold_no_glycine_linker(test_sequences, gpu_device: Optional[str]):
     # assert correct chain_indices
     assert result.chain_index is not None, "chain_index should be generated"
     assert np.all(result.chain_index[0] == np.array([0] * 54 + [1] * 54)), "Chain indices mismatch"
-    assert np.all(
-        result.residue_index[0] == np.concatenate([np.arange(0, 54), np.arange(0, 54)])
-    ), "Residue index mismatch"
+    assert np.all(result.residue_index[0] == np.concatenate([np.arange(0, 54), np.arange(0, 54)])), (
+        "Residue index mismatch"
+    )
 
 
 def test_esmfold_chain_indices():
@@ -187,10 +208,17 @@ def test_esmfold_chain_indices():
     assert np.array_equal(chain_indices[0], expected_chain_indices), "Chain indices mismatch"
 
 
-def test_esmfold_batch(test_sequences: dict[str, str], gpu_device: Optional[str]):
+def test_esmfold_batch(
+    test_sequences: dict[str, str],
+    backend_option: str,
+    device_option: str | None,
+    output_ctx,
+):
     """Test ESMFold batch prediction."""
-    with enable_output():
-        model = ESMFold(backend="modal", device=gpu_device, config={"include_fields": ["*"]})  # Request all fields
+    with output_ctx():
+        model = ESMFold(
+            backend=backend_option, device=device_option, config={"include_fields": ["*"]}
+        )  # Request all fields
         # Define input sequences
         sequences = [test_sequences["short"], test_sequences["medium"]]
         # Make prediction
@@ -202,7 +230,10 @@ def test_esmfold_batch(test_sequences: dict[str, str], gpu_device: Optional[str]
     assert result.ptm_logits is not None, "ptm_logits should be present in full output"
     assert result.pae is not None, "pae should be present in full output"
     assert result.aatype.shape[0] == len(sequences), "Batch size mismatch in aatype"
-    assert result.plddt.shape[0] == len(sequences), "Batch size mismatch in plddt"
+    assert len(result.plddt) == len(sequences), "Batch size mismatch in plddt"
+    assert [sample.shape for sample in result.plddt if sample is not None] == [
+        (len(sequence),) for sequence in sequences
+    ], "pLDDT samples should be trimmed to input sequence lengths"
     assert result.ptm_logits.shape[0] == len(sequences), "Batch size mismatch in ptm_logits"
     assert result.pae.shape[0] == len(sequences), "Batch size mismatch in pae"
 
@@ -219,7 +250,7 @@ def test_tokenize_sequences_with_mocker(mocker):
 
     # Create a model instance
     model = ESMFoldCore(config={"glycine_linker": GLYCINE_LINKER, "position_ids_skip": POSITION_IDS_SKIP})
-    model.device = "cpu"
+    model._device = torch.device("cpu")
 
     # Mock the tokenizer
     mock_tokenizer = mocker.patch.object(model, "tokenizer")
@@ -247,6 +278,23 @@ def test_tokenize_sequences_with_mocker(mocker):
     # Verify the output contains the expected keys
     assert set(tokenized_input.keys()) >= {"input_ids", "attention_mask", "position_ids"}
     assert multimer_properties is not None
+
+
+def test_esmfold_rejects_empty_chain_multimer():
+    """Empty-chain multimer strings should fail with a clear error."""
+    pytest.importorskip("transformers", reason="requires transformers")
+    from boileroom.models.esm.core import ESMFoldCore
+
+    def tokenizer_sentinel(*args: Any, **kwargs: Any) -> dict:
+        return {}
+
+    tokenizer: Callable[..., dict] = tokenizer_sentinel
+    model: ESMFoldCore = ESMFoldCore(config={"device": "cpu", "glycine_linker": "GG", "position_ids_skip": 512})
+    model._device = torch.device("cpu")
+    model.tokenizer = tokenizer  # Not reached when validation works correctly
+
+    with pytest.raises(ValueError, match="empty chain"):
+        model._tokenize_sequences(["A::B"], model._merge_options(None))
 
 
 def test_sequence_validation(test_sequences: dict[str, str]):
@@ -287,7 +335,13 @@ def test_esmfold_static_config_enforcement(test_sequences: dict[str, str]):
         esmfold_core.fold(test_sequences["short"], options={"device": "cuda:0"})
 
 
-def test_esmfold_output_pdb_cif(data_dir: pathlib.Path, test_sequences: dict[str, str], gpu_device: Optional[str]):
+def test_esmfold_output_pdb_cif(
+    data_dir: pathlib.Path,
+    test_sequences: dict[str, str],
+    backend_option: str,
+    device_option: str | None,
+    output_ctx,
+):
     """
     Validate that ESMFold produces consistent PDB and AtomArray outputs and matches saved reference PDB files.
 
@@ -318,9 +372,9 @@ def test_esmfold_output_pdb_cif(data_dir: pathlib.Path, test_sequences: dict[str
         one_letter_codes = [restype_3to1[three_letter_code] for three_letter_code in three_letter_codes]
         return "".join(one_letter_codes)
 
-    with enable_output():
+    with output_ctx():
         model = ESMFold(
-            backend="modal", device=gpu_device, config={"include_fields": ["pdb", "atom_array"]}
+            backend=backend_option, device=device_option, config={"include_fields": ["pdb", "atom_array"]}
         )  # Request PDB and atom_array
         # Define input sequences
         sequences = [test_sequences["short"], test_sequences["medium"]]
@@ -346,16 +400,16 @@ def test_esmfold_output_pdb_cif(data_dir: pathlib.Path, test_sequences: dict[str
 
     # Short protein checks
     num_residues = len(sequences[0])
-    assert np.all(
-        np.unique(short_atomarray.res_id) == np.arange(0, num_residues)
-    ), "AtomArray residues should be 0-indexed"
+    assert np.all(np.unique(short_atomarray.res_id) == np.arange(0, num_residues)), (
+        "AtomArray residues should be 0-indexed"
+    )
     recovered_seq = recover_sequence(short_atomarray)
     assert recovered_seq == sequences[0], "Recovered sequence should be equal to the input sequence"
     assert np.all(np.unique(short_pdb.res_id) == np.arange(0, num_residues)), "Residues should be 0-indexed"
     # Compare coordinates with tolerance
-    assert np.allclose(
-        short_pdb.coord, short_atomarray.coord, atol=0.1
-    ), "Atom coordinates should be equal within 0.1Å tolerance"
+    assert np.allclose(short_pdb.coord, short_atomarray.coord, atol=0.1), (
+        "Atom coordinates should be equal within 0.1Å tolerance"
+    )
     # Compare other attributes exactly
     assert np.array_equal(short_pdb.chain_id, short_atomarray.chain_id), "Chain IDs should match exactly"
     assert np.array_equal(short_pdb.res_id, short_atomarray.res_id), "Residue IDs should match exactly"
@@ -364,17 +418,17 @@ def test_esmfold_output_pdb_cif(data_dir: pathlib.Path, test_sequences: dict[str
 
     # Medium protein checks
     num_residues = len(sequences[1])
-    assert np.all(
-        np.unique(medium_atomarray.res_id) == np.arange(0, num_residues)
-    ), "AtomArray residues should be 0-indexed"
+    assert np.all(np.unique(medium_atomarray.res_id) == np.arange(0, num_residues)), (
+        "AtomArray residues should be 0-indexed"
+    )
     recovered_seq = recover_sequence(medium_atomarray)
     assert recovered_seq == sequences[1], "Recovered sequence should be equal to the input sequence"
     assert np.all(np.unique(medium_pdb.res_id) == np.arange(0, num_residues)), "Residues should be 0-indexed"
 
     # Compare coordinates with tolerance
-    assert np.allclose(
-        medium_pdb.coord, medium_atomarray.coord, atol=0.1
-    ), "Atom coordinates should be equal within 0.1Å tolerance"
+    assert np.allclose(medium_pdb.coord, medium_atomarray.coord, atol=0.1), (
+        "Atom coordinates should be equal within 0.1Å tolerance"
+    )
     # Compare other attributes exactly
     assert np.array_equal(medium_pdb.chain_id, medium_atomarray.chain_id), "Chain IDs should match exactly"
     assert np.array_equal(medium_pdb.res_id, medium_atomarray.res_id), "Residue IDs should match exactly"
@@ -385,24 +439,24 @@ def test_esmfold_output_pdb_cif(data_dir: pathlib.Path, test_sequences: dict[str
     saved_short_pdb = short_pdbfile.get_structure(model=1)
     saved_short_bfactor = short_pdbfile.get_b_factor()
     rmsd_value = rmsd(short_pdb, saved_short_pdb)
-    assert (
-        rmsd_value < 1.5
-    ), "PDB file should be almost equal to the saved ESMFold Server PDB file. Difference comes from HF vs. Meta implementation differences."
+    assert rmsd_value < 1.5, (
+        "PDB file should be almost equal to the saved ESMFold Server PDB file. Difference comes from HF vs. Meta implementation differences."
+    )
 
     medium_pdbfile = PDBFile().read(data_dir / "esmfold_server_medium.pdb")
     saved_medium_pdb = medium_pdbfile.get_structure(model=1)
     saved_medium_bfactor = medium_pdbfile.get_b_factor()
     rmsd_value = rmsd(medium_pdb, saved_medium_pdb)
-    assert (
-        rmsd_value < 1.5
-    ), "PDB file should be almost equal to the saved ESMFold Server PDB file. Difference comes from HF vs. Meta implementation differences."
+    assert rmsd_value < 1.5, (
+        "PDB file should be almost equal to the saved ESMFold Server PDB file. Difference comes from HF vs. Meta implementation differences."
+    )
 
     # compare b-factor
     short_bfactor = short_atomarray.get_annotation("b_factor")
     medium_bfactor = medium_atomarray.get_annotation("b_factor")
-    assert np.allclose(
-        short_bfactor, saved_short_bfactor, atol=0.05
-    ), "B-factor should match within a tolerance (HF vs. Meta)"
-    assert np.allclose(
-        medium_bfactor, saved_medium_bfactor, atol=0.05
-    ), "B-factor should match within a tolerance (HF vs. Meta)"
+    assert np.allclose(short_bfactor, saved_short_bfactor, atol=0.05), (
+        "B-factor should match within a tolerance (HF vs. Meta)"
+    )
+    assert np.allclose(medium_bfactor, saved_medium_bfactor, atol=0.05), (
+        "B-factor should match within a tolerance (HF vs. Meta)"
+    )

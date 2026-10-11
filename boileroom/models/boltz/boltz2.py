@@ -1,23 +1,23 @@
-import json
 import logging
-from typing import TYPE_CHECKING, Optional, Sequence, Union
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Any
 
 import modal
 
-from ...backend import ModalBackend
-from ...backend.base import Backend
-from ...backend.modal import app
-from .image import boltz_image
+from ...backend.modal import get_modal_app
+from ...backend.modal_server import ModalFoldServer
 from ...base import ModelWrapper
 from ...images.volumes import model_weights
 from ...utils import MINUTES, MODAL_MODEL_DIR
-
-if TYPE_CHECKING:
-    pass
-
+from ..registry import BOLTZ2_SPEC
+from .image import boltz_image
 from .types import Boltz2Output
 
+if TYPE_CHECKING:
+    from .core import Boltz2Core
+
 logger = logging.getLogger(__name__)
+app = get_modal_app("boltz2")
 
 
 ############################################################
@@ -32,19 +32,15 @@ logger = logging.getLogger(__name__)
         MODAL_MODEL_DIR: model_weights
     },  # TODO: Volume is shared with MSA cache. Consider renaming volume to something more generic like "boileroom-data" in the future to reflect it's not just for model weights but all boileroom persistent data (models, MSA cache, etc.)
 )
-class ModalBoltz2:
+class ModalBoltz2(ModalFoldServer):
+    """Modal-specific wrapper around `Boltz2Core`."""
+
     config: bytes = modal.parameter(default=b"{}")
 
-    @modal.enter()
-    def _initialize(self) -> None:
+    def _build_core(self, config: dict[str, Any]) -> "Boltz2Core":
         from .core import Boltz2Core
 
-        self._core = Boltz2Core(json.loads(self.config.decode("utf-8")))
-        self._core._initialize()
-
-    @modal.method()
-    def fold(self, sequences: Union[str, Sequence[str]], options: Optional[dict] = None) -> "Boltz2Output":
-        return self._core.fold(sequences, options=options)
+        return Boltz2Core(config)
 
 
 ############################################################
@@ -64,7 +60,9 @@ class Boltz2(ModelWrapper):
     # TODO: rewrite the output to be a list of Boltz2Output objects, not a single object with many entries from a batch
     """
 
-    def __init__(self, backend: str = "modal", device: Optional[str] = None, config: Optional[dict] = None) -> None:
+    MODEL_SPEC = BOLTZ2_SPEC
+
+    def __init__(self, backend: str = "modal", device: str | None = None, config: dict | None = None) -> None:
         """Create a Boltz-2 model wrapper that selects and starts a backend.
 
         Parameters
@@ -83,27 +81,10 @@ class Boltz2(ModelWrapper):
         ValueError
             If an unsupported backend string is provided.
         """
-        if config is None:
-            config = {}
-        self.config = config
-        self.device = device
-        backend_type, backend_tag = ModelWrapper.parse_backend(backend)
-        backend_instance: Backend
-        if backend_type == "modal":
-            backend_instance = ModalBackend(ModalBoltz2, config, device=device)
-        elif backend_type == "apptainer":
-            from ...backend.apptainer import ApptainerBackend
+        super().__init__(backend=backend, device=device, config=config)
+        self._initialize_backend_from_spec(self.MODEL_SPEC, backend=backend, device=device, config=config)
 
-            # Pass Core class as string path to avoid importing it in main process
-            core_class_path = "boileroom.models.boltz.core.Boltz2Core"
-            image_uri = f"docker://docker.io/jakublala/boileroom-boltz:{backend_tag}"
-            backend_instance = ApptainerBackend(core_class_path, image_uri, config or {}, device=device)
-        else:
-            raise ValueError(f"Backend {backend_type} not supported")
-        self._backend = backend_instance
-        self._backend.start()
-
-    def fold(self, sequences: Union[str, Sequence[str]], options: Optional[dict] = None) -> "Boltz2Output":
+    def fold(self, sequences: str | Sequence[str], options: dict | None = None) -> "Boltz2Output":
         """Run the Boltz-2 folding workflow for one or more protein sequences.
 
         Parameters
@@ -111,7 +92,7 @@ class Boltz2(ModelWrapper):
         sequences : str | Sequence[str]
             A single amino-acid sequence or an iterable of sequences representing one or more chains/targets.
         options : dict, optional
-            Per-call configuration overrides for the run (e.g., sampling/recycling settings, device selection, include_fields). Keys mirror those in the core configuration.
+            Per-call configuration overrides for the run, such as `seed`, `msa_cache_enabled`, MSA server options, `num_workers`, or `include_fields`. Load-bound settings such as sampling, diffusion, and MSA module parameters must be configured when the model is constructed.
 
         Returns
         -------

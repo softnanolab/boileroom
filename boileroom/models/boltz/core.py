@@ -1,34 +1,31 @@
 """Core Boltz2 algorithm implementation without modal dependencies."""
 
-import os
+import dataclasses
 import logging
-import json
-import hashlib
-import shutil
+import os
+from collections.abc import Sequence
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from datetime import datetime
-import dataclasses
+from typing import Any, ClassVar, cast
 
 import numpy as np
 import torch
-from pytorch_lightning import Trainer, seed_everything
+from boltz.data.module.inferencev2 import Boltz2InferenceDataModule
+from boltz.data.types import Coords, Manifest, StructureV2
+from boltz.data.write.mmcif import to_mmcif
 from boltz.main import (
+    Boltz2DiffusionParams,
+    BoltzSteeringParams,
+    MSAModuleArgs,
+    PairformerArgsV2,
     download_boltz2,
     process_inputs,
-    Boltz2DiffusionParams,
-    PairformerArgsV2,
-    MSAModuleArgs,
-    BoltzSteeringParams,
 )
-from boltz.data.types import Manifest, StructureV2, Coords
-from boltz.data.write.mmcif import to_mmcif
-from boltz.data.module.inferencev2 import Boltz2InferenceDataModule
 from boltz.model.models.boltz2 import Boltz2 as Boltz2Model
-
-from typing import Optional, Any, Union, Sequence, List, Dict, cast
+from pytorch_lightning import Trainer, seed_everything
 
 from ...base import FoldingAlgorithm
+from ...msa_cache import MSACache
 from ...utils import MODAL_MODEL_DIR, Timer, safe_mkdir
 from .types import Boltz2Output
 
@@ -38,15 +35,11 @@ logger = logging.getLogger(__name__)
 class Boltz2Core(FoldingAlgorithm):
     """Boltz-2 protein structure prediction model."""
 
-    DEFAULT_CONFIG = {
+    DEFAULT_CONFIG: ClassVar[dict[str, Any]] = {
         "device": "cuda:0",
         "use_msa_server": True,  # setting to False automatically sets to no MSA mode
         "msa_server_url": "https://api.colabfold.com",
         "msa_pairing_strategy": "greedy",
-        "msa_server_username": None,
-        "msa_server_password": None,
-        "api_key_header": None,
-        "api_key_value": None,
         "recycling_steps": 3,
         "sampling_steps": 200,
         "diffusion_samples": 1,
@@ -68,9 +61,24 @@ class Boltz2Core(FoldingAlgorithm):
         "cache_dir": None,  # defaults to Path(MODAL_MODEL_DIR)/"boltz"
     }
     # Static config keys that can only be set at initialization
-    STATIC_CONFIG_KEYS = {"device", "cache_dir", "no_kernels"}
+    STATIC_CONFIG_KEYS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "device",
+            "cache_dir",
+            "no_kernels",
+            "recycling_steps",
+            "sampling_steps",
+            "diffusion_samples",
+            "max_parallel_samples",
+            "step_scale",
+            "subsample_msa",
+            "num_subsampled_msa",
+            "write_full_pae",
+            "write_full_pde",
+        }
+    )
 
-    def __init__(self, config: dict = {}) -> None:
+    def __init__(self, config: dict | None = None) -> None:
         """Create a Boltz-2 core instance configured for inference.
 
         Parameters
@@ -81,13 +89,13 @@ class Boltz2Core(FoldingAlgorithm):
             The configuration is used later when loading model weights and preparing the trainer.
         """
         super().__init__(config)
-        self.metadata = self._initialize_metadata(
+        self._metadata_template = self._initialize_metadata(
             model_name="Boltz-2",
             model_version="conf",  # matching ckpt naming; refine if needed
         )
-        self.model_dir: Optional[str] = os.environ.get("MODEL_DIR", MODAL_MODEL_DIR)
-        self.model: Optional[Any] = None
-        self._trainer: Optional[Any] = None
+        self.model_dir: str | None = os.environ.get("MODEL_DIR", MODAL_MODEL_DIR)
+        self.model: Any | None = None
+        self._trainer: Any | None = None
 
     def _initialize(self) -> None:
         """Prepare the core Boltz-2 runtime for inference by loading model weights and constructing the persistent trainer.
@@ -188,31 +196,11 @@ class Boltz2Core(FoldingAlgorithm):
 
         self.ready = True
 
-    def _get_sequence_hash(self, sequence: str) -> str:
-        """Compute SHA256 hash of a protein sequence.
+    def _msa_cache_base_dir(self) -> Path:
+        """Return the base directory that houses the Boltz MSA cache.
 
-        Parameters
-        ----------
-        sequence : str
-            Protein sequence string.
-
-        Returns
-        -------
-        str
-            Hexadecimal digest of the sequence hash.
-        """
-        return hashlib.sha256(sequence.encode()).hexdigest()
-
-    def _get_msa_cache_dir(self) -> Path:
-        """Get the MSA cache directory path.
-
-        Returns the cache directory at {cache_dir}/boltz/msa_cache or {MODEL_DIR}/boltz/msa_cache.
-        Handles both local and Modal paths (checks MODAL_MODEL_DIR if available).
-
-        Returns
-        -------
-        Path
-            Path to the MSA cache directory. Directory is created if it doesn't exist.
+        Resolves to ``{cache_dir}`` when configured, otherwise ``{MODEL_DIR}/boltz``,
+        with Modal's mounted model directory taking precedence when present.
         """
         cache_dir_str = self.config.get("cache_dir")
         if cache_dir_str is not None:
@@ -222,210 +210,57 @@ class Boltz2Core(FoldingAlgorithm):
                 raise ValueError("model_dir must be set when cache_dir is not provided")
             base_cache_dir = Path(self.model_dir) / "boltz"
 
-        # Check if we're in Modal environment and adjust path
+        # Prefer Modal's mounted model directory when running on Modal.
         modal_model_dir = os.environ.get("MODAL_MODEL_DIR")
         if modal_model_dir:
             base_cache_dir = Path(modal_model_dir) / "boltz"
         elif cache_dir_str is None and self.model_dir == MODAL_MODEL_DIR:
-            # If model_dir was set to MODAL_MODEL_DIR but env var not set, use it directly
             base_cache_dir = Path(MODAL_MODEL_DIR) / "boltz"
+        return base_cache_dir
 
-        msa_cache_dir = base_cache_dir / "msa_cache"
-        safe_mkdir(msa_cache_dir, parents=True)
-        return msa_cache_dir
+    def _msa_cache(self) -> MSACache:
+        """Return the shared content-addressed cache for Boltz ``.csv`` MSAs."""
+        return MSACache(self._msa_cache_base_dir(), suffix=".csv")
 
-    def _get_msa_cache_index_path(self) -> Path:
-        """Get the path to the MSA cache index file.
-
-        Returns
-        -------
-        Path
-            Path to msa_index.json in the cache directory.
-        """
-        return self._get_msa_cache_dir() / "msa_index.json"
-
-    def _load_msa_cache_index(self) -> Dict[str, Dict[str, Any]]:
-        """Load the MSA cache index from disk.
-
-        Returns
-        -------
-        Dict[str, Dict[str, Any]]
-            Dictionary mapping sequence hash to cache metadata. Returns empty dict if file doesn't exist
-            or if there's an error loading it.
-        """
-        index_path = self._get_msa_cache_index_path()
-        if not index_path.exists():
-            return {}
-
-        try:
-            with index_path.open("r") as f:
-                return json.load(f)
-        except (json.JSONDecodeError, OSError) as e:
-            logger.warning(f"Failed to load MSA cache index from {index_path}: {e}. Recreating index.")
-            # Backup corrupted index and create new one
-            if index_path.exists():
-                backup_path = index_path.with_suffix(".json.bak")
-                try:
-                    shutil.move(str(index_path), str(backup_path))
-                    logger.info(f"Moved corrupted index to {backup_path}")
-                except OSError:
-                    pass
-            return {}
-
-    def _save_msa_cache_index(self, index: Dict[str, Dict[str, Any]]) -> None:
-        """Save the MSA cache index to disk atomically.
-
-        Writes to a temporary file first, then renames it to the final location to ensure atomic updates.
+    def _check_msa_cache(self, sequences: list[str], *, cache_enabled: bool) -> dict[str, Path]:
+        """Return cached MSA paths for the sequences present in the cache.
 
         Parameters
         ----------
-        index : Dict[str, Dict[str, Any]]
-            Dictionary mapping sequence hash to cache metadata to save.
-        """
-        index_path = self._get_msa_cache_index_path()
-        cache_dir = index_path.parent
-        safe_mkdir(cache_dir, parents=True)
-
-        # Write to temporary file first for atomic update
-        temp_path = index_path.with_suffix(".json.tmp")
-        try:
-            with temp_path.open("w") as f:
-                json.dump(index, f, indent=2)
-            # Atomic rename
-            temp_path.replace(index_path)
-        except OSError as e:
-            logger.warning(f"Failed to save MSA cache index to {index_path}: {e}")
-            # Clean up temp file if rename failed
-            if temp_path.exists():
-                try:
-                    temp_path.unlink()
-                except OSError:
-                    pass
-
-    def _check_msa_cache(self, sequences: List[str]) -> Dict[str, Path]:
-        """Check the MSA cache for cached MSAs for the given sequences.
-
-        Parameters
-        ----------
-        sequences : List[str]
-            List of individual protein sequences (after splitting by colon for multimers).
+        sequences : list[str]
+            Individual protein sequences (after splitting multimers on ``:``).
+        cache_enabled : bool
+            When ``False`` the cache is bypassed and an empty mapping is returned.
 
         Returns
         -------
-        Dict[str, Path]
-            Dictionary mapping sequence string to cached MSA Path if found, empty dict otherwise.
-            Only includes entries where the cached file actually exists.
+        dict[str, Path]
+            Mapping from sequence to its cached MSA file, for cache hits only.
         """
-        if not self.config.get("msa_cache_enabled", True):
+        if not cache_enabled:
             return {}
+        cache = self._msa_cache()
+        cached_paths: dict[str, Path] = {}
+        for sequence in sequences:
+            path = cache.get(MSACache.hash_key(sequence))
+            if path is not None:
+                cached_paths[sequence] = path
+        return cached_paths
 
-        try:
-            cache_dir = self._get_msa_cache_dir()
-            index = self._load_msa_cache_index()
-            cached_paths: Dict[str, Path] = {}
-            index_updated = False
-            now = datetime.utcnow().isoformat()
-
-            for sequence in sequences:
-                seq_hash = self._get_sequence_hash(sequence)
-                if seq_hash in index:
-                    entry = index[seq_hash]
-                    # Index stores relative path, construct full path
-                    msa_path_str = entry.get("msa_path", "")
-                    if not msa_path_str:
-                        # Fallback: try hash-based path structure
-                        msa_path = cache_dir / seq_hash[:2] / seq_hash[2:4] / f"{seq_hash}.csv"
-                    else:
-                        msa_path = cache_dir / msa_path_str
-
-                    # Check if file actually exists
-                    if msa_path.exists() and msa_path.is_file():
-                        cached_paths[sequence] = msa_path
-                        # Log hash and path so users can locate and remove cached MSAs if needed
-                        logger.info(
-                            "Using cached MSA for sequence hash %s at %s",
-                            seq_hash,
-                            msa_path,
-                        )
-                        # Update last_accessed timestamp
-                        if entry.get("last_accessed") != now:
-                            entry["last_accessed"] = now
-                            index_updated = True
-                    else:
-                        # File doesn't exist, remove from index
-                        logger.debug(f"Cached MSA file not found for hash {seq_hash}, removing from index")
-                        del index[seq_hash]
-                        index_updated = True
-
-            # Save updated index if any timestamps were updated or entries removed
-            if index_updated:
-                self._save_msa_cache_index(index)
-
-            return cached_paths
-        except Exception as e:
-            logger.warning(f"Error checking MSA cache: {e}. Continuing without cache.")
-            return {}
-
-    def _save_msa_to_cache(self, sequence: str, msa_source_path: Path) -> None:
-        """Save a single MSA file to the cache.
-
-        Parameters
-        ----------
-        sequence : str
-            Protein sequence string.
-        msa_source_path : Path
-            Path to the source MSA file (typically a .csv file from preprocessing output).
-        """
-        if not self.config.get("msa_cache_enabled", True):
+    def _save_msa_to_cache(self, sequence: str, msa_source_path: Path, *, cache_enabled: bool) -> None:
+        """Copy a single generated ``.csv`` MSA into the shared cache."""
+        if not cache_enabled:
             return
-
-        try:
-            cache_dir = self._get_msa_cache_dir()
-            seq_hash = self._get_sequence_hash(sequence)
-
-            # Create hash-prefixed directory structure: {hash[:2]}/{hash[2:4]}/
-            hash_prefix_dir = cache_dir / seq_hash[:2] / seq_hash[2:4]
-            safe_mkdir(hash_prefix_dir, parents=True)
-
-            # Destination path
-            msa_cache_path = hash_prefix_dir / f"{seq_hash}.csv"
-
-            # Only copy if source file exists and destination doesn't already exist
-            if not msa_source_path.exists():
-                logger.warning(f"Source MSA file not found: {msa_source_path}")
-                return
-
-            if msa_cache_path.exists():
-                # Already cached, skip
-                logger.debug(f"MSA already cached for sequence hash {seq_hash}")
-                return
-
-            # Copy MSA file to cache
-            shutil.copy2(msa_source_path, msa_cache_path)
-            file_size = msa_cache_path.stat().st_size
-
-            # Update index
-            index = self._load_msa_cache_index()
-            now = datetime.utcnow().isoformat()
-            relative_path = f"{seq_hash[:2]}/{seq_hash[2:4]}/{seq_hash}.csv"
-            index[seq_hash] = {
-                "msa_path": relative_path,
-                "created_at": now,
-                "last_accessed": now,
-                "file_size": file_size,
-            }
-            self._save_msa_cache_index(index)
-
-            logger.debug(f"Cached MSA for sequence hash {seq_hash}")
-        except Exception as e:
-            logger.warning(f"Error saving MSA to cache: {e}. Continuing without caching.")
+        self._msa_cache().put(MSACache.hash_key(sequence), msa_source_path)
 
     def _save_msas_to_cache(
         self,
-        processed: Dict[str, Any],
-        individual_chains: List[str],
+        processed: dict[str, Any],
+        individual_chains: list[str],
         out_dir: Path,
-        cached_sequences: Optional[Dict[str, Path]] = None,
+        cached_sequences: dict[str, Path] | None = None,
+        *,
+        cache_enabled: bool,
     ) -> None:
         """Extract and save MSAs from preprocessing output to cache.
 
@@ -441,7 +276,7 @@ class Boltz2Core(FoldingAlgorithm):
         cached_sequences : Optional[Dict[str, Path]]
             Optional dictionary of sequences that were already cached. These will be skipped.
         """
-        if not self.config.get("msa_cache_enabled", True):
+        if not cache_enabled:
             return
 
         cached_sequences = cached_sequences or {}
@@ -479,12 +314,12 @@ class Boltz2Core(FoldingAlgorithm):
                     msa_source_path = msa_raw_dir / msa_filename
 
                     if msa_source_path.exists() and msa_source_path.is_file():
-                        self._save_msa_to_cache(sequence, msa_source_path)
+                        self._save_msa_to_cache(sequence, msa_source_path, cache_enabled=cache_enabled)
         except Exception as e:
             logger.warning(f"Error saving MSAs to cache: {e}. Continuing without caching.")
 
     def _sequences_to_fasta(
-        self, sequences: List[str], msa_paths: Optional[Dict[str, Path]] = None, config: Optional[dict] = None
+        self, sequences: list[str], msa_paths: dict[str, Path] | None = None, config: dict | None = None
     ) -> str:
         """Convert input protein sequences into a Boltz-2 FASTA formatted string.
 
@@ -512,7 +347,7 @@ class Boltz2Core(FoldingAlgorithm):
             if msa_paths is provided, or `>X|protein|empty` if use_msa_server=False and no MSA paths) followed
             by the corresponding sequence on the next line.
         """
-        chains: List[str] = []
+        chains: list[str] = []
         for entry in sequences:
             parts = entry.split(":") if ":" in entry else [entry]
             chains.extend([p.strip() for p in parts if p.strip()])
@@ -540,7 +375,7 @@ class Boltz2Core(FoldingAlgorithm):
             headers.append(seq)
         return "\n".join(headers)
 
-    def _prepare_inputs(self, fasta_text: str, work_dir: Path, cache_dir: Path, config: dict) -> Dict[str, Any]:
+    def _prepare_inputs(self, fasta_text: str, work_dir: Path, cache_dir: Path, config: dict) -> dict[str, Any]:
         """Prepare input files and run Boltz-2 preprocessing to produce a processed manifest and standard input/output directories.
 
         Creates a FASTA file from `fasta_text` in `work_dir`, runs the Boltz-2 preprocessing pipeline (MSA generation and related data preparation), and returns paths and the loaded manifest needed for downstream inference.
@@ -590,7 +425,7 @@ class Boltz2Core(FoldingAlgorithm):
         use_msa_server = bool(config.get("use_msa_server", True))
         msa_server_url = str(config.get("msa_server_url", "https://api.colabfold.com"))
         msa_pairing_strategy = str(config.get("msa_pairing_strategy", "greedy"))
-        # Optional auth headers/params are intentionally omitted for broader compatibility
+        # Upstream Boltz preprocessing currently does not expose auth/header parameters.
 
         # Process inputs (writes processed/manifest.json and NPZs)
         process_inputs(
@@ -630,7 +465,7 @@ class Boltz2Core(FoldingAlgorithm):
     # Future implementation could add a cleanup utility function or automated cleanup with LRU eviction
 
     def _build_datamodule(
-        self, processed: Dict[str, Any], num_workers: int, cache_dir: Path, override_method: Optional[str] = None
+        self, processed: dict[str, Any], num_workers: int, cache_dir: Path, override_method: str | None = None
     ) -> Any:
         """Create a Boltz2InferenceDataModule configured for inference from preprocessed inputs.
 
@@ -682,13 +517,13 @@ class Boltz2Core(FoldingAlgorithm):
             return self._trainer.predict(self.model, datamodule=datamodule, return_predictions=True)
 
     def _extract_sample_from_pred(
-        self, item: Dict[str, Any]
+        self, item: dict[str, Any]
     ) -> tuple[
-        Optional[np.ndarray],
-        Dict[str, Any],
-        Optional[np.ndarray],
-        Optional[np.ndarray],
-        Optional[np.ndarray],
+        np.ndarray | None,
+        dict[str, Any],
+        np.ndarray | None,
+        np.ndarray | None,
+        np.ndarray | None,
     ]:
         """Extract per-sample atom coordinates and confidence metrics from a prediction dictionary.
 
@@ -715,7 +550,9 @@ class Boltz2Core(FoldingAlgorithm):
             - pae (Optional[np.ndarray]): 2D pairwise alignment error (PAE) matrix or None.
             - pde (Optional[np.ndarray]): 2D pairwise distance error (PDE) matrix or None.
         """
-        coords_like = item.get("sample_atom_coords") or item.get("coords")
+        coords_like = item.get("sample_atom_coords")
+        if coords_like is None:
+            coords_like = item.get("coords")
         coords = (
             (coords_like.detach().cpu().numpy() if hasattr(coords_like, "detach") else np.array(coords_like))
             if coords_like is not None
@@ -749,7 +586,7 @@ class Boltz2Core(FoldingAlgorithm):
         else:
             pde = None
 
-        aggregated: Dict[str, Any] = {}
+        aggregated: dict[str, Any] = {}
         for key in [
             "confidence_score",
             "ptm",
@@ -771,13 +608,13 @@ class Boltz2Core(FoldingAlgorithm):
                 aggregated["pair_chains_iptm"] = pair_val
             else:
                 pair_np = pair_val.detach().cpu().numpy() if hasattr(pair_val, "detach") else np.array(pair_val)
-                nested: Dict[str, Dict[str, float]] = {}
+                nested: dict[str, dict[str, float]] = {}
                 for i in range(pair_np.shape[-2]):
                     nested[str(i)] = {str(j): float(pair_np[i, j]) for j in range(pair_np.shape[-1])}
                 aggregated["pair_chains_iptm"] = nested
 
         if "pair_chains_iptm" in aggregated and isinstance(aggregated["pair_chains_iptm"], dict):
-            chains_ptm: Dict[str, float] = {}
+            chains_ptm: dict[str, float] = {}
             for i_str, inner in aggregated["pair_chains_iptm"].items():
                 if i_str in inner:
                     chains_ptm[i_str] = float(inner[i_str])
@@ -786,9 +623,7 @@ class Boltz2Core(FoldingAlgorithm):
 
         return coords, aggregated, plddt, pae, pde
 
-    def _validate_sample_arrays(
-        self, plddt: Optional[np.ndarray], pae: Optional[np.ndarray], pde: Optional[np.ndarray]
-    ) -> None:
+    def _validate_sample_arrays(self, plddt: np.ndarray | None, pae: np.ndarray | None, pde: np.ndarray | None) -> None:
         """Validate shapes of per-sample confidence arrays.
 
         Raises a ValueError if:
@@ -825,8 +660,9 @@ class Boltz2Core(FoldingAlgorithm):
         str
             A string containing the PDB representation of the provided atom array.
         """
-        from biotite.structure.io.pdb import PDBFile, set_structure
         from io import StringIO
+
+        from biotite.structure.io.pdb import PDBFile, set_structure
 
         structure_file = PDBFile()
         set_structure(structure_file, atom_array)
@@ -837,9 +673,9 @@ class Boltz2Core(FoldingAlgorithm):
     def _convert_outputs_using_boltz_structure(
         self,
         coords: np.ndarray,
-        processed: Dict[str, Any],
-        plddt: Optional[List[np.ndarray]] = None,
-    ) -> tuple[List[Any], List[str]]:
+        processed: dict[str, Any],
+        plddt: list[np.ndarray | None] | None = None,
+    ) -> tuple[list[Any], list[str]]:
         """Convert model coordinates into Boltz-2 structure objects and MMCIF strings.
 
         Given per-sample coordinates and the processed input manifest, produce a list of Biotite AtomArray structures and corresponding MMCIF-formatted strings. If `plddt` is provided, the per-residue pLDDT values are attached to each MMCIF entry.
@@ -852,15 +688,17 @@ class Boltz2Core(FoldingAlgorithm):
             Processed inputs dictionary produced by the preprocessing step; must include a manifest with a target record and a `targets_dir` containing the template structure.
         plddt : Optional[List[np.ndarray]]
             Optional list of per-sample pLDDT arrays to embed into the MMCIF output.
+            Entries may be None when a sample lacks pLDDT output.
 
         Returns
         -------
         tuple[List[Any], List[str]]
             A tuple (atom_arrays, cif_strings) where `atom_arrays` is a list of Biotite AtomArray-like structures (one per sample) and `cif_strings` is a list of corresponding MMCIF-formatted strings.
         """
-        from biotite.structure.io.pdbx import CIFFile, get_structure
-        from io import StringIO
         from dataclasses import replace
+        from io import StringIO
+
+        from biotite.structure.io.pdbx import CIFFile, get_structure
 
         if not processed["manifest"].records or len(processed["manifest"].records) == 0:
             raise ValueError("Manifest has no records. Preprocessing may have failed.")
@@ -896,11 +734,12 @@ class Boltz2Core(FoldingAlgorithm):
             )
 
             sample_plddt = None
-            if plddt and sample_idx < len(plddt):
+            if plddt and sample_idx < len(plddt) and plddt[sample_idx] is not None:
+                sample_plddt_value = plddt[sample_idx]
                 sample_plddt = (
-                    torch.from_numpy(plddt[sample_idx])
-                    if isinstance(plddt[sample_idx], np.ndarray)
-                    else plddt[sample_idx]
+                    torch.from_numpy(sample_plddt_value)
+                    if isinstance(sample_plddt_value, np.ndarray)
+                    else sample_plddt_value
                 )
 
             cif_string = to_mmcif(updated_structure, plddts=sample_plddt, boltz2=True)
@@ -910,7 +749,7 @@ class Boltz2Core(FoldingAlgorithm):
 
         return atom_arrays, cif_strings
 
-    def fold(self, sequences: Union[str, Sequence[str]], options: Optional[dict] = None) -> Boltz2Output:
+    def fold(self, sequences: str | Sequence[str], options: dict | None = None) -> Boltz2Output:
         """Predicts 3D structures for the given protein sequences using the resident Boltz-2 model.
 
         Parameters
@@ -918,7 +757,7 @@ class Boltz2Core(FoldingAlgorithm):
         sequences : Union[str, Sequence[str]]
             One or more protein sequences. Accepted formats include a single sequence string, a chain-delimited string like "A:B" for multiple chains, or a sequence/list of individual chain strings.
         options : Optional[dict]
-            Optional runtime configuration overrides for this call. Supported keys include `seed` (int) to control randomness, `cache_dir` (str) for resource caching, `num_workers` (int) for data loading, and `include_fields` (iterable) to request additional output fields such as `"pdb"` or `"cif"`.
+            Optional runtime configuration overrides for this call. Supported keys include `seed` (int) to control randomness, `msa_cache_enabled` (bool), MSA server options such as `use_msa_server`, `msa_server_url`, `msa_pairing_strategy`, `max_msa_seqs`, `num_workers` (int) for data loading, and `include_fields` (iterable) to request additional output fields such as `"pdb"` or `"cif"`. Load-bound settings such as sampling and diffusion parameters must be configured when constructing the core.
 
         Returns
         -------
@@ -937,19 +776,21 @@ class Boltz2Core(FoldingAlgorithm):
 
         # Validate sequences and compute sequence lengths
         validated_sequences = self._validate_sequences(sequences)
-        self.metadata.sequence_lengths = self._compute_sequence_lengths(validated_sequences)
+        metadata = dataclasses.replace(self._metadata_template)
+        metadata.sequence_lengths = self._compute_sequence_lengths(validated_sequences)
 
         # Split sequences into individual chains for cache checking
-        individual_chains: List[str] = []
+        individual_chains: list[str] = []
         for entry in validated_sequences:
             parts = entry.split(":") if ":" in entry else [entry]
             individual_chains.extend([p.strip() for p in parts if p.strip()])
 
         # Check MSA cache before preprocessing
-        cached_msa_paths: Dict[str, Path] = {}
-        if self.config.get("msa_cache_enabled", True):
+        cached_msa_paths: dict[str, Path] = {}
+        msa_cache_enabled = bool(effective_config.get("msa_cache_enabled", True))
+        if msa_cache_enabled:
             try:
-                cached_msa_paths = self._check_msa_cache(individual_chains)
+                cached_msa_paths = self._check_msa_cache(individual_chains, cache_enabled=msa_cache_enabled)
                 if cached_msa_paths:
                     logger.info(
                         f"Found {len(cached_msa_paths)} cached MSA(s) out of {len(individual_chains)} sequence(s)"
@@ -979,7 +820,7 @@ class Boltz2Core(FoldingAlgorithm):
                 processed = self._prepare_inputs(fasta_text, work_path, cache_dir, effective_config)
 
                 # Save newly generated MSAs to cache (before temp cleanup)
-                if self.config.get("msa_cache_enabled", True):
+                if msa_cache_enabled:
                     try:
                         # Extract out_dir from processed dict (targets_dir is out_dir/processed/structures)
                         targets_dir = processed.get("targets_dir")
@@ -987,7 +828,11 @@ class Boltz2Core(FoldingAlgorithm):
                             # out_dir is the parent of "processed" directory
                             out_dir = targets_dir.parent.parent
                             self._save_msas_to_cache(
-                                processed, individual_chains, out_dir, cached_sequences=cached_msa_paths
+                                processed,
+                                individual_chains,
+                                out_dir,
+                                cached_sequences=cached_msa_paths,
+                                cache_enabled=msa_cache_enabled,
                             )
                     except Exception as e:
                         logger.warning(f"Error saving MSAs to cache: {e}. Continuing without caching.")
@@ -1001,24 +846,38 @@ class Boltz2Core(FoldingAlgorithm):
                 # Extract and organize per-sample outputs succinctly
                 extracted = [self._extract_sample_from_pred(item) for item in (preds or []) if isinstance(item, dict)]
 
-                confidences: List[Dict[str, Any]] = [a for (_, a, _, _, _) in extracted if a]
-                plddts: List[np.ndarray] = [p for (_, _, p, _, _) in extracted if p is not None]
-                paes: List[np.ndarray] = [a for (_, _, _, a, _) in extracted if a is not None]
-                pdes: List[np.ndarray] = [d for (_, _, _, _, d) in extracted if d is not None]
+                coords_list: list[np.ndarray] = []
+                confidences: list[dict[str, Any] | None] = []
+                plddts: list[np.ndarray | None] = []
+                paes: list[np.ndarray | None] = []
+                pdes: list[np.ndarray | None] = []
+
+                for coords, confidence, plddt, pae, pde in extracted:
+                    if coords is None:
+                        continue
+                    coords_list.append(coords)
+                    confidences.append(confidence or None)
+                    plddts.append(plddt)
+                    paes.append(pae)
+                    pdes.append(pde)
 
                 # Validate shapes where present
                 for arr in plddts:
-                    self._validate_sample_arrays(arr, None, None)
+                    if arr is not None:
+                        self._validate_sample_arrays(arr, None, None)
                 for arr in paes:
-                    self._validate_sample_arrays(None, arr, None)
+                    if arr is not None:
+                        self._validate_sample_arrays(None, arr, None)
                 for arr in pdes:
-                    self._validate_sample_arrays(None, None, arr)
+                    if arr is not None:
+                        self._validate_sample_arrays(None, None, arr)
 
                 # Extract coords directly for atom_array generation
-                coords_list = [c for (c, _, _, _, _) in extracted if c is not None]
                 coords_np = np.array(coords_list, dtype=object)
                 atom_array_list, cif_strings = self._convert_outputs_using_boltz_structure(
-                    coords_np, processed, plddt=plddts if plddts else None
+                    coords_np,
+                    processed,
+                    plddt=plddts if any(arr is not None for arr in plddts) else None,
                 )
 
                 include_fields = effective_config.get("include_fields")
@@ -1030,17 +889,17 @@ class Boltz2Core(FoldingAlgorithm):
                 if include_fields and ("*" in include_fields or "cif" in include_fields):
                     cif_list = cif_strings
 
-            self.metadata.preprocessing_time = preprocess_timer.duration
-            self.metadata.inference_time = inference_timer.duration
-            self.metadata.postprocessing_time = postprocess_timer.duration
+            metadata.preprocessing_time = preprocess_timer.duration
+            metadata.inference_time = inference_timer.duration
+            metadata.postprocessing_time = postprocess_timer.duration
 
             # Build full output with all fields
             full_output = Boltz2Output(
-                metadata=self.metadata,
-                confidence=(confidences if confidences else None),
-                plddt=(plddts if plddts else None),
-                pae=(paes if paes else None),
-                pde=(pdes if pdes else None),
+                metadata=metadata,
+                confidence=(confidences if any(item is not None for item in confidences) else None),
+                plddt=(plddts if any(item is not None for item in plddts) else None),
+                pae=(paes if any(item is not None for item in paes) else None),
+                pde=(pdes if any(item is not None for item in pdes) else None),
                 pdb=pdb_list,
                 cif=cif_list,
                 atom_array=atom_array_list,

@@ -1,0 +1,10 @@
+# PyPI 0.1.8 predates the API/RoPE fixes at this reviewed source pin.
+profam @ git+https://github.com/alex-hh/profam.git@a19061606dc6469424035db3fdcaae6e63688017
+torch==2.6.0
+transformers==4.51.3
+lightning==2.5.1
+pytorch-lightning==2.5.1
+numpy<2.0
+fastapi
+uvicorn
+pydantic

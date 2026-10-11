@@ -1,18 +1,50 @@
 """Base classes and interfaces for BoilerRoom protein structure prediction models."""
 
+import contextlib
 import dataclasses
 import logging
-import torch
-
 from abc import ABC, abstractmethod
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Union, Sequence, Optional, Protocol, List, cast, Literal
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol, cast
 
 import numpy as np
 
+from .images.metadata import (
+    DEFAULT_PYTHON_VERSION,
+    format_image_reference,
+    get_image_tag,
+    get_kit_image_spec,
+    kit_image_reference,
+)
+from .models.registry import ModelSpec, resolve_object
+from .optimization import DEFAULT_OPTIMIZATION, refuse_without_kit, validate_optimization
 from .utils import validate_sequence
 
+if TYPE_CHECKING:
+    import torch
+
 logger = logging.getLogger(__name__)
+
+#: Config keys every model accepts whether or not its ``DEFAULT_CONFIG`` lists them. ``msa`` and ``templates`` are
+#: refused unless the model sets the matching ``SUPPORTS_USER_*`` flag; ``optimization`` accepts only ``"vanilla"``
+#: unless the model lists it (a family with an optimization kit).
+SHARED_CONFIG_KEYS: frozenset[str] = frozenset({"msa", "templates", "optimization"})
+
+
+def _filter_dataclass_fields(output: Any, include_fields: list[str] | None, always_include: set[str]) -> Any:
+    """Return a filtered dataclass copy when include_fields constrains output."""
+    if not dataclasses.is_dataclass(output) or (include_fields and "*" in include_fields):
+        return output
+
+    dataclass_output: Any = output
+    available_fields = {field.name for field in dataclasses.fields(dataclass_output)}
+    fields_to_keep = always_include | (set(include_fields or []) & available_fields)
+    updates = {field.name: None for field in dataclasses.fields(dataclass_output) if field.name not in fields_to_keep}
+    if not updates:
+        return output
+    return dataclasses.replace(dataclass_output, **updates)
 
 
 @dataclass
@@ -21,19 +53,21 @@ class PredictionMetadata:
 
     model_name: str
     model_version: str
-    sequence_lengths: Optional[List[int]]
-    preprocessing_time: Optional[float] = None  # in seconds
-    inference_time: Optional[float] = None  # in seconds
-    postprocessing_time: Optional[float] = None  # in seconds
+    sequence_lengths: list[int] | None
+    preprocessing_time: float | None = None  # in seconds
+    inference_time: float | None = None  # in seconds
+    postprocessing_time: float | None = None  # in seconds
+    optimization: dict[str, Any] | None = None  # resolved optimization mode and GPU
+    runtime: dict[str, str] | None = None  # code, image, stack and GPU provenance (see boileroom.provenance)
 
 
 class StructurePrediction(Protocol):
     """Protocol defining the minimum interface for structure prediction outputs."""
 
     metadata: PredictionMetadata
-    atom_array: Optional[List[Any]]  # Typically List[AtomArray]
-    pdb: Optional[list[str]] = None
-    cif: Optional[list[str]] = None
+    atom_array: list[Any] | None  # Typically List[AtomArray]
+    pdb: list[str] | None = None
+    cif: list[str] | None = None
 
 
 class EmbeddingPrediction(Protocol):
@@ -43,25 +77,57 @@ class EmbeddingPrediction(Protocol):
     embeddings: np.ndarray
     chain_index: np.ndarray
     residue_index: np.ndarray
-    hidden_states: Optional[np.ndarray] = None
+    hidden_states: np.ndarray | None = None
+
+
+@dataclass
+class GenerationOutput:
+    """Generated sequences and their mean per-token sampling log-probabilities.
+
+    The scores describe sampling confidence, not experimental fitness or the
+    full-sequence likelihood. A family prompt is one generation input, even
+    when it contains several homologous sequences.
+    """
+
+    metadata: PredictionMetadata
+    sequences: list[str]
+    log_likelihoods: list[float]
 
 
 class Algorithm(ABC):
     """Abstract base class for algorithms."""
 
-    DEFAULT_CONFIG: dict = {}
+    DEFAULT_CONFIG: ClassVar[Mapping[str, Any]] = MappingProxyType({})
     # Static config keys that can only be set at initialization and cannot be overridden per-call
-    STATIC_CONFIG_KEYS: set[str] = set()
+    STATIC_CONFIG_KEYS: ClassVar[frozenset[str]] = frozenset()
 
-    def __init__(self, config: dict = {}) -> None:
+    #: Capability flags for the shared optional folding inputs. ``msa`` is one A3M
+    #: text (or ``None``) per chain, or an ``MSAInput`` where a family documents
+    #: it (AlphaFold2-Multimer takes both); ``templates`` maps a name to mmCIF text. A wrapper that
+    #: sets a flag must translate the input to its model's native form; one
+    #: that does not is refused by ``_merge_options`` rather than ignored.
+    SUPPORTS_USER_MSA: ClassVar[bool] = False
+    SUPPORTS_USER_TEMPLATES: ClassVar[bool] = False
+
+    def __init__(self, config: dict | None = None) -> None:
         """Initialize the algorithm instance and set its default runtime attributes.
 
         Parameters
         ----------
         config : dict
             Configuration overrides merged into the class DEFAULT_CONFIG; keys in this dict take precedence over defaults.
+
+        Raises
+        ------
+        ValueError
+            If ``config`` has a key the model does not accept, or ``msa`` / ``templates`` the model cannot use.
+        OptimizationUnavailableError
+            If ``config`` asks a model without an optimization kit for ``optimization`` other than ``"vanilla"``.
         """
+        if config is None:
+            config = {}
         self.config = {**self.DEFAULT_CONFIG, **config}
+        self._validate_config(self.config)
         self.name: str = self.__class__.__name__
         self.version: str = ""  # Should be overridden by implementations
         self.ready: bool = False
@@ -95,9 +161,42 @@ class Algorithm(ABC):
         logger.warning("This does not work with Modal and remote execution. Create a new instance instead.")
         # TODO: Make this work smartly with remote Modal, calling _load() again, etc. and thus programmatically
         # updating the model if anything has changed
-        self.config = {**self.config, **config}
+        updated = {**self.config, **config}
+        self._validate_config(updated)
+        self.config = updated
 
-    def _resolve_device(self) -> torch.device:
+    def _validate_config(self, config: Mapping[str, Any]) -> None:
+        """Refuse config keys this model does not accept and shared inputs it cannot use.
+
+        Parameters
+        ----------
+        config : Mapping[str, Any]
+            A full (merged) configuration.
+
+        Raises
+        ------
+        ValueError
+            If a key is neither in ``DEFAULT_CONFIG`` nor in :data:`SHARED_CONFIG_KEYS`, if ``msa`` or ``templates``
+            is set on a model whose ``SUPPORTS_USER_*`` flag is off, or if ``optimization`` is not a known mode.
+        OptimizationUnavailableError
+            If a model without an optimization kit is asked for ``optimization`` other than ``"vanilla"``.
+        """
+        name = getattr(self, "DISPLAY_NAME", type(self).__name__)
+        allowed = set(self.DEFAULT_CONFIG) | SHARED_CONFIG_KEYS
+        unknown = set(config) - allowed
+        if unknown:
+            raise ValueError(f"{name} does not accept config keys {sorted(unknown)}; allowed keys: {sorted(allowed)}")
+        for key, flag in (("msa", "SUPPORTS_USER_MSA"), ("templates", "SUPPORTS_USER_TEMPLATES")):
+            if config.get(key) and not getattr(self, flag, False):
+                raise ValueError(f"{name} does not support user-supplied {key!r}")
+        # Every family validates the mode here, so a kit family needs no check of its own to refuse an unknown one.
+        if "optimization" in config:
+            if "optimization" in self.DEFAULT_CONFIG:
+                validate_optimization(config["optimization"], getattr(self, "FAMILY", None))
+            else:
+                refuse_without_kit(name, config["optimization"])
+
+    def _resolve_device(self) -> "torch.device":
         """Select the computation device based on instance configuration and system capability.
 
         If the instance config contains a "device" entry, that device is returned; otherwise return "cuda:0" when CUDA is available, falling back to "cpu" when not.
@@ -107,6 +206,8 @@ class Algorithm(ABC):
         torch.device
             The resolved device.
         """
+        import torch
+
         requested = self.config.get("device")
         if requested is not None:
             return torch.device(requested)
@@ -114,7 +215,7 @@ class Algorithm(ABC):
             return torch.device("cuda:0")
         return torch.device("cpu")
 
-    def _merge_options(self, options: Optional[dict] = None) -> dict:
+    def _merge_options(self, options: dict | None = None) -> dict:
         """Merge per-call options into the instance configuration while preventing overrides of static configuration keys.
 
         Parameters
@@ -130,14 +231,14 @@ class Algorithm(ABC):
         Raises
         ------
         ValueError
-            If `options` contains any keys present in `STATIC_CONFIG_KEYS`.
+            If `options` contains any keys present in `STATIC_CONFIG_KEYS` (or ``optimization``, which is always set at
+            initialization), a key the model does not accept, or ``msa`` / ``templates`` the model cannot use (checked
+            on the merged configuration, so a value set at construction is refused too).
         """
         if options is None:
             options = {}
 
-        static_keys: set[str] = getattr(self, "STATIC_CONFIG_KEYS", set())
-        if not isinstance(static_keys, set):
-            static_keys = set(static_keys)
+        static_keys = set(getattr(self, "STATIC_CONFIG_KEYS", ())) | {"optimization"}
 
         # Check for attempts to override static config keys
         conflicting_keys = set(options.keys()) & static_keys
@@ -147,7 +248,9 @@ class Algorithm(ABC):
             )
 
         # Merge: static config (from self.config) + dynamic options
-        return {**self.config, **options}
+        merged = {**self.config, **options}
+        self._validate_config(merged)
+        return merged
 
     @staticmethod
     def _initialize_metadata(model_name: str, model_version: str) -> PredictionMetadata:
@@ -174,6 +277,38 @@ class Algorithm(ABC):
             postprocessing_time=None,
         )
 
+    def _validate_sequences(self, sequences: str | Sequence[str]) -> list[str]:
+        """Validate input sequences and convert them to list format.
+
+        Parameters
+        ----------
+        sequences : str | Sequence[str]
+            Single sequence or list of sequences.
+
+        Returns
+        -------
+        list[str]
+            List of validated sequences.
+
+        Raises
+        ------
+        ValueError
+            If any sequence contains invalid amino acids.
+        """
+        if isinstance(sequences, str):
+            sequences = [sequences]
+
+        return [seq for seq in sequences if validate_sequence(seq)]
+
+
+class GenerationAlgorithm(Algorithm):
+    """Base interface for generation conditioned on a family of sequences."""
+
+    @abstractmethod
+    def generate(self, sequences: str | Sequence[str], options: dict | None = None) -> GenerationOutput:
+        """Generate sequences conditioned on the supplied family prompt."""
+        raise NotImplementedError
+
 
 class FoldingAlgorithm(Algorithm):
     """Abstract base class for protein structure prediction algorithms.
@@ -188,7 +323,7 @@ class FoldingAlgorithm(Algorithm):
     """
 
     @abstractmethod
-    def fold(self, sequences: Union[str, Sequence[str]], options: Optional[dict] = None) -> StructurePrediction:
+    def fold(self, sequences: str | Sequence[str], options: dict | None = None) -> StructurePrediction:
         """Predict the structure for one or more protein sequences.
 
         Parameters
@@ -214,32 +349,7 @@ class FoldingAlgorithm(Algorithm):
         """
         raise NotImplementedError
 
-    def _validate_sequences(self, sequences: Union[str, Sequence[str]]) -> list[str]:
-        """Validate input sequences and convert to list format.
-
-        Parameters
-        ----------
-        sequences : Union[str, Sequence[str]]
-            Single sequence or list of sequences
-
-        Returns
-        -------
-        list[str]
-            List of validated sequences
-
-        Raises
-        ------
-        ValueError
-            If any sequence contains invalid amino acids.
-        """
-        # Convert single sequence to list
-        if isinstance(sequences, str):
-            sequences = [sequences]
-
-        # Validate each sequence and return as explicit list
-        return [seq for seq in sequences if validate_sequence(seq)]
-
-    def _compute_sequence_lengths(self, sequences: List[str]) -> List[int]:
+    def _compute_sequence_lengths(self, sequences: list[str]) -> list[int]:
         """Compute residue counts for each multimer sequence.
 
         Parameters
@@ -257,46 +367,12 @@ class FoldingAlgorithm(Algorithm):
     @staticmethod
     def _filter_include_fields(
         output: StructurePrediction,
-        include_fields: Optional[List[str]],
+        include_fields: list[str] | None,
     ) -> StructurePrediction:
-        """Filter fields of a StructurePrediction dataclass according to an inclusion list.
+        """Filter fields of a StructurePrediction dataclass according to an inclusion list."""
+        return cast(StructurePrediction, _filter_dataclass_fields(output, include_fields, {"metadata", "atom_array"}))
 
-        When `output` is a dataclass instance, returns a copy where any dataclass fields not listed in `include_fields`
-        are set to `None`, while always preserving `metadata` and `atom_array`. If `include_fields` is `None`,
-        empty, or contains `"*"`, or if `output` is not a dataclass, the original `output` is returned unchanged.
-
-        Parameters
-        ----------
-        output : StructurePrediction
-            The prediction dataclass to filter.
-        include_fields : Optional[List[str]]
-            Names of fields to retain in addition to the always-included fields.
-
-        Returns
-        -------
-        StructurePrediction
-            A dataclass instance with non-kept fields set to `None`, or the original `output`
-            unchanged when filtering is not applicable.
-        """
-        if not dataclasses.is_dataclass(output) or (include_fields and "*" in include_fields):
-            return output
-
-        # Cast to Any to help mypy understand this is a dataclass instance
-        dataclass_output: Any = output
-        always_include = {"metadata", "atom_array"}
-        available_fields = {field.name for field in dataclasses.fields(dataclass_output)}
-        fields_to_keep = always_include | (set(include_fields or []) & available_fields)
-
-        updates = {
-            field.name: None for field in dataclasses.fields(dataclass_output) if field.name not in fields_to_keep
-        }
-        if not updates:
-            return cast(StructurePrediction, output)
-
-        filtered = dataclasses.replace(dataclass_output, **updates)
-        return cast(StructurePrediction, filtered)
-
-    def _prepare_multimer_sequences(self, sequences: List[str]) -> List[str]:
+    def _prepare_multimer_sequences(self, sequences: list[str]) -> list[str]:
         """Prepare multimer sequences for model-specific prediction.
 
         Implementations should transform the provided input sequences into the sequence format required by the model for multimer (multi-chain) prediction.
@@ -323,7 +399,7 @@ class EmbeddingAlgorithm(Algorithm):
     """Abstract base class for embedding algorithms."""
 
     @abstractmethod
-    def embed(self, sequences: Union[str, Sequence[str]], options: Optional[dict] = None) -> EmbeddingPrediction:
+    def embed(self, sequences: str | Sequence[str], options: dict | None = None) -> EmbeddingPrediction:
         """Generate embeddings for one or more protein sequences.
 
         Parameters
@@ -352,86 +428,15 @@ class EmbeddingAlgorithm(Algorithm):
     @staticmethod
     def _filter_include_fields(
         output: EmbeddingPrediction,
-        include_fields: Optional[List[str]],
+        include_fields: list[str] | None,
     ) -> EmbeddingPrediction:
-        """Filter an EmbeddingPrediction dataclass to include only the requested fields.
-
-        If `output` is not a dataclass or `include_fields` contains `"*"`, the original
-        `output` is returned unchanged. Otherwise, the returned dataclass keeps the
-        always-included fields `metadata`, `embeddings`, `chain_index`, and
-        `residue_index`, plus any names present in `include_fields`. All other fields
-        are set to `None`.
-
-        Parameters
-        ----------
-        output : EmbeddingPrediction
-            The EmbeddingPrediction dataclass to filter.
-        include_fields : Optional[List[str]]
-            Optional list of field names to include in addition to the
-            always-included fields. If `None`, only the always-included fields are kept.
-
-        Returns
-        -------
-        EmbeddingPrediction
-            An EmbeddingPrediction with non-kept fields set to `None`, or the original
-            `output` if no filtering is performed.
-        """
-        if not dataclasses.is_dataclass(output) or (include_fields and "*" in include_fields):
-            return output
-
-        # Cast to Any to help mypy understand this is a dataclass instance
-        dataclass_output: Any = output
-        always_include = {"metadata", "embeddings", "chain_index", "residue_index"}
-        available_fields = {field.name for field in dataclasses.fields(dataclass_output)}
-        fields_to_keep = always_include | (set(include_fields or []) & available_fields)
-
-        updates = {
-            field.name: None for field in dataclasses.fields(dataclass_output) if field.name not in fields_to_keep
-        }
-        if not updates:
-            return cast(EmbeddingPrediction, output)
-
-        return cast(EmbeddingPrediction, dataclasses.replace(dataclass_output, **updates))
-
-
-@dataclass
-class GenerationOutput:
-    """Output from a sequence generation algorithm."""
-
-    metadata: PredictionMetadata
-    sequences: list[str]
-    log_likelihoods: list[float]
-
-
-class GenerationAlgorithm(Algorithm):
-    """Abstract base class for autoregressive protein sequence generation."""
-
-    @abstractmethod
-    def generate(
-        self,
-        sequences: Union[str, Sequence[str]],
-        options: Optional[dict] = None,
-    ) -> GenerationOutput:
-        """Generate new protein sequences conditioned on input sequences.
-
-        Parameters
-        ----------
-        sequences : Union[str, Sequence[str]]
-            Input conditioning sequences (e.g., a protein family).
-        options : Optional[dict]
-            Per-call configuration overrides.
-
-        Returns
-        -------
-        GenerationOutput
-            Generated sequences with log-likelihoods and metadata.
-        """
-        raise NotImplementedError
-
-    def _validate_sequences(self, sequences: Union[str, Sequence[str]]) -> list[str]:
-        if isinstance(sequences, str):
-            sequences = [sequences]
-        return [seq for seq in sequences if validate_sequence(seq)]
+        """Filter an EmbeddingPrediction dataclass to include only the requested fields."""
+        return cast(
+            EmbeddingPrediction,
+            _filter_dataclass_fields(
+                output, include_fields, {"metadata", "embeddings", "chain_index", "residue_index"}
+            ),
+        )
 
 
 class ModelWrapper:
@@ -450,9 +455,95 @@ class ModelWrapper:
         self.backend = backend
         self.device = device
         self.config = config or {}
+        self.model_spec: ModelSpec | None = None
+
+    def _initialize_backend_from_spec(
+        self,
+        model_spec: ModelSpec,
+        backend: str | None = None,
+        device: str | None = None,
+        config: dict | None = None,
+    ) -> None:
+        """Build and start a backend using shared model metadata.
+
+        Parameters
+        ----------
+        model_spec : ModelSpec
+            Registry entry describing how to construct backends for this model.
+        backend : str | None
+            Backend selector string. When omitted, uses the model spec default.
+        device : str | None
+            Optional device or GPU selector passed through to the backend.
+        config : dict | None
+            Optional backend/model configuration.
+
+        Raises
+        ------
+        ValueError
+            If the selected backend is unsupported or lacks the required spec metadata.
+        """
+        from .backend import ModalBackend
+        from .backend.apptainer import ApptainerBackend
+
+        resolved_backend = backend or model_spec.default_backend
+        resolved_config = config or {}
+        backend_type, backend_tag = self.parse_backend(resolved_backend)
+
+        if backend_type not in model_spec.supported_backends:
+            supported = ", ".join(model_spec.supported_backends)
+            raise ValueError(
+                f"Backend {backend_type} not supported for {model_spec.public_name}. Supported backends: {supported}"
+            )
+
+        backend_instance: Any
+        # A family with a kit image (ESMFold2, Protenix) runs "exact" and "fast" there; "vanilla" keeps the stock image.
+        uses_kit_image = False
+        # Checked here so a bad or unavailable mode fails in the caller, not in a Modal container that would restart
+        # silently.
+        mode = resolved_config.get("optimization", DEFAULT_OPTIMIZATION)
+        if "optimization" not in model_spec.contract.static_config_keys:
+            refuse_without_kit(model_spec.public_name, mode)
+        elif validate_optimization(mode, model_spec.family) != DEFAULT_OPTIMIZATION:
+            uses_kit_image = model_spec.kit_modal_class_path is not None
+        if backend_type == "modal":
+            modal_class_path = model_spec.kit_modal_class_path if uses_kit_image else model_spec.modal_class_path
+            if modal_class_path is None:
+                raise ValueError(f"Modal backend is not configured for {model_spec.public_name}")
+            modal_cls = resolve_object(modal_class_path)
+            backend_instance = ModalBackend(modal_cls, resolved_config, device=device)
+        elif backend_type == "apptainer":
+            if model_spec.apptainer_core_class_path is None or model_spec.apptainer_image_name is None:
+                raise ValueError(f"Apptainer backend is not configured for {model_spec.public_name}")
+            python_version = DEFAULT_PYTHON_VERSION
+            if uses_kit_image:
+                # Apptainer always pulls a kit image from the registry: by the digest pinned in KIT_IMAGE_DIGESTS, or
+                # by the tag that backend="apptainer:<tag>" (first) or BOILEROOM_KIT_IMAGE_TAG names.
+                # BOILEROOM_IMAGE_TAG does not apply to kit images.
+                kit_spec = get_kit_image_spec(model_spec.family)
+                inline_tag = resolved_backend.partition(":")[2].strip() or None
+                image_uri = f"docker://{kit_image_reference(kit_spec, inline_tag)}"
+                python_version = kit_spec.python_version
+            else:
+                image_uri = f"docker://{format_image_reference(model_spec.apptainer_image_name, backend_tag)}"
+            backend_instance = ApptainerBackend(
+                model_spec.apptainer_core_class_path,
+                image_uri,
+                resolved_config,
+                device=device,
+                python_version=python_version,
+            )
+        else:
+            raise ValueError(f"Backend {backend_type} not supported")
+
+        self.backend = resolved_backend
+        self.device = device
+        self.config = resolved_config
+        self.model_spec = model_spec
+        self._backend = backend_instance
+        self._backend.start()
 
     @staticmethod
-    def parse_backend(backend: str) -> tuple[str, Optional[str]]:
+    def parse_backend(backend: str) -> tuple[str, str | None]:
         """Parse backend identifier into backend type and optional tag.
 
         This helper allows backends to be specified with an optional tag suffix
@@ -472,8 +563,8 @@ class ModelWrapper:
             A tuple of ``(backend_type, backend_tag)`` where ``backend_type`` is
             the base backend identifier (for example ``\"modal\"`` or
             ``\"apptainer\"``) and ``backend_tag`` is either the tag string for
-            ``\"apptainer\"`` backends (defaulting to ``\"latest\"`` when no tag
-            is provided) or ``None`` for all other backends.
+            ``\"apptainer\"`` backends (defaulting to the shared runtime Docker
+            image tag when no tag is provided) or ``None`` for all other backends.
         """
         if ":" in backend:
             backend_type, backend_tag = backend.split(":", 1)
@@ -482,7 +573,7 @@ class ModelWrapper:
 
         backend_type = backend_type.strip()
         if backend_type == "apptainer":
-            backend_tag = (backend_tag or "latest").strip() or "latest"
+            backend_tag = (backend_tag or get_image_tag()).strip() or get_image_tag()
             return backend_type, backend_tag
 
         return backend_type, None
@@ -490,17 +581,14 @@ class ModelWrapper:
     def __del__(self) -> None:
         """Clean up backend when ModelWrapper is destroyed.
 
-        This ensures that backend resources (such as conda backend subprocesses)
+        This ensures that backend resources (such as image-backed subprocesses)
         are properly shut down when the ModelWrapper instance is garbage collected.
         """
         backend = getattr(self, "_backend", None)
         if backend is not None:
-            try:
+            # __del__ must not raise; exceptions during GC are problematic
+            with contextlib.suppress(Exception):
                 backend.stop()
-            except Exception:
-                # Ignore errors in __del__ to avoid issues during garbage collection
-                # Exceptions in __del__ can cause problems and are typically ignored
-                pass
 
     def __enter__(self) -> "ModelWrapper":
         """Context manager entry.

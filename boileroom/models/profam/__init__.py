@@ -1,10 +1,16 @@
-# Lazy import to avoid importing modal when only core.py is needed
-def __getattr__(name: str):
-    if name == "ProFam":
-        from .profam import ProFam
+"""Public ProFam exports with a lazy Modal wrapper import."""
 
-        return ProFam
+from typing import Any
+
+from .types import ConditioningPrompt, ProFamOutput
+
+
+def __getattr__(name: str) -> Any:
+    if name in {"ProFam", "ModalProFam"}:
+        from .profam import ModalProFam, ProFam
+
+        return {"ProFam": ProFam, "ModalProFam": ModalProFam}[name]
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
-__all__ = ["ProFam"]
+__all__ = ["ProFam", "ModalProFam", "ProFamOutput", "ConditioningPrompt"]

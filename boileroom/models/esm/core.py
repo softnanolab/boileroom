@@ -1,23 +1,27 @@
 """Core ESM2 and ESMFold algorithm implementations without modal dependencies."""
 
-import os
+import dataclasses
 import logging
-from typing import List, Optional, Sequence, Union, TYPE_CHECKING, cast
+import os
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 
 import numpy as np
 import torch
-from transformers import EsmModel, AutoTokenizer, EsmForProteinFolding
-from transformers.models.esm.modeling_esmfold import EsmFoldingTrunk
 from biotite.structure import AtomArray
+from transformers import AutoTokenizer, EsmForMaskedLM, EsmForProteinFolding, EsmModel
+from transformers.models.esm.modeling_esmfold import EsmFoldingTrunk
 
-from ...base import EmbeddingAlgorithm, FoldingAlgorithm
-from ...utils import Timer, get_model_dir, MODAL_MODEL_DIR
+from ...base import EmbeddingAlgorithm, FoldingAlgorithm, PredictionMetadata
+from ...utils import MODAL_MODEL_DIR, Timer, get_model_dir
 
 if TYPE_CHECKING:
     from transformers.modeling_outputs import BaseModelOutputWithPoolingAndCrossAttentions
 
-from .linker import compute_position_ids, store_multimer_properties, replace_glycine_linkers
-from .types import ESM2Output, ESMFoldOutput
+from .linker import compute_position_ids, replace_glycine_linkers, store_multimer_properties
+from .parsing import ESMSequenceTokens, parse_esm2_sequences
+from .position_routing import esm_position_ids_context, install_esm_position_ids_routing
+from .types import ESM2Output, ESMFoldOutput, _normalize_esmfold_plddt
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +65,7 @@ def always_no_grad_forward(self, seq_feats, pair_feats, true_aa, residx, mask, n
     recycle_z = torch.zeros_like(s_z)
     recycle_bins = torch.zeros(*s_z.shape[:-1], device=device, dtype=torch.int64)
 
-    for recycle_idx in range(no_recycles):
+    for _recycle_idx in range(no_recycles):
         with torch.no_grad():
             # === Recycling ===
             recycle_s = self.recycle_s_norm(recycle_s.detach()).to(device)
@@ -97,10 +101,13 @@ def always_no_grad_forward(self, seq_feats, pair_feats, true_aa, residx, mask, n
 EsmFoldingTrunk.forward = always_no_grad_forward
 
 
+install_esm_position_ids_routing()
+
+
 class ESM2Core(EmbeddingAlgorithm):
     """ESM2 protein language model."""
 
-    DEFAULT_CONFIG = {
+    DEFAULT_CONFIG: ClassVar[dict[str, Any]] = {
         "device": "cuda:0",
         "model_name": "esm2_t33_650M_UR50D",
         "include_fields": None,  # Optional[List[str]] - controls which fields to include in output
@@ -109,9 +116,9 @@ class ESM2Core(EmbeddingAlgorithm):
         "position_ids_skip": 512,
     }
     # Static config keys that can only be set at initialization
-    STATIC_CONFIG_KEYS = {"device", "model_name"}
+    STATIC_CONFIG_KEYS: ClassVar[frozenset[str]] = frozenset({"device", "model_name"})
 
-    def __init__(self, config: dict = {}) -> None:
+    def __init__(self, config: dict | None = None) -> None:
         """Initialize the ESM2Core with the provided configuration and prepare internal state for model loading.
 
         Sets up model metadata (name and version), resolves the model directory from the `MODEL_DIR` environment variable or XDG cache, and initializes runtime attributes (`_device`, `tokenizer`, `model`) to None. Validates that the configured `model_name` is supported.
@@ -122,14 +129,15 @@ class ESM2Core(EmbeddingAlgorithm):
             Configuration overrides for the model (merged with defaults). Recognized keys include at least `model_name` and `device`.
         """
         super().__init__(config)
-        self.metadata = self._initialize_metadata(
+        self._metadata_template = self._initialize_metadata(
             model_name="ESM-2",
             model_version="v4.49.0",  # HuggingFace transformers version
         )
         self.model_dir: str = str(get_model_dir())
         self._device: torch.device | None = None
-        self.tokenizer: Optional[AutoTokenizer] = None
-        self.model: Optional[EsmModel] = None
+        self.tokenizer: AutoTokenizer | None = None
+        self.model: EsmModel | EsmForMaskedLM | None = None
+        self._model_mode: Literal["base", "masked_lm"] | None = None
         self.assert_valid_model(self.config["model_name"])
 
     @staticmethod
@@ -159,92 +167,159 @@ class ESM2Core(EmbeddingAlgorithm):
         self._load()
 
     def _load(self) -> None:
-        """Ensure the tokenizer and model are loaded, move the model to the resolved device, set it to evaluation mode, and mark the instance as ready.
+        """Load the default base model or an MLM variant when configured."""
+        self._ensure_model_for_request(self.config)
 
-        If the tokenizer or model are already present, they are not reloaded. This method also resolves and stores the target device and transfers the model there.
-        """
+    def _parse_sequences(self, sequences: str | Sequence[str]) -> list[ESMSequenceTokens]:
+        """Parse ESM2 inputs using residue-aware token handling."""
+        return parse_esm2_sequences(sequences)
+
+    def _validate_sequences(self, sequences: str | Sequence[str]) -> list[str]:
+        """Validate ESM2 sequences with support for inline ``<mask>`` tokens."""
+        return [parsed.original for parsed in self._parse_sequences(sequences)]
+
+    def _infer_model_mode(self) -> Literal["base", "masked_lm"] | None:
+        """Infer the currently loaded model mode when the flag has not been set."""
+        if self._model_mode is not None:
+            return self._model_mode
+        if self.model is None:
+            return None
+        if hasattr(self.model, "esm") and hasattr(self.model, "lm_head"):
+            return "masked_lm"
+        return "base"
+
+    @staticmethod
+    def _needs_lm_head(include_fields: list[str] | None) -> bool:
+        """Determine whether LM-head logits are required for a request."""
+        return include_fields is not None and ("lm_logits" in include_fields or "*" in include_fields)
+
+    def _ensure_model_for_request(self, effective_config: dict) -> None:
+        """Ensure the loaded model can satisfy the requested include fields."""
+        include_fields = effective_config.get("include_fields")
+        requested_mode: Literal["base", "masked_lm"] = "masked_lm" if self._needs_lm_head(include_fields) else "base"
+
         if self.tokenizer is None:
             self.tokenizer = AutoTokenizer.from_pretrained(
                 f"facebook/{self.config['model_name']}", cache_dir=self.model_dir
             )
-        if self.model is None:
-            self.model = EsmModel.from_pretrained(f"facebook/{self.config['model_name']}", cache_dir=self.model_dir)
-        self._device = self._resolve_device()
+
+        if self._device is None:
+            self._device = self._resolve_device()
+
+        current_mode = self._infer_model_mode()
+        should_reload = self.model is None or (requested_mode == "masked_lm" and current_mode != "masked_lm")
+
+        if should_reload:
+            if requested_mode == "masked_lm":
+                self.model = EsmForMaskedLM.from_pretrained(
+                    f"facebook/{self.config['model_name']}",
+                    cache_dir=self.model_dir,
+                )
+            else:
+                self.model = EsmModel.from_pretrained(
+                    f"facebook/{self.config['model_name']}",
+                    cache_dir=self.model_dir,
+                )
+            current_mode = requested_mode
+
+        assert self.model is not None, "Model not loaded"
         self.model = self.model.to(self._device)
         self.model.eval()
+        self._model_mode = current_mode
         self.ready = True
 
-    def embed(self, sequences: Union[str, Sequence[str]], options: Optional[dict] = None) -> ESM2Output:
+    def embed(self, sequences: str | Sequence[str], options: dict | None = None) -> ESM2Output:
         """Compute embeddings for one or more protein sequences using the configured ESM-2 model.
 
-        This method accepts a single sequence or a list of sequences, merges per-call `options` with the model's static configuration, and returns an ESM2Output containing token-level embeddings and associated metadata. If any sequence contains ":" it is treated as a multimer (inter-chain separator) and multimer-specific preprocessing (glycine linker replacement, position id construction, and attention masking) will be applied. The method will load the model automatically if it is not already loaded and respects the `include_fields` option to determine whether hidden states are produced.
+        This method accepts a single sequence or a list of sequences, merges per-call `options` with the model's static configuration, and returns an ESM2Output containing residue-aligned embeddings and associated metadata. ESM2 inputs may include inline ``<mask>`` tokens and ``:`` chain separators. A fresh core instance starts on the bare ESM backbone; when the merged `include_fields` contains `"lm_logits"` or `"*"`, the core automatically upgrades its internal model to an MLM-capable variant and keeps that upgraded model resident for subsequent calls to avoid repeated reload churn.
 
         Parameters
         ----------
         sequences : str | Sequence[str]
-            A single protein sequence string or an iterable of sequence strings. A sequence containing ":" is interpreted as a multimer.
+            A single protein sequence string or an iterable of sequence strings. Sequence strings may contain one-letter residues, inline ``<mask>`` tokens, and optional ``:`` chain separators for multimers.
         options : dict | None, optional
-            Per-call configuration that is merged with the core config; can control model_name, glycine_linker, position_ids_skip, include_fields, and other runtime options.
+            Per-call configuration that is merged with the core config; can control glycine_linker, position_ids_skip,
+            `include_fields`, and other runtime options. Request `include_fields=["lm_logits"]` for full-vocabulary
+            masked-language-model logits or `include_fields=["hidden_states", "lm_logits"]` / `["*"]` to return both
+            optional outputs.
 
         Returns
         -------
         ESM2Output
-            Prediction container with embeddings, metadata, chain_index and residue_index arrays, and optional hidden_states depending on `include_fields`.
+            Prediction container with residue-aligned embeddings, metadata, chain_index and residue_index arrays, plus optional hidden_states and full-vocabulary lm_logits depending on `include_fields`.
         """
         # Merge static config with per-call options (validate before loading model)
         effective_config = self._merge_options(options)
 
+        parsed_sequences = self._parse_sequences(sequences)
+        validated_sequences = [parsed.original for parsed in parsed_sequences]
+        metadata = dataclasses.replace(
+            self._metadata_template,
+            sequence_lengths=[parsed.residue_count for parsed in parsed_sequences],
+        )
+
         if self.tokenizer is None or self.model is None:
             logger.warning("Model not loaded. Forcing the model to load... Next time call _load() first.")
-            self._load()
+        self._ensure_model_for_request(effective_config)
         assert self.tokenizer is not None and self.model is not None, "Model not loaded"
 
-        normalized_sequences: list[str]
-        if isinstance(sequences, str):
-            normalized_sequences = [sequences]
-        else:
-            normalized_sequences = list(sequences)
+        logger.debug(f"Embedding {len(validated_sequences)} sequences using {effective_config['model_name']}")
 
-        logger.debug(f'Embedding {len(normalized_sequences)} sequences using {effective_config["model_name"]}')
+        include_fields = effective_config.get("include_fields")
+        compute_hidden_states = self._should_compute_hidden_states(include_fields)
+        compute_lm_logits = self._needs_lm_head(include_fields)
 
         with Timer("ESM2 preprocessing") as preprocess_timer:
-            if any(":" in seq for seq in normalized_sequences):
+            if any(parsed.is_multimer for parsed in parsed_sequences):
                 # Multimer logic
                 glycine_linker = effective_config["glycine_linker"]
-                multimer_properties = self._store_multimer_properties(normalized_sequences, glycine_linker)
+                multimer_properties = self._store_multimer_properties(parsed_sequences, glycine_linker)
                 tokenized = self.tokenizer(
-                    replace_glycine_linkers(normalized_sequences, glycine_linker),
+                    replace_glycine_linkers(parsed_sequences, glycine_linker),
                     return_tensors="pt",
                     padding=True,
                     truncation=True,
                 )
                 # Add position_ids and attention_mask
                 tokenized["position_ids"] = compute_position_ids(
-                    normalized_sequences, glycine_linker, effective_config["position_ids_skip"]
+                    parsed_sequences,
+                    glycine_linker,
+                    effective_config["position_ids_skip"],
+                    add_special_tokens=True,
                 )
                 tokenized["attention_mask"] = (multimer_properties["linker_map"] == 1).to(torch.int32)
             else:
                 # Monomer logic
                 tokenized = self.tokenizer(
-                    normalized_sequences,
+                    [parsed.to_string() for parsed in parsed_sequences],
                     return_tensors="pt",
                     padding=True,
                     truncation=True,
                 )
                 multimer_properties = None
             tokenized = tokenized.to(self._device)
-            tokenized["output_hidden_states"] = self._should_compute_hidden_states(
-                effective_config.get("include_fields")
-            )
+            tokenized["output_hidden_states"] = compute_hidden_states
 
-        with Timer("Model Inference") as inference_timer:
-            with torch.inference_mode():
-                outputs = self.model(**tokenized)
+        with (
+            Timer("Model Inference") as inference_timer,
+            torch.inference_mode(),
+            esm_position_ids_context(tokenized.get("position_ids")),
+        ):
+            if self._model_mode == "masked_lm":
+                masked_lm_model = cast(EsmForMaskedLM, self.model)
+                outputs = masked_lm_model.esm(**tokenized)
+                lm_logits = masked_lm_model.lm_head(outputs.last_hidden_state) if compute_lm_logits else None
+            else:
+                base_model = cast(EsmModel, self.model)
+                outputs = base_model(**tokenized)
+                lm_logits = None
 
         with Timer("ESM2 postprocessing") as postprocess_timer:
             outputs = self._convert_outputs(
                 outputs,
                 multimer_properties,
+                lm_logits=lm_logits,
+                metadata=metadata,
                 preprocessing_time=preprocess_timer.duration,
                 inference_time=inference_timer.duration,
                 postprocessing_time=postprocess_timer.duration,
@@ -253,7 +328,7 @@ class ESM2Core(EmbeddingAlgorithm):
 
         return outputs
 
-    def _should_compute_hidden_states(self, include_fields: Optional[list[str]]) -> bool:
+    def _should_compute_hidden_states(self, include_fields: list[str] | None) -> bool:
         """Determine whether hidden states should be computed from the provided include_fields.
 
         Parameters
@@ -269,13 +344,13 @@ class ESM2Core(EmbeddingAlgorithm):
         return include_fields is not None and ("hidden_states" in include_fields or "*" in include_fields)
 
     @staticmethod
-    def _store_multimer_properties(sequences: List[str], glycine_linker: str) -> dict[str, torch.Tensor]:
+    def _store_multimer_properties(sequences: list[ESMSequenceTokens], glycine_linker: str) -> dict[str, torch.Tensor]:
         """Prepare multimer metadata tensors and pad them to account for special <cls> and <eos> tokens.
 
         Parameters
         ----------
-        sequences : List[str]
-            List of input chain sequences comprising the multimer.
+        sequences : list[ESMSequenceTokens]
+            Parsed multimer sequences comprising one or more chains each.
         glycine_linker : str
             Linker string used to represent chain joins when tokenizing multimers.
 
@@ -290,15 +365,20 @@ class ESM2Core(EmbeddingAlgorithm):
         linker_map, residue_index, chain_index = store_multimer_properties(sequences, glycine_linker)
         # Add <cls> and <eos> as effective padding
         batch_size = linker_map.shape[0]
-        linker_map = torch.cat([-torch.ones(batch_size, 1), linker_map, -torch.ones(batch_size, 1)], dim=1)
-        residue_index = torch.cat([-torch.ones(batch_size, 1), residue_index, -torch.ones(batch_size, 1)], dim=1)
-        chain_index = torch.cat([-torch.ones(batch_size, 1), chain_index, -torch.ones(batch_size, 1)], dim=1)
+        linker_padding = torch.full((batch_size, 1), -1, dtype=linker_map.dtype)
+        residue_padding = torch.full((batch_size, 1), -1, dtype=residue_index.dtype)
+        chain_padding = torch.full((batch_size, 1), -1, dtype=chain_index.dtype)
+        linker_map = torch.cat([linker_padding, linker_map, linker_padding], dim=1)
+        residue_index = torch.cat([residue_padding, residue_index, residue_padding], dim=1)
+        chain_index = torch.cat([chain_padding, chain_index, chain_padding], dim=1)
         return {"linker_map": linker_map, "residue_index": residue_index, "chain_index": chain_index}
 
     def _convert_outputs(
         self,
         outputs: "BaseModelOutputWithPoolingAndCrossAttentions",
         multimer_properties: dict[str, torch.Tensor] | None,
+        lm_logits: torch.Tensor | None,
+        metadata: PredictionMetadata,
         preprocessing_time: float,
         inference_time: float,
         postprocessing_time: float,
@@ -312,6 +392,8 @@ class ESM2Core(EmbeddingAlgorithm):
             The model output object containing `last_hidden_state` and optionally `hidden_states`.
         multimer_properties : dict | None
             When present, provides tensors for `linker_map`, `residue_index`, and `chain_index` used to mask and reshape multimer embeddings.
+        lm_logits : torch.Tensor | None
+            Optional full-vocabulary LM-head logits aligned to the tokenizer output axis.
         preprocessing_time : float
             Elapsed time in seconds for the preprocessing phase; stored in the output metadata.
         inference_time : float
@@ -330,35 +412,40 @@ class ESM2Core(EmbeddingAlgorithm):
         embeddings = outputs.last_hidden_state.cpu().numpy()
 
         if self._should_compute_hidden_states(config.get("include_fields")) and outputs.hidden_states is not None:
-            assert torch.all(
-                outputs.hidden_states[-1] == outputs.last_hidden_state
-            ), "Last hidden state should be the same as the output of the model"
+            assert torch.all(outputs.hidden_states[-1] == outputs.last_hidden_state), (
+                "Last hidden state should be the same as the output of the model"
+            )
             hidden_states = np.stack([h.cpu().numpy() for h in outputs.hidden_states], axis=1)
         else:
             hidden_states = None
 
+        lm_logits_output = lm_logits.cpu().numpy() if lm_logits is not None else None
+
         if multimer_properties is not None:
             # TODO: maybe add a proper MULTIMER flag?
-            result = self._mask_linker_region(embeddings, hidden_states, **multimer_properties)
-            embeddings, hidden_states, chain_index_output, residue_index_output = result
+            result = self._mask_linker_region(embeddings, hidden_states, lm_logits_output, **multimer_properties)
+            embeddings, hidden_states, lm_logits_output, chain_index_output, residue_index_output = result
         else:  # only MONOMERs
             if hidden_states is not None:
                 hidden_states = hidden_states[:, :, 1:-1, :]  # remove the first and last token
+            if lm_logits_output is not None:
+                lm_logits_output = lm_logits_output[:, 1:-1, :]  # remove the first and last token
             embeddings = embeddings[:, 1:-1, :]  # remove the first and last token
             # Generate chain_index and residue_index for monomers
             batch_size, seq_len, _ = embeddings.shape
             chain_index_output = np.zeros((batch_size, seq_len), dtype=np.int32)
             residue_index_output = np.tile(np.arange(seq_len, dtype=np.int32), (batch_size, 1))
 
-        self.metadata.preprocessing_time = preprocessing_time
-        self.metadata.inference_time = inference_time
-        self.metadata.postprocessing_time = postprocessing_time
+        metadata.preprocessing_time = preprocessing_time
+        metadata.inference_time = inference_time
+        metadata.postprocessing_time = postprocessing_time
 
         # Build full output with all fields
         full_output = ESM2Output(
-            metadata=self.metadata,
+            metadata=metadata,
             embeddings=embeddings,
             hidden_states=hidden_states,
+            lm_logits=lm_logits_output,
             chain_index=chain_index_output,
             residue_index=residue_index_output,
         )
@@ -371,11 +458,12 @@ class ESM2Core(EmbeddingAlgorithm):
     def _mask_linker_region(
         self,
         embeddings: np.ndarray,
-        hidden_states: Optional[np.ndarray],
+        hidden_states: np.ndarray | None,
+        lm_logits: np.ndarray | None,
         linker_map: torch.Tensor,
         residue_index: torch.Tensor,
         chain_index: torch.Tensor,
-    ) -> tuple[np.ndarray, Optional[np.ndarray], np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray | None, np.ndarray | None, np.ndarray, np.ndarray]:
         """Mask linker regions from model outputs and return per-batch arrays padded to equal sequence lengths.
 
         Parameters
@@ -384,6 +472,8 @@ class ESM2Core(EmbeddingAlgorithm):
             Model token embeddings with shape (batch, seq_len, embedding_dim).
         hidden_states : np.ndarray | None
             Optional hidden states with shape (batch, num_layers, seq_len, embedding_dim) or None.
+        lm_logits : np.ndarray | None
+            Optional LM-head logits with shape (batch, seq_len, vocab_size) or None.
         linker_map : torch.Tensor
             Per-batch mask with values 1 for residues to keep and -1 (or 0) for linker/padding positions.
         residue_index : torch.Tensor
@@ -396,7 +486,8 @@ class ESM2Core(EmbeddingAlgorithm):
         tuple
             A tuple containing:
             - embeddings (np.ndarray): Filtered and padded embeddings with shape (batch, kept_seq_len_max, embedding_dim). Padded positions are zero.
-            - hidden_states (np.ndarray | None): If provided, filtered and padded hidden states with shape (batch, kept_seq_len_max, num_layers, embedding_dim); otherwise None. Padded positions are zero.
+            - hidden_states (np.ndarray | None): If provided, filtered and padded hidden states with shape (batch, num_layers, kept_seq_len_max, embedding_dim); otherwise None. Padded positions are zero.
+            - lm_logits (np.ndarray | None): If provided, filtered and padded logits with shape (batch, kept_seq_len_max, vocab_size); otherwise None. Padded positions are zero.
             - chain_index (np.ndarray): Filtered and padded chain indices with shape (batch, kept_seq_len_max). Padded positions use -1.
             - residue_index (np.ndarray): Filtered and padded residue indices with shape (batch, kept_seq_len_max). Padded positions use -1.
         """
@@ -405,6 +496,8 @@ class ESM2Core(EmbeddingAlgorithm):
         embeddings_list = []
         if hidden_states is not None:
             hidden_states_list = []
+        if lm_logits is not None:
+            lm_logits_list = []
         chain_index_list = []
         residue_index_list = []
 
@@ -417,9 +510,11 @@ class ESM2Core(EmbeddingAlgorithm):
             # Get embeddings for the residues we want to keep
             embeddings_list.append(embeddings[batch_idx, chain_indices])
             if hidden_states is not None:
-                hidden_states_list.append(hidden_states[batch_idx, :, chain_indices, :])
-            chain_index_list.append(chain_index[batch_idx, chain_indices])
-            residue_index_list.append(residue_index[batch_idx, chain_indices])
+                hidden_states_list.append(np.take(hidden_states[batch_idx], chain_indices, axis=1))
+            if lm_logits is not None:
+                lm_logits_list.append(lm_logits[batch_idx, chain_indices, :])
+            chain_index_list.append(chain_index[batch_idx, chain_indices].cpu().numpy())
+            residue_index_list.append(residue_index[batch_idx, chain_indices].cpu().numpy())
 
         def pad_and_stack(
             arrays: list[np.ndarray], residue_dim: int, batch_dim: int, constant_value: int = 0
@@ -453,13 +548,13 @@ class ESM2Core(EmbeddingAlgorithm):
         # Stack embeddings along batch dimension (0)
         embeddings = pad_and_stack(embeddings_list, residue_dim=0, batch_dim=0)
         if hidden_states is not None:
-            hidden_states = pad_and_stack(hidden_states_list, residue_dim=0, batch_dim=0)
-            # Transpose to get correct dimension order (batch, layers, seq_len, hidden_dim)
-            hidden_states = np.transpose(hidden_states, (0, 2, 1, 3))
-        chain_index = pad_and_stack(chain_index_list, residue_dim=0, batch_dim=0, constant_value=-1)
-        residue_index = pad_and_stack(residue_index_list, residue_dim=0, batch_dim=0, constant_value=-1)
+            hidden_states = pad_and_stack(hidden_states_list, residue_dim=1, batch_dim=0)
+        if lm_logits is not None:
+            lm_logits = pad_and_stack(lm_logits_list, residue_dim=0, batch_dim=0)
+        chain_index_out = pad_and_stack(chain_index_list, residue_dim=0, batch_dim=0, constant_value=-1)
+        residue_index_out = pad_and_stack(residue_index_list, residue_dim=0, batch_dim=0, constant_value=-1)
 
-        return embeddings, hidden_states, chain_index, residue_index
+        return embeddings, hidden_states, lm_logits, chain_index_out, residue_index_out
 
 
 ############################################################
@@ -470,7 +565,7 @@ class ESM2Core(EmbeddingAlgorithm):
 class ESMFoldCore(FoldingAlgorithm):
     """ESMFold protein structure prediction model."""
 
-    DEFAULT_CONFIG = {
+    DEFAULT_CONFIG: ClassVar[dict[str, Any]] = {
         "device": "cuda:0",
         # Chain linking and positioning config
         "glycine_linker": "",
@@ -478,14 +573,14 @@ class ESMFoldCore(FoldingAlgorithm):
         "include_fields": None,  # Optional[List[str]] - controls which fields to include in output
     }
     # Static config keys that can only be set at initialization
-    STATIC_CONFIG_KEYS = {"device"}
+    STATIC_CONFIG_KEYS: ClassVar[frozenset[str]] = frozenset({"device"})
 
     # We need to properly asses whether using this or the original ESMFold is better
     # based on speed, accuracy, bugs, etc.; as well as customizability
     # For instance, if we want to also allow differently sized structure modules, than this would be good
     # TODO: we should add a settings dictionary or something, that would make it easier to add new options
     # TODO: maybe use OmegaConf instead to make it easier instead of config
-    def __init__(self, config: dict = {}) -> None:
+    def __init__(self, config: dict | None = None) -> None:
         """Create an ESMFold core instance and initialize runtime fields and placeholders.
 
         Initializes model metadata (name and version). Resolves model_dir from the environment variable `MODEL_DIR` falling back to the packaged `MODAL_MODEL_DIR`. Prepares placeholders for device (`_device`), tokenizer (`tokenizer`), and model (`model`) that will be populated during lazy loading.
@@ -496,14 +591,14 @@ class ESMFoldCore(FoldingAlgorithm):
             Configuration overrides for the predictor (merged with DEFAULT_CONFIG at runtime).
         """
         super().__init__(config)
-        self.metadata = self._initialize_metadata(
+        self._metadata_template = self._initialize_metadata(
             model_name="ESMFold",
             model_version="v4.49.0",  # HuggingFace transformers version
         )
-        self.model_dir: Optional[str] = os.environ.get("MODEL_DIR", MODAL_MODEL_DIR)
+        self.model_dir: str | None = os.environ.get("MODEL_DIR", MODAL_MODEL_DIR)
         self._device: torch.device | None = None
-        self.tokenizer: Optional[AutoTokenizer] = None
-        self.model: Optional[EsmForProteinFolding] = None
+        self.tokenizer: AutoTokenizer | None = None
+        self.model: EsmForProteinFolding | None = None
 
     def _initialize(self) -> None:
         """Initialize the model during container startup. This helps us determine whether we run locally or remotely."""
@@ -526,17 +621,18 @@ class ESMFoldCore(FoldingAlgorithm):
         self.model.trunk.set_chunk_size(64)
         self.ready = True
 
-    def fold(self, sequences: Union[str, Sequence[str]], options: Optional[dict] = None) -> ESMFoldOutput:
+    def fold(self, sequences: str | Sequence[str], options: dict | None = None) -> ESMFoldOutput:
         """Predict protein structure(s) from one or more amino acid sequence(s) using the ESMFold model.
 
-        If the model is not loaded, this method will load it lazily before running inference. Updates self.metadata.sequence_lengths with the processed sequence lengths.
+        If the model is not loaded, this method will load it lazily before running inference. Each call records its own sequence-length metadata.
 
         Parameters
         ----------
         sequences : str | Sequence[str]
             A single amino acid sequence or an iterable of sequences to predict.
         options : dict, optional
-            Per-call configuration merged with the instance's static config (for example, `include_fields` to select which output fields to return).
+            Per-call configuration merged with the instance's static config (for example, `include_fields` to select which output
+            fields to return).
 
         Returns
         -------
@@ -552,19 +648,22 @@ class ESMFoldCore(FoldingAlgorithm):
         assert self.tokenizer is not None and self.model is not None, "Model not loaded"
 
         validated_sequences = self._validate_sequences(sequences)
-        self.metadata.sequence_lengths = self._compute_sequence_lengths(validated_sequences)
+        metadata = dataclasses.replace(
+            self._metadata_template,
+            sequence_lengths=self._compute_sequence_lengths(validated_sequences),
+        )
 
         with Timer("ESMFold preprocessing") as preprocess_timer:
             tokenized_input, multimer_properties = self._tokenize_sequences(validated_sequences, effective_config)
 
-        with Timer("Model Inference") as inference_timer:
-            with torch.inference_mode():
-                outputs = self.model(**tokenized_input)
+        with Timer("Model Inference") as inference_timer, torch.inference_mode():
+            outputs = self.model(**tokenized_input)
 
         with Timer("ESMFold postprocessing") as postprocess_timer:
             outputs = self._convert_outputs(
                 outputs,
                 multimer_properties,
+                metadata=metadata,
                 preprocessing_time=preprocess_timer.duration,
                 inference_time=inference_timer.duration,
                 postprocessing_time=postprocess_timer.duration,
@@ -572,7 +671,7 @@ class ESMFoldCore(FoldingAlgorithm):
             )
         return outputs
 
-    def _tokenize_sequences(self, sequences: List[str], config: dict) -> tuple[dict, dict[str, torch.Tensor] | None]:
+    def _tokenize_sequences(self, sequences: list[str], config: dict) -> tuple[dict, dict[str, torch.Tensor] | None]:
         """Tokenize one or more protein sequences for model input, handling multimer and monomer cases.
 
         Parameters
@@ -601,7 +700,7 @@ class ESMFoldCore(FoldingAlgorithm):
 
         return tokenized, multimer_properties
 
-    def _tokenize_multimer(self, sequences: List[str], config: dict) -> tuple[dict, dict[str, torch.Tensor]]:
+    def _tokenize_multimer(self, sequences: list[str], config: dict) -> tuple[dict, dict[str, torch.Tensor]]:
         """Prepare tokenized inputs and multimer metadata for sequences containing chain separators.
 
         Parameters
@@ -736,7 +835,7 @@ class ESMFoldCore(FoldingAlgorithm):
             _chain_index.append(chain_index[batch_idx, chain_indices].cpu().numpy())
 
         def pad_and_stack(
-            arrays: list[np.ndarray], residue_dim: Union[int, List[int]], batch_dim: int, intermediate_dim: bool = False
+            arrays: list[np.ndarray], residue_dim: int | list[int], batch_dim: int, intermediate_dim: bool = False
         ) -> np.ndarray:
             """Pad arrays to match the largest size in the residue dimension and stack them in the batch dimension.
 
@@ -772,7 +871,7 @@ class ESMFoldCore(FoldingAlgorithm):
                 padded_arrays = []
                 for arr in arrays:
                     padding = [(0, 0)] * arr.ndim
-                    for dim, max_size in zip(residue_dim, max_sizes):
+                    for dim, max_size in zip(residue_dim, max_sizes, strict=True):
                         padding[dim] = (0, max_size - arr.shape[dim])
                     padded_arrays.append(np.pad(arr, padding, mode="constant", constant_values=-1))
 
@@ -822,6 +921,7 @@ class ESMFoldCore(FoldingAlgorithm):
         self,
         outputs: dict,
         multimer_properties: dict[str, torch.Tensor] | None,
+        metadata: PredictionMetadata,
         preprocessing_time: float,
         inference_time: float,
         postprocessing_time: float,
@@ -857,9 +957,9 @@ class ESMFoldCore(FoldingAlgorithm):
         else:  # only MONOMERs
             outputs["chain_index"] = np.zeros(outputs["residue_index"].shape, dtype=np.int32)
 
-        self.metadata.preprocessing_time = preprocessing_time
-        self.metadata.inference_time = inference_time
-        self.metadata.postprocessing_time = postprocessing_time
+        metadata.preprocessing_time = preprocessing_time
+        metadata.inference_time = inference_time
+        metadata.postprocessing_time = postprocessing_time
 
         # Always generate atom_array
         atom_array = self._convert_outputs_to_atomarray(outputs)
@@ -875,16 +975,17 @@ class ESMFoldCore(FoldingAlgorithm):
         # change name of predicted_aligned_error to pae
         outputs["pae"] = outputs.pop("predicted_aligned_error")
         outputs["max_pae"] = outputs.pop("max_predicted_aligned_error")
+        outputs["plddt"] = _normalize_esmfold_plddt(outputs.get("plddt"), metadata.sequence_lengths)
 
         # Build full output with all fields (exclude positions as it's only used internally)
         outputs_without_positions = {k: v for k, v in outputs.items() if k != "positions"}
-        full_output = ESMFoldOutput(metadata=self.metadata, **outputs_without_positions)
+        full_output = ESMFoldOutput(metadata=metadata, **outputs_without_positions)
 
         # Apply filtering based on include_fields
         filtered = self._filter_include_fields(full_output, include_fields)
         return cast(ESMFoldOutput, filtered)
 
-    def _convert_outputs_to_atomarray(self, outputs: dict) -> List[AtomArray]:
+    def _convert_outputs_to_atomarray(self, outputs: dict) -> list[AtomArray]:
         """Create a list of Biotite AtomArray objects from model prediction tensors.
 
         Parameters
@@ -906,7 +1007,7 @@ class ESMFoldCore(FoldingAlgorithm):
         """
         from biotite.structure import Atom, array
         from transformers.models.esm.openfold_utils.feats import atom14_to_atom37
-        from transformers.models.esm.openfold_utils.residue_constants import atom_types, restypes, restype_1to3
+        from transformers.models.esm.openfold_utils.residue_constants import atom_types, restype_1to3, restypes
 
         # Convert atom14 to atom37 format
         atom_positions = atom14_to_atom37(
@@ -960,10 +1061,11 @@ class ESMFoldCore(FoldingAlgorithm):
             arrays.append(array(atoms))
         return arrays
 
-    def _convert_outputs_to_pdb(self, atom_array: List[AtomArray]) -> list[str]:
+    def _convert_outputs_to_pdb(self, atom_array: list[AtomArray]) -> list[str]:
         # TODO: this might make more sense to do locally, instead of doing it on the Modal instance
-        from biotite.structure.io.pdb import PDBFile, set_structure
         from io import StringIO
+
+        from biotite.structure.io.pdb import PDBFile, set_structure
 
         pdbs = []
         for a in atom_array:
@@ -974,10 +1076,11 @@ class ESMFoldCore(FoldingAlgorithm):
             pdbs.append(string.getvalue())
         return pdbs
 
-    def _convert_outputs_to_cif(self, atom_array: List[AtomArray]) -> list[str]:
+    def _convert_outputs_to_cif(self, atom_array: list[AtomArray]) -> list[str]:
         # TODO: this might make more sense to do locally, instead of doing it on the Modal instance
-        from biotite.structure.io.pdbx import CIFFile, set_structure
         from io import StringIO
+
+        from biotite.structure.io.pdbx import CIFFile, set_structure
 
         cifs = []
         for a in atom_array:

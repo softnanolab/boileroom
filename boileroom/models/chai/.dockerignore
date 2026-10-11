@@ -1,3 +1,4 @@
 **
 !Dockerfile
 !environment.yml
+!requirements.txt

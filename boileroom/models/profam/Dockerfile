@@ -1,34 +1,17 @@
-ARG BASE_IMAGE=docker.io/jakublala/boileroom-base:latest
+# syntax=docker/dockerfile:1.7
+ARG BASE_IMAGE=docker.io/jakublala/boileroom-base:local
 FROM ${BASE_IMAGE}
 
-ARG ENV_FILE=environment.yml
-COPY ${ENV_FILE} /tmp/environment.yml
-USER root
-RUN chown ${MAMBA_USER}:${MAMBA_USER} /tmp/environment.yml
-USER ${MAMBA_USER}
+COPY requirements.txt /tmp/requirements.txt
+ARG TORCH_WHEEL_INDEX=https://download.pytorch.org/whl/cu126
+ARG UV_CACHE_ID=boileroom-uv
+ENV UV_INDEX=${TORCH_WHEEL_INDEX} \
+    UV_INDEX_STRATEGY=unsafe-best-match
+RUN --mount=type=cache,id=${UV_CACHE_ID},target=/root/.cache/uv \
+    uv pip install --system -r /tmp/requirements.txt \
+    && rm /tmp/requirements.txt
 
-ARG TORCH_WHEEL_INDEX=https://download.pytorch.org/whl/cu118
-ENV PIP_EXTRA_INDEX_URL=${TORCH_WHEEL_INDEX}
-
-RUN micromamba env update -n base -f /tmp/environment.yml \
-    && micromamba clean --all --yes \
-    && rm /tmp/environment.yml
-
-# Clone profam, patch missing __init__.py files, install
-RUN git clone --depth 1 https://github.com/alex-hh/profam.git /tmp/profam \
-    && touch /tmp/profam/src/sequence/__init__.py \
-             /tmp/profam/src/evaluators/__init__.py \
-             /tmp/profam/src/pipelines/__init__.py \
-    && micromamba run -n base pip install /tmp/profam \
-    && rm -rf /tmp/profam
-
-# Download gated ProFam-1 checkpoint from HuggingFace
-ARG HF_TOKEN
-USER root
-RUN mkdir -p /models/profam && chown ${MAMBA_USER}:${MAMBA_USER} /models/profam
-USER ${MAMBA_USER}
-RUN HF_TOKEN=${HF_TOKEN} micromamba run -n base python -c "\
-from huggingface_hub import snapshot_download; \
-snapshot_download('judewells/ProFam-1', \
-local_dir='/models/profam', \
-local_dir_use_symlinks=False)"
+# Runtime download into MODEL_DIR, SHA256 checked before loading. No weights or
+# Hugging Face credentials are baked into the image.
+ENV BOILEROOM_PROFAM_COMMIT=a19061606dc6469424035db3fdcaae6e63688017
+RUN python -c "from profam import ProFam; from profam.api import GenerationResult; assert callable(ProFam.generate)"

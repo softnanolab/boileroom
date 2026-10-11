@@ -1,42 +1,52 @@
 import json
 import pathlib
 import tempfile
-from typing import Generator, Optional
+from collections.abc import Generator
+from typing import Any
 
 import numpy as np
 import pytest
-from modal import enable_output
-
-from boileroom import Boltz2
-from boileroom.models.boltz.types import Boltz2Output
-from boileroom.constants import restype_3to1
-
 from biotite.structure import AtomArray, rmsd, superimpose
 from biotite.structure.io.pdbx import CIFFile, get_structure
 
+from boileroom import Boltz2
+from boileroom.constants import restype_3to1
+from boileroom.models.boltz.types import Boltz2Output
+from boileroom.msa_cache import MSACache
+
+pytestmark = [pytest.mark.integration, pytest.mark.slow, pytest.mark.gpu, pytest.mark.xdist_group("boltz2")]
 
 nipah_virus_sequence = "ICLQKTSNQILKPKLISYTLGQSGTCITDPLLAMDEGYFAYSHLERIGSCSRGVSKQRIIGVGEVLDRGDEVPSLFMTNVWTPPNPNTVYHCSAVYNNEFYYVLCAVSTVGDPILNSTYWSGSLMMTRLAVKPKSNGGGYNQHQLALRSIEKGRYDKVMPYGPSGIKQGDTLYFPAVGFLVRTEFKYNDSNCPITKCQYSKPENCRLSMGIRPNSHYILRSGLLKYNLSDGENPKVVFIEISDQRLSIGSPSKIYDSLGQPVFYQASFSWDTMIKFGDVLTVNPLVVNWRNNTVISRPGQSQCPRFNTCPEICWEGVYNDAFLIDRINWISAGVFLDSNQTAENPVFTVFKDNEILYRAQLASEDTNAQKTITNCFLLKNKIWCISLVEIYDTGDNVIRPKLFAVKIPEQCTH"
 
 
 @pytest.fixture(scope="module")
-def boltz2_model(config: Optional[dict] = None, gpu_device: Optional[str] = None) -> Generator[Boltz2, None, None]:
-    """Provide a Boltz2 model instance configured for the Modal backend.
+def boltz2_model(
+    backend_option: str,
+    device_option: str | None,
+    output_ctx,
+    config: dict | None = None,
+) -> Generator[Boltz2, None, None]:
+    """Provide a Boltz2 model instance configured for the selected backend.
 
     Parameters
     ----------
+    backend_option : str
+        Backend selector ("modal" or "apptainer[:<tag>]").
+    device_option : Optional[str]
+        Backend-resolved device string.
+    output_ctx : Callable
+        Factory yielding a backend-appropriate context manager.
     config : Optional[dict]
         Optional model configuration overrides to apply when constructing the Boltz2 instance.
-    gpu_device : Optional[str]
-        Optional device identifier to run the model on (for example, "cuda:0" or similar).
 
     Yields
     ------
     Boltz2
-        A Boltz2 instance configured with backend="modal", the specified device, and the provided configuration.
+        A Boltz2 instance configured for the chosen backend.
     """
     model_config = dict(config) if config is not None else {}
-    with enable_output():
-        yield Boltz2(backend="modal", device=gpu_device, config=model_config)
+    with output_ctx(), Boltz2(backend=backend_option, device=device_option, config=model_config) as model:
+        yield model
 
 
 def _recover_chain_sequences(atomarray: AtomArray) -> list[str]:
@@ -62,15 +72,15 @@ def _recover_chain_sequences(atomarray: AtomArray) -> list[str]:
     return chains
 
 
-def test_boltz2_nipah_matches_reference(gpu_device: Optional[str]):
+def test_boltz2_nipah_matches_reference(boltz2_model: Boltz2):
     """Run Boltz2 on the Nipah virus sequence and validate the predicted structure against reference data.
 
     Checks that required reference files exist, runs the model requesting all output fields, verifies an atom array was produced, compares C-alpha (CA) atoms between the predicted and reference structures, and asserts the superimposed CA RMSD is less than 0.5 Å.
 
     Parameters
     ----------
-    gpu_device : Optional[str]
-        GPU device identifier to use for the model, or `None` to run on CPU.
+    boltz2_model : Boltz2
+        Module-scoped Modal-backed Boltz2 model used for the model-family shard.
     """
     base_dir = pathlib.Path(__file__).resolve().parents[1] / "data" / "boltz"
     conf_path = base_dir / "confidence_0_model_0.json"
@@ -84,17 +94,9 @@ def test_boltz2_nipah_matches_reference(gpu_device: Optional[str]):
     assert pae_npz.exists(), "tests/data/boltz/pae_0_model_0.npz must exist"
     assert pde_npz.exists(), "tests/data/boltz/pde_0_model_0.npz must exist"
 
-    with enable_output():
-        model = Boltz2(
-            backend="modal",
-            device=gpu_device,
-            config={
-                "include_fields": ["*"],  # Request all fields for comprehensive testing
-            },
-        )
-        # Note: we cannot guarantee fully deterministic output across different hardware
-        # Current Boltz-2 implementation also does not set CUDA-based RNG to deterministic mode
-        out = model.fold(nipah_virus_sequence, options={"seed": 42})
+    # Note: we cannot guarantee fully deterministic output across different hardware.
+    # Current Boltz-2 implementation also does not set CUDA-based RNG to deterministic mode.
+    out = boltz2_model.fold(nipah_virus_sequence, options={"seed": 42, "include_fields": ["*"]})
 
     assert isinstance(out, Boltz2Output)
 
@@ -112,7 +114,7 @@ def test_boltz2_nipah_matches_reference(gpu_device: Optional[str]):
 
     # Ensure both structures have the same number of CA atoms
     assert len(predicted_ca) == len(reference_ca), (
-        f"Number of CA atoms must match: predicted has {len(predicted_ca)}, " f"reference has {len(reference_ca)}"
+        f"Number of CA atoms must match: predicted has {len(predicted_ca)}, reference has {len(reference_ca)}"
     )
 
     # Calculate RMSD between reference and superimposed predicted structure
@@ -123,11 +125,9 @@ def test_boltz2_nipah_matches_reference(gpu_device: Optional[str]):
     # TODO: check confidence metrics within tolerance
 
 
-def test_boltz2_minimal_output(test_sequences: dict[str, str], gpu_device: Optional[str]):
+def test_boltz2_minimal_output(test_sequences: dict[str, str], boltz2_model: Boltz2):
     """Test that Boltz2 returns minimal output by default (metadata + atom_array)."""
-    with enable_output():
-        model = Boltz2(backend="modal", device=gpu_device, config={})  # No include_fields = minimal output
-        out = model.fold(test_sequences["short"])
+    out = boltz2_model.fold(test_sequences["short"])
 
     assert isinstance(out, Boltz2Output)
     assert out.metadata is not None, "metadata should always be present"
@@ -153,8 +153,9 @@ def test_boltz2_msa_cache_hit(test_sequences: dict[str, str]):
     """
     pytest.importorskip("pytorch_lightning", reason="requires pytorch_lightning (backend dependency)")
     pytest.importorskip("boltz", reason="requires boltz (backend dependency)")
-    from boileroom.models.boltz.core import Boltz2Core
     import hashlib
+
+    from boileroom.models.boltz.core import Boltz2Core
 
     sequence = test_sequences["short"]
     seq_hash = hashlib.sha256(sequence.encode()).hexdigest()
@@ -249,10 +250,10 @@ def test_boltz2_msa_cache_per_chain_multimer_reuse(test_sequences: dict[str, str
         core = Boltz2Core(config={"device": "cpu", "cache_dir": str(cache_dir)})
         core._initialize()
 
-        # Compute hashes using the core's method
-        hash_aaaa = core._get_sequence_hash(sequence_aaaa)
-        hash_bbbb = core._get_sequence_hash(sequence_bbbb)
-        hash_cccc = core._get_sequence_hash(sequence_cccc)
+        # Compute hashes using the shared cache's key function
+        hash_aaaa = MSACache.hash_key(sequence_aaaa)
+        hash_bbbb = MSACache.hash_key(sequence_bbbb)
+        hash_cccc = MSACache.hash_key(sequence_cccc)
 
         msa_cache_dir = cache_dir / "msa_cache"
         index_path = msa_cache_dir / "msa_index.json"
@@ -368,7 +369,7 @@ def test_boltz2_msa_cache_integration(test_sequences: dict[str, str]):
         core = Boltz2Core(config={"device": "cpu", "cache_dir": str(cache_dir)})
         core._initialize()
 
-        seq_hash = core._get_sequence_hash(sequence)
+        seq_hash = MSACache.hash_key(sequence)
         msa_cache_dir = cache_dir / "msa_cache"
         index_path = msa_cache_dir / "msa_index.json"
 
@@ -403,10 +404,7 @@ def test_boltz2_msa_cache_integration(test_sequences: dict[str, str]):
             if len(lines) < 2:
                 return False
             # Check format of sequence lines (key,sequence)
-            for line in lines[1:]:
-                if "," not in line:
-                    return False
-            return True
+            return all("," in line for line in lines[1:])
 
         # First call - cache miss, should generate and save MSA
         out1 = core.fold(sequence)
@@ -447,9 +445,9 @@ def test_boltz2_msa_cache_integration(test_sequences: dict[str, str]):
 
         # The MSA file should not have been regenerated (modification time should be same or older)
         # Note: We check <= instead of == because file systems may update metadata
-        assert (
-            mtime_after_second_call <= mtime_before_second_call + 0.5
-        ), "Cached MSA file should not be regenerated (modification time check)"
+        assert mtime_after_second_call <= mtime_before_second_call + 0.5, (
+            "Cached MSA file should not be regenerated (modification time check)"
+        )
 
         # Verify MSA content is still valid and unchanged
         cached_msa_content_2 = read_msa_content(cached_msa_path_2)
@@ -485,3 +483,140 @@ def test_boltz2_msa_cache_integration(test_sequences: dict[str, str]):
         assert len(ca_atoms1) > 0, "First structure should have CA atoms"
         assert len(ca_atoms2) > 0, "Second structure should have CA atoms"
         assert len(ca_atoms1) == len(ca_atoms2), "Both structures should have same number of CA atoms"
+
+
+def test_boltz2_extract_sample_accepts_array_coords_without_truthiness_checks():
+    """Array-valued coordinates should bypass boolean fallback logic."""
+    pytest.importorskip("pytorch_lightning", reason="requires pytorch_lightning (backend dependency)")
+    pytest.importorskip("boltz", reason="requires boltz (backend dependency)")
+    from boileroom.models.boltz.core import Boltz2Core
+
+    core = Boltz2Core.__new__(Boltz2Core)
+    coords = np.array([[1.0, 2.0, 3.0]], dtype=np.float32)
+
+    extracted_coords, aggregated, plddt, pae, pde = core._extract_sample_from_pred({"sample_atom_coords": coords})
+
+    assert np.array_equal(extracted_coords, coords)
+    assert aggregated == {}
+    assert plddt is None
+    assert pae is None
+    assert pde is None
+
+
+def _make_stubbed_boltz_core(monkeypatch: pytest.MonkeyPatch, preds: list[dict[str, Any]]):
+    """Create a Boltz2Core whose fold path can run without backend inference."""
+    pytest.importorskip("pytorch_lightning", reason="requires pytorch_lightning (backend dependency)")
+    pytest.importorskip("boltz", reason="requires boltz (backend dependency)")
+    from boileroom.models.boltz.core import Boltz2Core
+
+    core = Boltz2Core(config={"device": "cpu", "cache_dir": tempfile.mkdtemp(), "msa_cache_enabled": True})
+    records: dict[str, Any] = {"cache_calls": [], "save_calls": [], "convert_plddt": None}
+
+    monkeypatch.setattr(
+        core,
+        "_check_msa_cache",
+        lambda sequences, *, cache_enabled: records["cache_calls"].append((list(sequences), cache_enabled)) or {},
+    )
+    monkeypatch.setattr(
+        core,
+        "_save_msas_to_cache",
+        lambda processed, individual_chains, out_dir, cached_sequences=None, *, cache_enabled: records[
+            "save_calls"
+        ].append((list(individual_chains), cache_enabled)),
+    )
+    monkeypatch.setattr(
+        core,
+        "_prepare_inputs",
+        lambda fasta_text, work_dir, cache_dir, config: {
+            "manifest": object(),
+            "targets_dir": work_dir / "processed" / "structures",
+        },
+    )
+    monkeypatch.setattr(core, "_build_datamodule", lambda processed, num_workers, cache_dir: object())
+    monkeypatch.setattr(core, "_predict_with_trainer", lambda datamodule: preds)
+
+    def fake_convert(coords, processed, plddt=None):
+        records["convert_plddt"] = plddt
+        return [f"atom-{idx}" for idx in range(len(coords))], [f"cif-{idx}" for idx in range(len(coords))]
+
+    monkeypatch.setattr(core, "_convert_outputs_using_boltz_structure", fake_convert)
+    monkeypatch.setattr(core, "_filter_include_fields", lambda output, include_fields: output)
+    return core, records
+
+
+def test_boltz2_default_config_omits_unsupported_msa_auth_keys():
+    """Unsupported MSA auth keys should not be advertised in the public config."""
+    pytest.importorskip("pytorch_lightning", reason="requires pytorch_lightning (backend dependency)")
+    pytest.importorskip("boltz", reason="requires boltz (backend dependency)")
+    from boileroom.models.boltz.core import Boltz2Core
+
+    for key in ("msa_server_username", "msa_server_password", "api_key_header", "api_key_value"):
+        assert key not in Boltz2Core.DEFAULT_CONFIG
+
+
+def test_boltz2_rejects_load_bound_options_per_call():
+    """Per-call overrides should reject load-bound settings that require model reconfiguration."""
+    pytest.importorskip("pytorch_lightning", reason="requires pytorch_lightning (backend dependency)")
+    pytest.importorskip("boltz", reason="requires boltz (backend dependency)")
+    from boileroom.models.boltz.core import Boltz2Core
+
+    core = Boltz2Core(config={"device": "cpu"})
+
+    with pytest.raises(ValueError, match="sampling_steps"):
+        core.fold("ACDE", options={"sampling_steps": 50})
+
+
+def test_boltz2_fold_uses_fresh_metadata_and_runtime_cache_toggle(monkeypatch: pytest.MonkeyPatch):
+    """Each fold() call should get fresh metadata and honor runtime cache toggles."""
+    preds = [{"sample_atom_coords": np.array([[1.0, 2.0, 3.0]], dtype=np.float32)}]
+    core, records = _make_stubbed_boltz_core(monkeypatch, preds)
+
+    out1 = core.fold("ACDE", options={"msa_cache_enabled": False})
+    out2 = core.fold("ACDE:FG", options={"msa_cache_enabled": True})
+
+    assert records["cache_calls"] == [(["ACDE", "FG"], True)]
+    assert records["save_calls"] == [(["ACDE", "FG"], True)]
+    assert out1.metadata is not out2.metadata
+    assert out1.metadata.sequence_lengths == [4]
+    assert out2.metadata.sequence_lengths == [6]
+    assert out1.metadata.preprocessing_time is not None
+    assert out2.metadata.preprocessing_time is not None
+
+
+def test_boltz2_fold_preserves_per_sample_alignment_for_optional_outputs(monkeypatch: pytest.MonkeyPatch):
+    """Optional per-sample outputs should stay aligned with the generated structures."""
+    sample_plddt = np.array([0.1, 0.2], dtype=np.float32)
+    sample_pae = np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32)
+    preds = [
+        {"sample_atom_coords": np.array([[1.0, 2.0, 3.0]], dtype=np.float32)},
+        {
+            "sample_atom_coords": np.array([[4.0, 5.0, 6.0]], dtype=np.float32),
+            "confidence_score": 0.9,
+            "ptm": 0.7,
+            "iptm": np.asarray(0.5, dtype=np.float32),
+            "plddt": sample_plddt,
+            "pae": sample_pae,
+        },
+    ]
+    core, records = _make_stubbed_boltz_core(monkeypatch, preds)
+
+    out = core.fold("ACDE", options={"include_fields": ["*"]})
+
+    assert out.atom_array == ["atom-0", "atom-1"]
+    assert out.confidence == [None, {"confidence_score": 0.9}]
+    assert out.ptm is not None
+    assert out.ptm[0] is None
+    np.testing.assert_allclose(out.ptm[1], np.array([0.7], dtype=np.float32))
+    assert out.iptm is not None
+    assert out.iptm[0] is None
+    np.testing.assert_allclose(out.iptm[1], np.array([0.5], dtype=np.float32))
+    assert out.plddt is not None
+    assert out.plddt[0] is None
+    assert np.array_equal(out.plddt[1], sample_plddt)
+    assert out.pae is not None
+    assert out.pae[0] is None
+    assert np.array_equal(out.pae[1], sample_pae)
+    assert out.pde is None
+    assert records["convert_plddt"] is not None
+    assert records["convert_plddt"][0] is None
+    assert np.array_equal(records["convert_plddt"][1], sample_plddt)

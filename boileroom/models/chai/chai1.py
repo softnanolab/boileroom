@@ -1,23 +1,23 @@
-import json
 import logging
-from typing import TYPE_CHECKING, Optional, Sequence, Union
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Any
 
 import modal
 
-from ...backend import ModalBackend
-from ...backend.base import Backend
-from ...backend.modal import app
-from .image import chai_image
+from ...backend.modal import get_modal_app
+from ...backend.modal_server import ModalFoldServer
 from ...base import ModelWrapper
 from ...images.volumes import model_weights
 from ...utils import MINUTES, MODAL_MODEL_DIR
-
-if TYPE_CHECKING:
-    pass
-
+from ..registry import CHAI1_SPEC
+from .image import chai_image
 from .types import Chai1Output
 
+if TYPE_CHECKING:
+    from .core import Chai1Core
+
 logger = logging.getLogger(__name__)
+app = get_modal_app("chai1")
 
 
 ############################################################
@@ -30,41 +30,15 @@ logger = logging.getLogger(__name__)
     scaledown_window=10 * MINUTES,
     volumes={MODAL_MODEL_DIR: model_weights},  # TODO: somehow link this to what Chai-1 actually uses
 )
-class ModalChai1:
-    """
-    Modal-specific wrapper around `Chai1Core`.
-    """
+class ModalChai1(ModalFoldServer):
+    """Modal-specific wrapper around `Chai1Core`."""
 
     config: bytes = modal.parameter(default=b"{}")
 
-    @modal.enter()
-    def _initialize(self) -> None:
-        """Instantiate Chai1Core from the JSON-encoded `self.config` bytes and perform its initialization.
-
-        This decodes `self.config` as UTF-8 JSON, constructs a Chai1Core with the resulting dict, and calls its `_initialize` method.
-        """
+    def _build_core(self, config: dict[str, Any]) -> "Chai1Core":
         from .core import Chai1Core
 
-        self._core = Chai1Core(json.loads(self.config.decode("utf-8")))
-        self._core._initialize()
-
-    @modal.method()
-    def fold(self, sequences: Union[str, Sequence[str]], options: Optional[dict] = None) -> "Chai1Output":
-        """Run structure prediction for the given sequence(s) and return the assembled prediction output.
-
-        Parameters
-        ----------
-        sequences : str | Sequence[str]
-            One sequence string or a sequence of sequence strings. Individual entries may contain multiple chains separated by ":"; when provided as a single string that contains ":" the string will be split into chains.
-        options : dict, optional
-            Per-call configuration overrides merged with the model's default configuration to control sampling, device, and which result fields to include.
-
-        Returns
-        -------
-        Chai1Output
-            Prediction results and associated metadata for the provided sequence(s).
-        """
-        return self._core.fold(sequences, options=options)
+        return Chai1Core(config)
 
 
 ############################################################
@@ -79,7 +53,9 @@ class Chai1(ModelWrapper):
     # with proper documentation.
     """
 
-    def __init__(self, backend: str = "modal", device: Optional[str] = None, config: Optional[dict] = None) -> None:
+    MODEL_SPEC = CHAI1_SPEC
+
+    def __init__(self, backend: str = "modal", device: str | None = None, config: dict | None = None) -> None:
         """Create a Chai1 model wrapper and start the selected backend.
 
         Parameters
@@ -98,33 +74,16 @@ class Chai1(ModelWrapper):
         ValueError
             If an unsupported backend string is provided.
         """
-        if config is None:
-            config = {}
-        self.config = config
-        self.device = device
-        backend_type, backend_tag = ModelWrapper.parse_backend(backend)
-        backend_instance: Backend
-        if backend_type == "modal":
-            backend_instance = ModalBackend(ModalChai1, config, device=device)
-        elif backend_type == "apptainer":
-            from ...backend.apptainer import ApptainerBackend
+        super().__init__(backend=backend, device=device, config=config)
+        self._initialize_backend_from_spec(self.MODEL_SPEC, backend=backend, device=device, config=config)
 
-            # Pass Core class as string path to avoid importing it in main process
-            core_class_path = "boileroom.models.chai.core.Chai1Core"
-            image_uri = f"docker://docker.io/jakublala/boileroom-chai1:{backend_tag}"
-            backend_instance = ApptainerBackend(core_class_path, image_uri, config or {}, device=device)
-        else:
-            raise ValueError(f"Backend {backend_type} not supported")
-        self._backend = backend_instance
-        self._backend.start()
-
-    def fold(self, sequences: Union[str, Sequence[str]], options: Optional[dict] = None) -> "Chai1Output":
-        """Run structure prediction for the given sequence(s) using the configured backend.
+    def fold(self, sequences: str | Sequence[str], options: dict | None = None) -> "Chai1Output":
+        """Run structure prediction for a single top-level sequence entry using the configured backend.
 
         Parameters
         ----------
         sequences : str | Sequence[str]
-            A single sequence or a sequence of sequences to predict. Each sequence may contain multiple chains separated by ":"; currently the implementation expects a single batch.
+            A single sequence string or a one-item sequence containing a single sequence string. Use ":" inside that sequence to join multiple chains for multimer prediction.
         options : dict | None, optional
             Per-call configuration overrides merged with the model's default config (e.g., include_fields, constraint_path, device-specific options).
 
@@ -132,5 +91,23 @@ class Chai1(ModelWrapper):
         -------
         Chai1Output
             Prediction results including metadata, generated atom arrays, and any requested confidence metrics or CIF output.
+
+        Raises
+        ------
+        ValueError
+            If more than one top-level sequence entry is provided. Chai-1 currently supports a single input per call; use ":" to join chains for multimers.
         """
+        if not isinstance(sequences, str) and len(sequences) != 1:
+            raise ValueError(
+                "Chai-1 currently supports exactly one top-level sequence per call; use ':' to join chains."
+            )
+        if options is not None:
+            from .core import Chai1Core
+
+            conflicting_keys = sorted(set(options) & Chai1Core.STATIC_CONFIG_KEYS)
+            if conflicting_keys:
+                raise ValueError(
+                    "The following config keys can only be set at initialization and cannot be "
+                    f"overridden per-call: {conflicting_keys}"
+                )
         return self._call_backend_method("fold", sequences, options=options)

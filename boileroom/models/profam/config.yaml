@@ -1,3 +1,4 @@
 supported_cuda:
-  - "11.8"
   - "12.6"
+supported_platforms:
+  - "linux/amd64"

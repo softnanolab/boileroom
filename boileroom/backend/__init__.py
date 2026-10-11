@@ -3,8 +3,8 @@ import sys
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .modal import ModalBackend
     from .apptainer import ApptainerBackend
+    from .modal import ModalBackend
 
 __all__ = ["ModalBackend", "ApptainerBackend"]
 

@@ -1,25 +1,25 @@
 """ESMFold implementation for protein structure prediction using Meta AI's ESM-2 model."""
 
-import json
 import logging
-from typing import TYPE_CHECKING, Optional, Sequence, Union
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Any
 
 import modal
 
-from ...backend import ModalBackend
-from ...backend.base import Backend
-from ...backend.modal import app
+from ...backend.modal import get_modal_app
+from ...backend.modal_server import ModalFoldServer
 from ...base import ModelWrapper
-from .image import esm_image
 from ...images.volumes import model_weights
 from ...utils import MINUTES, MODAL_MODEL_DIR
-
-if TYPE_CHECKING:
-    pass
-
+from ..registry import ESMFOLD_SPEC
+from .image import esm_image
 from .types import ESMFoldOutput
 
+if TYPE_CHECKING:
+    from .core import ESMFoldCore
+
 logger = logging.getLogger(__name__)
+app = get_modal_app("esmfold")
 
 ############################################################
 # CORE ALGORITHM
@@ -36,41 +36,15 @@ logger = logging.getLogger(__name__)
     scaledown_window=10 * MINUTES,
     volumes={MODAL_MODEL_DIR: model_weights},
 )
-class ModalESMFold:
-    """
-    Modal-specific wrapper around `ESMFoldCore`.
-    """
+class ModalESMFold(ModalFoldServer):
+    """Modal-specific wrapper around `ESMFoldCore`."""
 
     config: bytes = modal.parameter(default=b"{}")
 
-    @modal.enter()
-    def _initialize(self) -> None:
-        """Create an ESMFoldCore from this object's JSON-encoded config and initialize it.
-
-        This sets the instance attribute `self._core` to the constructed ESMFoldCore and calls its initialization routine.
-        """
+    def _build_core(self, config: dict[str, Any]) -> "ESMFoldCore":
         from .core import ESMFoldCore
 
-        self._core = ESMFoldCore(json.loads(self.config.decode("utf-8")))
-        self._core._initialize()
-
-    @modal.method()
-    def fold(self, sequences: Union[str, Sequence[str]], options: Optional[dict] = None) -> "ESMFoldOutput":
-        """Run structure prediction for one or more protein sequences using the configured backend.
-
-        Parameters
-        ----------
-        sequences : str | Sequence[str]
-            A single amino-acid sequence or a sequence of sequences to predict.
-        options : dict, optional
-            Per-call configuration overrides (for example, include_fields to select which output fields to include). Keys in this dict override non-static entries of the model config for this prediction.
-
-        Returns
-        -------
-        ESMFoldOutput
-            Prediction results and associated metadata for each input sequence.
-        """
-        return self._core.fold(sequences, options=options)
+        return ESMFoldCore(config)
 
 
 ############################################################
@@ -85,7 +59,9 @@ class ESMFold(ModelWrapper):
     # with proper documentation.
     """
 
-    def __init__(self, backend: str = "modal", device: Optional[str] = None, config: Optional[dict] = None) -> None:
+    MODEL_SPEC = ESMFOLD_SPEC
+
+    def __init__(self, backend: str = "modal", device: str | None = None, config: dict | None = None) -> None:
         """Initialize the ESMFold high-level model wrapper and start the selected backend.
 
         Parameters
@@ -104,27 +80,10 @@ class ESMFold(ModelWrapper):
         ValueError
             If an unsupported backend string is provided.
         """
-        if config is None:
-            config = {}
-        self.config = config
-        self.device = device
-        backend_type, backend_tag = ModelWrapper.parse_backend(backend)
-        backend_instance: Backend
-        if backend_type == "modal":
-            backend_instance = ModalBackend(ModalESMFold, config, device=device)
-        elif backend_type == "apptainer":
-            from ...backend.apptainer import ApptainerBackend
+        super().__init__(backend=backend, device=device, config=config)
+        self._initialize_backend_from_spec(self.MODEL_SPEC, backend=backend, device=device, config=config)
 
-            # Pass Core class as string path to avoid importing it in main process
-            core_class_path = "boileroom.models.esm.core.ESMFoldCore"
-            image_uri = f"docker://docker.io/jakublala/boileroom-esm:{backend_tag}"
-            backend_instance = ApptainerBackend(core_class_path, image_uri, config or {}, device=device)
-        else:
-            raise ValueError(f"Backend {backend_type} not supported")
-        self._backend = backend_instance
-        self._backend.start()
-
-    def fold(self, sequences: Union[str, Sequence[str]], options: Optional[dict] = None) -> "ESMFoldOutput":
+    def fold(self, sequences: str | Sequence[str], options: dict | None = None) -> "ESMFoldOutput":
         """Predict protein structure(s) for the provided sequence or sequences using the configured backend.
 
         Parameters

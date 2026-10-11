@@ -6,6 +6,7 @@ on:
 
 jobs:
   build-and-publish:
+    if: ${{ github.event.release.prerelease == false }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -16,9 +17,14 @@ jobs:
           python-version: '3.12'
 
       - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-suffix: pypi-publish
+
+      - name: Apply release version
         run: |
-          curl -LsSf https://astral.sh/uv/install.sh | sh
-          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+          uv run --no-project --with click python ./scripts/ci/derive_version.py --release-tag "${GITHUB_REF_NAME}" --write-pyproject pyproject.toml
 
       - name: Build and publish to PyPI
         run: |

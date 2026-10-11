@@ -1,0 +1,45 @@
+version: 1
+
+model_family:
+  # Files every model family must provide.
+  required_files:
+    - __init__.py
+    - core.py
+    - types.py
+    - image.py
+  # Files required only for families that build their own runtime image.
+  # Families that share another family's image (e.g. esm3 reusing the esmfold2
+  # Biohub image) are exempt from these.
+  image_owner_files:
+    - Dockerfile
+    - requirements.txt
+    - config.yaml
+
+  lightweight_types:
+    allowed_import_roots:
+      - __future__
+      - collections
+      - dataclasses
+      - enum
+      - numpy
+      - pathlib
+      - typing
+    allowed_import_modules:
+      - boileroom.base
+      - boileroom.inputs
+      - boileroom.models.protenix.types
+    forbidden_import_roots:
+      - biotite
+      - boltz
+      - chai_lab
+      - esm
+      - fastapi
+      - modal
+      - pydantic
+      - torch
+      - transformers
+
+registry:
+  required_backends:
+    - modal
+    - apptainer
