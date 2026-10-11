@@ -32,6 +32,7 @@ from boileroom.models.sae.types import SAEFeaturesOutput
 pytestmark = pytest.mark.contract
 
 SAMPLE_INPUTS: dict[str, Any] = {
+    "profam": ["ACDEFGHIKLMNPQRSTVWY", "ACDEFGHIKLMNPQRSTVWF"],
     "esmfold": "MLKNVHVLVLGAGDVGSVVVRLLEK",
     "esm2": ["MALWMRLLPLLALLALWGPDPAAA"],
     "esmc": ["ACD:EF"],
@@ -79,6 +80,10 @@ def _make_metadata(model_name: str) -> PredictionMetadata:
 
 
 def _make_output(spec: ModelSpec) -> object:
+    if spec.key == "profam":
+        from boileroom.models.profam.types import ProFamOutput
+
+        return ProFamOutput(metadata=_make_metadata(spec.public_name), sequences=["ACD"], log_likelihoods=[-0.5])
     if spec.key == "esm2":
         return ESM2Output(
             embeddings=np.zeros((1, 3, 8), dtype=np.float32),
@@ -170,6 +175,12 @@ class _FakeModel:
 
     def embed(self, *args: Any, **kwargs: Any) -> object:
         self._records["method"] = "embed"
+        self._records["call_args"] = args
+        self._records["call_kwargs"] = kwargs
+        return self._result
+
+    def generate(self, *args: Any, **kwargs: Any) -> object:
+        self._records["method"] = "generate"
         self._records["call_args"] = args
         self._records["call_kwargs"] = kwargs
         return self._result
@@ -284,16 +295,17 @@ def test_public_wrapper_dispatch_uses_shared_initializer(monkeypatch: pytest.Mon
     records: dict[str, Any] = {}
     _install_fake_initializer(monkeypatch, records, output)
 
-    wrapper = wrapper_cls(backend="apptainer:dev", device="cuda:0", config={"include_fields": ["*"]})
+    config: dict[str, Any] = {"include_fields": ["*"]} if spec.contract.supports_include_fields else {"num_samples": 1}
+    wrapper = wrapper_cls(backend="apptainer:dev", device="cuda:0", config=config)
 
     assert records["model_spec"] is spec
     assert records["backend"] == "apptainer:dev"
     assert records["device"] == "cuda:0"
-    assert records["config"] == {"include_fields": ["*"]}
+    assert records["config"] == config
     assert wrapper.model_spec is spec
     assert wrapper.backend == "apptainer:dev"
     assert wrapper.device == "cuda:0"
-    assert wrapper.config == {"include_fields": ["*"]}
+    assert wrapper.config == config
     assert records["started"] is True
 
     call_input = SAMPLE_INPUTS[spec.key]

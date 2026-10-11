@@ -196,6 +196,13 @@ class FoldRequest(BaseModel):
     options: dict[str, Any] | None = None
 
 
+class GenerateRequest(BaseModel):
+    """One raw family prompt and optional sampling settings."""
+
+    sequences: str | list[str]
+    options: dict[str, Any] | None = None
+
+
 class InverseFoldRequest(BaseModel):
     """Request model for inverse_fold endpoint."""
 
@@ -310,6 +317,24 @@ async def inverse_fold(request: InverseFoldRequest) -> JSONResponse:
     except Exception as e:
         logger.error(f"Inverse folding failed: {str(e)}", exc_info=True)
         return _error_response("Inverse folding failed", e)
+
+
+@app.post("/generate")
+async def generate(request: GenerateRequest) -> JSONResponse:
+    """Generate sequences with signed output and explicit unsupported/input errors."""
+    if _model_instance is None:
+        raise HTTPException(status_code=503, detail="Model not loaded")
+    if not callable(getattr(_model_instance, "generate", None)):
+        raise HTTPException(status_code=501, detail="Loaded model does not support generation")
+    try:
+        output = _model_instance.generate(request.sequences, options=request.options)
+        record_gpu_memory(output)
+        return JSONResponse(content=_serialize_output(output))
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=f"Invalid generation input: {error}") from error
+    except Exception as error:
+        logger.error(f"Generation failed: {error}", exc_info=True)
+        return _error_response("Generation failed", error)
 
 
 @app.post("/fold")

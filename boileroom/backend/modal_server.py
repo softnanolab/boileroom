@@ -8,7 +8,7 @@ and constructs its core. Everything else lives here, once:
   a missing kit or a failed load is raised from the first call instead of putting the container into Modal's silent
   restart loop;
 - ``@modal.exit()`` closes the core;
-- ``fold`` (:class:`ModalFoldServer`) or ``embed`` (:class:`ModalEmbedServer`) forwards to the loaded core.
+- ``fold`` (:class:`ModalFoldServer`) ``embed`` (:class:`ModalEmbedServer`), or ``generate`` (:class:`ModalGenerateServer`) forwards to the loaded core.
 
 Modal collects ``@modal.enter``/``@modal.exit``/``@modal.method`` through the class's MRO, so these hooks are registered
 for every subclass. It reads ``modal.parameter()`` declarations only from the decorated class's own ``__dict__``, which is
@@ -27,7 +27,7 @@ from ..provenance import record_gpu_memory
 class ModalCoreServer:
     """Lifecycle shared by every model's Modal class: build the guarded core on enter, close it on exit.
 
-    Subclasses implement :meth:`_build_core` and inherit from :class:`ModalFoldServer` or :class:`ModalEmbedServer`
+    Subclasses implement :meth:`_build_core` and inherit from :class:`ModalFoldServer`, :class:`ModalEmbedServer`, or :class:`ModalGenerateServer`
     for the forwarding method.
 
     Attributes
@@ -121,5 +121,16 @@ class ModalEmbedServer(ModalCoreServer):
             the call in ``metadata.runtime`` (see :func:`~boileroom.provenance.record_gpu_memory`).
         """
         output = self._loaded_core().embed(sequences, options=options)
+        record_gpu_memory(output)
+        return output
+
+
+class ModalGenerateServer(ModalCoreServer):
+    """Modal class body for family-conditioned sequence generation."""
+
+    @modal.method()
+    def generate(self, sequences: Any, options: dict[str, Any] | None = None) -> Any:
+        """Generate sequences and record post-call GPU memory provenance."""
+        output = self._loaded_core().generate(sequences, options=options)
         record_gpu_memory(output)
         return output

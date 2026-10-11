@@ -13,3 +13,15 @@ When you construct `ESMFold(backend="modal", device="T4", config={...})`:
 3. The backend instantiates `ModalESMFold` (with `.with_options(gpu=device)` when provided) and exposes its remote methods. Calls like `model.fold([...])` delegate to `self._backend.model.fold.remote(...)`.
 
 Model-specific test shards can run in parallel without importing unrelated GPU functions into each Modal app. The integration suite marks each model with an xdist group and runs with `--dist loadgroup`, so each worker executes tests for only one Modal app. To run the same tests in series, omit xdist and run `uv run pytest -v -m integration`; the integration-test workflow also exposes a manual `series` execution mode. Parallelism still needs to match the number of remote classes under test, since Modal keeps a container alive per active class.
+
+### Family-conditioned generation
+
+`GenerationAlgorithm.generate()` returns a lightweight `GenerationOutput` with
+metadata, generated sequences and sampling log-probabilities. ProFam extends it
+with actual conditioning prompts. The registry declares `task_method="generate"`
+and `task_kind="generation"`; a sequence list is a family prompt rather than
+independent jobs. Modal uses `ModalGenerateServer` and its shared guarded core
+lifecycle. Apptainer exposes `/generate` and verifies the same HMAC-signed
+serialization as `/fold` and `/embed`. Unsupported tasks return 501, invalid
+inputs 422, unloaded models 503, and unexpected model failures 500. Both backends
+record post-call memory provenance. Generation does not implement output filtering.

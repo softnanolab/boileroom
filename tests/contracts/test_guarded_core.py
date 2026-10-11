@@ -39,6 +39,7 @@ class _FakeCore(Algorithm):
         return ("predicted", sequences)
 
     embed = fold
+    generate = fold
 
     def inverse_fold(self, sequence: str, backbone_coordinates: Any, positions: list[int]) -> tuple[str, Any]:
         return ("inverse-folded", sequence)
@@ -144,11 +145,11 @@ def test_modal_registers_the_shared_hooks_for_every_class(spec: ModelSpec, modal
     from modal._partial_function import _PartialFunctionFlags as Flags
     from modal.cls import _get_class_constructor_signature
 
-    from boileroom.backend.modal_server import ModalCoreServer, ModalEmbedServer, ModalFoldServer
+    from boileroom.backend.modal_server import ModalCoreServer, ModalEmbedServer, ModalFoldServer, ModalGenerateServer
 
     user_cls = resolve_object(modal_class_path)._get_user_cls()
     task_method = spec.contract.task_method
-    server = {"fold": ModalFoldServer, "embed": ModalEmbedServer}[task_method]
+    server = {"fold": ModalFoldServer, "embed": ModalEmbedServer, "generate": ModalGenerateServer}[task_method]
     assert issubclass(user_cls, server)
 
     assert _modal_hooks(user_cls, Flags.ENTER_POST_SNAPSHOT) == _modal_hooks(ModalCoreServer, Flags.ENTER_POST_SNAPSHOT)

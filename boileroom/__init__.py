@@ -1,6 +1,10 @@
 # Lazy imports to avoid importing modal when not needed (e.g., in image-backed runtimes)
 def __getattr__(name: str):
     """Lazy import for model classes to avoid importing modal dependencies."""
+    if name == "ProFam":
+        from .models import ProFam
+
+        return ProFam
     if name == "ESMFold":
         from .models import ESMFold
 
@@ -53,6 +57,7 @@ def __getattr__(name: str):
 
 
 __all__ = [
+    "ProFam",
     "ESMFold",
     "ESM2",
     "ESMFold2",

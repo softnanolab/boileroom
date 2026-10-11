@@ -38,7 +38,7 @@ def test_publishing_matrix_selects_models_and_supported_platforms(models: str, p
     amd_models = {row["model"] for row in amd64}
     arm_models = {row["model"] for row in arm64}
     if not models or promote == "true":
-        assert amd_models == {"alphafold", "protenix", "opendde", "boltz", "chai", "esm", "esmfold2", "rf3"}
+        assert amd_models == {"alphafold", "protenix", "opendde", "boltz", "chai", "esm", "esmfold2", "rf3", "profam"}
         assert arm_models == {"boltz", "chai", "esm", "esmfold2"}
     elif models == "esm3":
         assert amd_models == arm_models == {"esmfold2"}

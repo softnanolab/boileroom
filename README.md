@@ -13,6 +13,7 @@
 > ⚠️ **Note:** This package is currently in active development. The API and features may change between versions. We recommend pinning your version in production environments.
 
 ## Features
+- 🧬 Family-conditioned protein sequence generation with [ProFam](docs/models.md#profam)
 
 - 🚀 Modal and Apptainer execution backends
 - 🔄 Unified API across different models and runtimes

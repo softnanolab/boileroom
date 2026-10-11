@@ -99,6 +99,11 @@ _PROTENIX_OPTIONS = {"include_fields": ["plddt", "pae"]}
 _MODES = ("vanilla", "exact")
 
 CASES: tuple[MemoryCase, ...] = (
+    MemoryCase(
+        "profam",
+        SHORT,
+        config={"num_samples": 1, "max_generated_length": 24, "minimum_sequence_length_proportion": 0.1, "seed": 42},
+    ),
     MemoryCase("esmfold", SHORT),
     MemoryCase("esm2", SHORT),
     MemoryCase("esmc", SHORT),

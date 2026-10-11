@@ -80,6 +80,21 @@ class EmbeddingPrediction(Protocol):
     hidden_states: np.ndarray | None = None
 
 
+@dataclass
+class GenerationOutput:
+    """Generated sequences and their mean per-token sampling log-probabilities.
+
+    Scores use the post-temperature, post-nucleus sampling distribution (including
+    terminal tokens where present). They describe sampling confidence, not experimental fitness or the
+    full-sequence likelihood. A family prompt is one generation input, even
+    when it contains several homologous sequences.
+    """
+
+    metadata: PredictionMetadata
+    sequences: list[str]
+    log_likelihoods: list[float]
+
+
 class Algorithm(ABC):
     """Abstract base class for algorithms."""
 
@@ -285,6 +300,15 @@ class Algorithm(ABC):
             sequences = [sequences]
 
         return [seq for seq in sequences if validate_sequence(seq)]
+
+
+class GenerationAlgorithm(Algorithm):
+    """Base interface for generation conditioned on a family of sequences."""
+
+    @abstractmethod
+    def generate(self, sequences: str | Sequence[str], options: dict | None = None) -> GenerationOutput:
+        """Generate sequences conditioned on the supplied family prompt."""
+        raise NotImplementedError
 
 
 class FoldingAlgorithm(Algorithm):

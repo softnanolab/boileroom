@@ -757,7 +757,7 @@ class ApptainerBackend(Backend):
                 f"/usr/local/bin/python{self._python_version}",
                 container_server_path,
                 "--host",
-                "0.0.0.0",
+                "127.0.0.1",
                 "--port",
                 str(self._port),
             ]
@@ -998,6 +998,10 @@ class _ApptainerModelProxy:
             "positions": [int(position) for position in positions],
         }
         return self._post("/inverse_fold", payload)
+
+    def generate(self, sequences: str | list[str], options: dict | None = None) -> Any:
+        """Generate sequences via the signed HTTP transport."""
+        return self._post("/generate", {"sequences": sequences, "options": options})
 
     def fold(self, sequences: str | list[str], options: dict | None = None) -> Any:
         """Fold sequences by making a POST request to /fold.

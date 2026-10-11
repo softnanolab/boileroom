@@ -6,8 +6,8 @@ from typing import Any, Literal
 
 from ..images.metadata import get_model_image_spec
 
-TaskMethod = Literal["fold", "embed"]
-TaskKind = Literal["structure", "embedding"]
+TaskMethod = Literal["fold", "embed", "generate"]
+TaskKind = Literal["structure", "embedding", "generation"]
 
 ESM_IMAGE_NAME = get_model_image_spec("esm").image_name
 ESMFOLD2_IMAGE_NAME = get_model_image_spec("esmfold2").image_name
@@ -436,7 +436,28 @@ ALPHAFOLD2_MULTIMER_SPEC = ModelSpec(
     ),
 )
 
+PROFAM_SPEC = ModelSpec(
+    key="profam",
+    public_name="ProFam",
+    family="profam",
+    wrapper_class_path="boileroom.models.profam.profam.ProFam",
+    modal_class_path="boileroom.models.profam.profam.ModalProFam",
+    apptainer_core_class_path="boileroom.models.profam.core.ProFamCore",
+    apptainer_image_name=get_model_image_spec("profam").image_name,
+    supported_backends=("modal", "apptainer"),
+    contract=ModelContract(
+        task_method="generate",
+        task_kind="generation",
+        static_config_keys=frozenset({"device", "cache_dir", "dtype", "attn_implementation"}),
+        minimal_output_fields=("metadata", "sequences", "log_likelihoods", "conditioning_prompts"),
+        supports_batch=False,
+        supports_include_fields=False,
+    ),
+)
+
+
 MODEL_SPECS = (
+    PROFAM_SPEC,
     ESMFOLD_SPEC,
     ESM2_SPEC,
     ESMFOLD2_SPEC,
@@ -465,6 +486,7 @@ def get_model_spec(identifier: str) -> ModelSpec:
 
 
 __all__ = [
+    "PROFAM_SPEC",
     "ALPHAFOLD2_MULTIMER_SPEC",
     "BOLTZ2_SPEC",
     "CHAI1_SPEC",

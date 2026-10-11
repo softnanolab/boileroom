@@ -159,6 +159,13 @@ BASE_IMAGE_SPEC: Final = RuntimeImageSpec(
 
 MODEL_IMAGE_SPECS: Final[tuple[RuntimeImageSpec, ...]] = (
     RuntimeImageSpec(
+        key="profam",
+        image_name="boileroom-profam",
+        dockerfile_relative_path="boileroom/models/profam/Dockerfile",
+        context_relative_path="boileroom/models/profam",
+        config_relative_path="boileroom/models/profam/config.yaml",
+    ),
+    RuntimeImageSpec(
         key="alphafold",
         image_name="boileroom-alphafold2-multimer",
         dockerfile_relative_path="boileroom/models/alphafold/Dockerfile",

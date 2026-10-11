@@ -390,3 +390,144 @@ complex_input = StructurePredictionInput(
 )
 complex_result = full_model.fold(complex_input, options={"include_fields": ["cif", "iptm"]})
 ```
+
+### ProFam
+
+`ProFam.generate()` accepts one raw, ungapped family prompt: a string or a list of
+homologous uppercase canonical amino-acid sequences. A list is **one prompt**, not
+a batch of independent jobs. FASTA paths/text, A3M insertions/gaps, noncanonical
+residues, colon-separated chains, user MSAs/templates, and `include_fields` are
+refused. All output fields are lightweight and always returned.
+
+```python
+from boileroom import ProFam
+
+with ProFam(backend="modal", config={"num_samples": 2}) as model:
+    result = model.generate(
+        ["ACDEFGHIKLMNPQRSTVWY", "ACDEFGHIKLMNPQRSTVWF"],
+        options={"sampler": "ensemble", "num_prompts_in_ensemble": 2, "seed": 42},
+    )
+    print(result.sequences)
+    print(result.log_likelihoods)
+    print(result.conditioning_prompts)
+```
+
+The wrapper supports both `single` and `ensemble` sampling through the upstream
+public API. `conditioning_prompts` records the actual sequences and accessions
+selected after shuffling and truncation; supply `prompt_accessions` to retain your
+identifiers. `num_prompts_in_ensemble` is capped upstream by the number of family
+sequences. `max_context_tokens` defaults to 4096 and cannot exceed the 8192-token
+training context. The effective generation cap is the smaller of
+`max_generated_length` (when supplied) and
+`floor(longest_prompt_length * max_sequence_length_multiplier)` (default 1.2).
+Single sampling requires `max_context_tokens > longest_prompt_length + cap + 3`.
+For ensemble sampling, the pinned upstream builder reserves
+`R=floor(1.2*longest_prompt_length)` regardless of the requested cap. Boileroom
+conservatively requires `cap <= R` and
+`floor((max_context_tokens-R)/2) >= longest_prompt_length+3`. These bounds
+ensure every shuffled family member fits even the smallest randomly chosen
+context budget; they avoid upstream empty-prompt and context-overflow edge cases.
+The effective cap must be at least three tokens, matching upstream generation. Generated sequences can be shorter than the cap. `maximum_retries`
+bounds upstream filtering attempts. Upstream eventually fills remaining samples
+without filters; Boileroom rechecks minimum length, the effective cap and every
+prefix against the 9-mer/9-repeat guard and raises if fallback breaks those
+requirements. An incomplete result also raises. Temperature, top-p, length filtering,
+repeat guarding, ensemble reduction and seed are per-call settings.
+
+`log_likelihoods` retains the original PR's field name but means upstream's **mean
+per-token natural log sampling probability**: temperature-scaled and bad-token
+masked and nucleus-truncated/renormalized, including terminal `[SEP]` if emitted.
+Single sampling uses Transformers post-warper generation scores; ensemble
+sampling uses its renormalized nucleus probabilities after prompt aggregation.
+This follows the pinned sampler implementation; the upstream API docstring
+incorrectly describes these as pre-top-p scores. The two implementations also
+use different nucleus selection details, so compare each with its own sampler
+reference, not with each other. These are neither full-sequence
+likelihoods nor ProFam's separate `.score()` output, fitness, or experimental
+validation. Boileroom exposes generation only; upstream scoring, identity
+filtering (which requires MMseqs), continuous sampling and the older
+`match_representative_length` option are not exposed.
+
+Runtime image: `boileroom-profam`, CUDA 12.6, Linux AMD64, default Modal T4.
+`dtype="auto"` resolves to float32 on CPU, float16 on CUDA capability <8.0 and
+bfloat16 on >=8.0; attention defaults to SDPA (explicit `eager` is supported).
+FlashAttention is not installed or silently selected. Device, dtype, attention
+and cache location are initialization-only. Apptainer CPU selection remains CPU
+even on a CUDA-capable host; selected physical CUDA devices are mapped to the
+container-local device zero. Conflicting top-level and config device selectors
+are refused. Failed loading releases partial models held in exception frames
+before a guarded retry; original exception types and chains are retained. Reuse one model context across calls;
+weights are loaded once and released when the backend shuts down. Runtime
+metadata records installed package versions, source/checkpoint identity,
+resolved dtype/attention/device, sampler and seed. GPU-backed outputs also include
+the shared memory counters. A seed does not promise equality across hardware or
+runtime versions.
+
+Upstream audit (2026-10-11): source is pinned to
+[`a19061606dc6469424035db3fdcaae6e63688017`](https://github.com/alex-hh/profam/commit/a19061606dc6469424035db3fdcaae6e63688017),
+which includes the modern `profam` namespace/API and checkpoint RoPE correction.
+The PyPI package still reports 0.1.8, but that March release predates the April
+API fixes; the runtime therefore pins the reviewed source commit. Both upstream
+code and the [ProFam-1 model card](https://huggingface.co/judewells/ProFam-1) are
+MIT-licensed. The public checkpoint is currently ungated.
+
+Only `judewells/ProFam-1` revision
+`fe4084f356480fd048a23097fcc133f1e5ba019d`, file `checkpoints/last.ckpt`, is loaded.
+Before the upstream Lightning pickle loader runs, Boileroom verifies SHA256
+`8ec54d80323f188d3454fb4457f63f12158fe55552b919554806b12730c30e08` against the
+[pinned Hub LFS metadata](https://huggingface.co/api/models/judewells/ProFam-1/tree/fe4084f356480fd048a23097fcc133f1e5ba019d/checkpoints).
+Arbitrary checkpoint paths/repositories/revisions are refused. The ~1.51 GB
+artifact is downloaded at runtime, anonymously, into `MODEL_DIR/profam` (or an
+explicit `cache_dir`); the image contains no weights or Hugging Face credentials.
+An altered cache entry fails closed before deserialization. This replaces the
+old draft's `checkpoint_path` option and build-time gated download.
+
+Validation commands:
+
+```bash
+uv run --extra dev pytest tests/profam -m "not integration"
+# Paid / hardware-backed checks require separate authorization:
+uv run --extra dev pytest tests/profam/test_profam_integration.py -m integration --backend modal --gpu L4
+uv run --extra dev pytest tests/test_memory_stability.py -m integration -k profam --backend modal --gpu L4
+```
+
+For a source-only branch, the manual **Integration Tests** workflow accepts
+`run-target=profam` with `validation-mode=core` (default) and builds the canonical base + family Dockerfiles in a temporary
+Modal app, without publishing an image. Its bounded harness records stock-API
+adapter parity for both samplers and ensemble reductions, multi-sample ordering,
+seed repeatability on one stack, real signed loopback HTTP, context responsiveness,
+4 cycles of 3 allocation shapes for both samplers, and post-close release. It
+records actual sequences/scores, pins, phase failures and memory traces as artifacts.
+RCSB 1UBQ/1CRN sequences plus explicitly synthetic point variants are controlled
+inputs, not biological validation. The teacher-forced context-response check is
+separate from generation-score parity and makes no fitness claim. Loopback HTTP
+does not establish that the Apptainer launcher or its SIF worked.
+
+Two separately selected follow-ons use the real public wrapper: `public-modal`
+uses the actual Modal class/backend, a test-scoped source image and ephemeral
+weights volume, while `cpu-sif` builds the canonical Docker image into a local
+Apptainer SIF on a standard public Ubuntu 22.04 runner and calls the real CPU
+backend. Neither publishes an image or changes production image lookup. Their
+short completions verify transport/lifecycle, not full-length quality. CPU SIF
+requires enough available RAM/disk and working unprivileged namespaces; a missing
+capability is reported as unrun rather than bypassing host security. The launcher
+records image/SIF identity and verifies its own processes/apps are stopped;
+Modal cleanup additionally waits for zero running tasks. ProFam GPU selection is
+allowlisted to T4 (default) or a separate L4 follow-on for the bfloat16 path. The
+core harness reports live CUDA tensors and allocator blocks after close, then
+uses the documented Torch 2.6 cuBLAS workspace-clear hook only in the test
+process to distinguish framework workspaces from retained model tensors. It
+keeps the 16 MiB unexplained-allocation gate, requires zero remaining live CUDA
+tensors, and repeats loading/generation/release with a fresh model. App time/resource
+bounds are not an enforced dollar spending cap.
+
+The public registry backends need an image published under a validation tag; use `--image-tag` / `BOILEROOM_IMAGE_TAG` for that exact image.
+Passing mocked tests establishes API/lifecycle/transport behavior, not scientific
+performance or container/GPU validation. See the PR's latest verification report
+for actual backend, image and device coverage.
+
+The upstream Lightning loader deserializes the full checkpoint twice while
+initializing the model; CPU RAM requirements exceed the final model tensor size.
+The Modal class requests 16 GiB RAM. A local CPU smoke on a constrained executor
+was killed with exit 137 during loading, after the official checkpoint checksum
+was verified; package imports alone do not establish successful weight loading.
