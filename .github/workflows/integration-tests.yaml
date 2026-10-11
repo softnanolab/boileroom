@@ -13,6 +13,23 @@ on:
           - minifold
           - profam
           - full-suite
+      validation-mode:
+        description: "Selected model gate; run public-modal only after a passing core gate"
+        required: false
+        default: "core"
+        type: choice
+        options:
+          - core
+          - public-modal
+          - cpu-sif
+      profam-gpu:
+        description: "ProFam GPU only; L4 follow-on after the T4 gate passes"
+        required: false
+        default: "T4"
+        type: choice
+        options:
+          - T4
+          - L4
       minifold-size:
         description: "Exactly one MiniFold variant; ignored for other targets"
         required: false
@@ -120,11 +137,14 @@ jobs:
     # This route never runs on push, schedule, workflow_run, or a default dispatch.
     if: >-
       github.event_name == 'workflow_dispatch' &&
-      (inputs.run-target == 'minifold' || inputs.run-target == 'profam')
+      (inputs.run-target == 'minifold' || inputs.run-target == 'profam') &&
+      inputs.validation-mode != 'cpu-sif'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
       VALIDATION_MODEL: ${{ inputs.run-target }}
+      VALIDATION_MODE: ${{ inputs.validation-mode || 'core' }}
+      PROFAM_GPU: ${{ inputs.profam-gpu || 'T4' }}
       MINIFOLD_SIZE: ${{ inputs.minifold-size || '12L' }}
       MODAL_CONFIG_PATH: /dev/null
       ARTIFACT_DIR: /tmp/boileroom-validation-${{ github.run_id }}-${{ github.run_attempt }}
@@ -147,9 +167,13 @@ jobs:
 
       - name: Plan selected validation without contacting Modal
         run: |
+          gpu_args=()
+          if [ "$VALIDATION_MODEL" = "profam" ]; then
+            gpu_args=(--profam-gpu "$PROFAM_GPU")
+          fi
           uv run --no-project python scripts/testing/run_model_validation.py \
-            --model "$VALIDATION_MODEL" --minifold-size "$MINIFOLD_SIZE" \
-            --expected-sha "$GITHUB_SHA" --output-dir "$ARTIFACT_DIR"
+            --model "$VALIDATION_MODEL" --mode "$VALIDATION_MODE" --minifold-size "$MINIFOLD_SIZE" \
+            --expected-sha "$GITHUB_SHA" --output-dir "$ARTIFACT_DIR" "${gpu_args[@]}"
 
       - name: Run one bounded source-image validation
         timeout-minutes: 55
@@ -159,10 +183,15 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          uv run --no-project --with modal==1.3.0.post1 \
+          gpu_args=()
+          if [ "$VALIDATION_MODEL" = "profam" ]; then
+            gpu_args=(--profam-gpu "$PROFAM_GPU")
+          fi
+          uv run --no-project --with modal==1.3.0.post1 --with numpy==2.2.6 \
+            --with httpx --with pyyaml --with biotite --with scipy \
             python -u scripts/testing/run_model_validation.py \
-            --model "$VALIDATION_MODEL" --minifold-size "$MINIFOLD_SIZE" \
-            --expected-sha "$GITHUB_SHA" --output-dir "$ARTIFACT_DIR" --execute \
+            --model "$VALIDATION_MODEL" --mode "$VALIDATION_MODE" --minifold-size "$MINIFOLD_SIZE" \
+            --expected-sha "$GITHUB_SHA" --output-dir "$ARTIFACT_DIR" "${gpu_args[@]}" --execute \
             2>&1 | tee "$ARTIFACT_DIR/launcher.log"
 
       - name: Stop only this validation's temporary apps
@@ -180,7 +209,87 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: model-validation-${{ inputs.run-target }}-${{ inputs.minifold-size || '12L' }}-${{ github.sha }}-${{ github.run_attempt }}
+          name: model-validation-${{ inputs.run-target }}-${{ inputs.validation-mode || 'core' }}-${{ inputs.minifold-size || '12L' }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ env.ARTIFACT_DIR }}/
+          if-no-files-found: warn
+          retention-days: 14
+
+  cpu-sif-validation:
+    # Explicit CPU-only follow-on; never publishes images or receives Modal credentials.
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      (inputs.run-target == 'minifold' || inputs.run-target == 'profam') &&
+      inputs.validation-mode == 'cpu-sif'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    env:
+      GITHUB_REPOSITORY_VISIBILITY: ${{ github.event.repository.visibility }}
+      VALIDATION_MODEL: ${{ inputs.run-target }}
+      MINIFOLD_SIZE: ${{ inputs.minifold-size || '12L' }}
+      ARTIFACT_DIR: /tmp/boileroom-cpu-sif-${{ github.run_id }}-${{ github.run_attempt }}
+      APPTAINER_PACKAGE: /tmp/apptainer-1.5.4-${{ github.run_id }}-${{ github.run_attempt }}.deb
+    steps:
+      - name: Checkout exact selected commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: false
+
+      - name: Install verified official non-setuid Apptainer
+        timeout-minutes: 5
+        run: |
+          curl --fail --location --proto '=https' --tlsv1.2 --max-time 180 \
+            https://github.com/apptainer/apptainer/releases/download/v1.5.4/apptainer_1.5.4_amd64.deb \
+            --output "$APPTAINER_PACKAGE"
+          echo "281cf9bd68f16b6f7c34a3a94d77668bc327b9c09db0412ce7890162734a97f7  $APPTAINER_PACKAGE" | sha256sum --check -
+          sudo apt-get update
+          sudo apt-get install -y "$APPTAINER_PACKAGE"
+          apptainer --version
+
+      - name: Plan selected CPU SIF validation
+        run: |
+          uv run --no-project python scripts/testing/run_cpu_sif_validation.py \
+            --model "$VALIDATION_MODEL" --minifold-size "$MINIFOLD_SIZE" \
+            --expected-sha "$GITHUB_SHA" --output-dir "$ARTIFACT_DIR" \
+            --apptainer-package "$APPTAINER_PACKAGE"
+
+      - name: Build local canonical SIF and validate one public CPU backend
+        timeout-minutes: 55
+        shell: bash
+        run: |
+          set -o pipefail
+          uv run --no-project --with modal==1.3.0.post1 --with numpy==2.2.6 \
+            --with httpx --with pyyaml --with biotite --with scipy \
+            python -u scripts/testing/run_cpu_sif_validation.py \
+            --model "$VALIDATION_MODEL" --minifold-size "$MINIFOLD_SIZE" \
+            --expected-sha "$GITHUB_SHA" --output-dir "$ARTIFACT_DIR" \
+            --apptainer-package "$APPTAINER_PACKAGE" --execute \
+            2>&1 | tee "$ARTIFACT_DIR/launcher.log"
+
+      - name: Clean only this CPU validation's temporary resources
+        if: always()
+        timeout-minutes: 2
+        run: |
+          if [ -f "$ARTIFACT_DIR/run.json" ]; then
+            uv run --no-project python scripts/testing/run_cpu_sif_validation.py \
+              --model "$VALIDATION_MODEL" --output-dir "$ARTIFACT_DIR" --cleanup-only
+          fi
+
+      - name: Upload CPU SIF evidence and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: model-validation-${{ inputs.run-target }}-cpu-sif-${{ inputs.minifold-size || '12L' }}-${{ github.sha }}-${{ github.run_attempt }}
           path: ${{ env.ARTIFACT_DIR }}/
           if-no-files-found: warn
           retention-days: 14
