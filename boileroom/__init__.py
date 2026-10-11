@@ -1,6 +1,10 @@
-# Lazy imports to avoid importing modal when not needed (e.g., in conda backend)
+# Lazy imports to avoid importing modal when not needed (e.g., in image-backed runtimes)
 def __getattr__(name: str):
     """Lazy import for model classes to avoid importing modal dependencies."""
+    if name == "MiniFold":
+        from .models import MiniFold
+
+        return MiniFold
     if name == "ESMFold":
         from .models import ESMFold
 
@@ -9,6 +13,18 @@ def __getattr__(name: str):
         from .models import ESM2
 
         return ESM2
+    if name == "ESMC":
+        from .models import ESMC
+
+        return ESMC
+    if name == "ESM3":
+        from .models import ESM3
+
+        return ESM3
+    if name == "ESMFold2":
+        from .models import ESMFold2
+
+        return ESMFold2
     if name == "Chai1":
         from .models import Chai1
 
@@ -17,11 +33,41 @@ def __getattr__(name: str):
         from .models import Boltz2
 
         return Boltz2
-    if name == "MiniFold":
-        from .models import MiniFold
+    if name == "Protenix":
+        from .models import Protenix
 
-        return MiniFold
+        return Protenix
+    if name == "OpenDDE":
+        from .models import OpenDDE
+
+        return OpenDDE
+    if name == "RF3":
+        from .models import RF3
+
+        return RF3
+    if name == "AlphaFold2Multimer":
+        from .models import AlphaFold2Multimer
+
+        return AlphaFold2Multimer
+    if name == "SAE":
+        from .models import SAE
+
+        return SAE
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
-__all__ = ["ESMFold", "ESM2", "Chai1", "Boltz2", "MiniFold"]
+__all__ = [
+    "MiniFold",
+    "ESMFold",
+    "ESM2",
+    "ESMFold2",
+    "ESMC",
+    "ESM3",
+    "Chai1",
+    "Boltz2",
+    "SAE",
+    "Protenix",
+    "OpenDDE",
+    "RF3",
+    "AlphaFold2Multimer",
+]

@@ -1,12 +1,24 @@
-ARG BASE_IMAGE=docker.io/jakublala/boileroom-base:latest
+# syntax=docker/dockerfile:1.7
+# BuildKit platform arguments
+ARG TARGETPLATFORM
+ARG TARGETARCH
+ARG TARGETOS
+ARG BUILDPLATFORM
+
+ARG BASE_IMAGE=docker.io/jakublala/boileroom-base:local
 FROM ${BASE_IMAGE}
 
-# Use micromamba run to ensure python and pip in mamba-user env.
-RUN micromamba run -n base python -m pip install --no-cache-dir \
-    --extra-index-url https://download.pytorch.org/whl/cu118 \
-    torch==2.5.1 \
-    hf_transfer==0.1.8 \
-    chai_lab==0.6.1
+COPY requirements.txt /tmp/requirements.txt
+
+ARG TORCH_WHEEL_INDEX=https://download.pytorch.org/whl/cu118
+ARG UV_CACHE_ID=boileroom-uv
+ENV PIP_EXTRA_INDEX_URL=${TORCH_WHEEL_INDEX}
+ENV UV_INDEX=${TORCH_WHEEL_INDEX}
+ENV UV_INDEX_STRATEGY=unsafe-best-match
+
+RUN --mount=type=cache,id=${UV_CACHE_ID},target=/root/.cache/uv \
+    uv pip install --system -r /tmp/requirements.txt \
+    && rm /tmp/requirements.txt
 
 ENV HF_HUB_ENABLE_HF_TRANSFER=1 \
     DISABLE_PANDERA_IMPORT_WARNING=True

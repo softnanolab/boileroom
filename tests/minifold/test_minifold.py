@@ -1,175 +1,374 @@
-import pytest
+"""Offline MiniFold input, output, lifecycle, and download regressions."""
+
+import hashlib
+from contextlib import contextmanager
+from io import StringIO
+from types import ModuleType, SimpleNamespace
+from typing import Any
+from unittest.mock import Mock
+
 import numpy as np
-from typing import Generator, Optional
-from modal import enable_output
+import pytest
 
-from boileroom import MiniFold
-from boileroom.models.minifold.core import MiniFoldCore
-from boileroom.models.minifold.types import MiniFoldOutput
-from biotite.structure import AtomArray
+pytestmark = pytest.mark.contract
 
 
-# Module scope keeps a single Modal container alive for the duration of the suite.
-@pytest.fixture(scope="module")
-def minifold_model(gpu_device: Optional[str] = None) -> Generator[MiniFold, None, None]:
-    """Provide a configured MiniFold model instance for tests."""
-    with enable_output():
-        yield MiniFold(backend="modal", device=gpu_device, config={})
+@pytest.fixture
+def core(monkeypatch):
+    """Build a CPU fake without importing MiniFold or acquiring weights."""
+    torch = pytest.importorskip("torch")
+    from boileroom.models.minifold.core import MiniFoldCore
+
+    constants: Any = ModuleType("minifold.utils.residue_constants")
+    constants.atom_types = ["N", "CA", "C", "CB", "O"] + [f"C{i}" for i in range(32)]
+    constants.restype_1to3 = {"A": "ALA", "C": "CYS", "D": "ASP", "E": "GLU"}
+    monkeypatch.setitem(__import__("sys").modules, constants.__name__, constants)
+    core = MiniFoldCore({"device": "cpu"})
+    core._device = torch.device("cpu")
+    core.ready = True
+    seen = []
+
+    def prepare(sequence):
+        seen.append(sequence)
+        return {"seq": torch.zeros((1, len(sequence)), dtype=torch.long)}
+
+    def predict(batch, num_recycling):
+        length = batch["seq"].shape[1]
+        mask = torch.zeros((1, length, 37))
+        mask[:, :, :5] = 1
+        return {
+            "final_atom_positions": torch.arange(length * 37 * 3).reshape(1, length, 37, 3),
+            "final_atom_mask": mask,
+            "plddt": torch.full((1, length), 50.0),
+        }
+
+    core.model = Mock(side_effect=predict)
+    core.alphabet = object()
+    monkeypatch.setattr(core, "_prepare_input", prepare)
+    monkeypatch.setattr(core, "seen", seen, raising=False)
+    return core
 
 
-def test_minifold_basic(test_sequences: dict[str, str], minifold_model: MiniFold):
-    """Test basic MiniFold functionality with minimal output."""
-    result = minifold_model.fold(test_sequences["short"])
-
-    assert isinstance(result, MiniFoldOutput), "Result should be a MiniFoldOutput"
-    assert result.metadata is not None, "metadata should always be present"
-    assert result.atom_array is not None, "atom_array should always be generated"
-    assert len(result.atom_array) > 0, "atom_array should contain at least one structure"
-    assert isinstance(result.atom_array[0], AtomArray), "atom_array elements should be AtomArray"
-
-    # With minimal output, pdb/cif should be None
-    assert result.pdb is None, "pdb should be None in minimal output"
-    assert result.cif is None, "cif should be None in minimal output"
-
-
-def test_minifold_full_output(test_sequences: dict[str, str], gpu_device: Optional[str]):
-    """Test MiniFold with full output requested."""
-    with enable_output():
-        model = MiniFold(backend="modal", device=gpu_device, config={"include_fields": ["*"]})
-        result = model.fold(test_sequences["short"])
-
-    assert isinstance(result, MiniFoldOutput), "Result should be a MiniFoldOutput"
-
-    assert result.plddt is not None, "plddt should be present in full output"
-    assert len(result.plddt) == 1, "plddt should have one entry for single sequence"
-    assert np.all(result.plddt[0] >= 0), "pLDDT scores should be non-negative"
-    assert np.all(result.plddt[0] <= 100), "pLDDT scores should be less than or equal to 100"
-
-    assert result.pdb is not None, "pdb should be present in full output"
-    assert result.cif is not None, "cif should be present in full output"
+def test_batches_are_unpadded_ordered_and_use_one_resident_model(core):
+    first = core.fold(["ACDE", "AC"], {"include_fields": ["*"]})
+    model = core.model
+    second = core.fold("ACD", {"include_fields": ["plddt"]})
+    assert core.model is model
+    assert core.seen == ["ACDE", "AC", "ACD"]
+    assert [call.args[0]["seq"].shape for call in model.call_args_list] == [(1, 4), (1, 2), (1, 3)]
+    assert first.metadata is not second.metadata
+    assert first.metadata.sequence_lengths == [4, 2]
+    assert second.metadata.sequence_lengths == [3]
+    assert len(first.atom_array) == 2
+    assert first.plddt[0].shape == (4,)
+    np.testing.assert_array_equal(first.residue_index, [[0, 1, 2, 3], [0, 1, -1, -1]])
+    np.testing.assert_array_equal(first.chain_index, [[0, 0, 0, 0], [0, 0, -1, -1]])
+    np.testing.assert_allclose(first.plddt[0], 0.5)
+    np.testing.assert_allclose(first.atom_array[0].b_factor, 50.0)
+    assert first.metadata.inference_time >= 0
+    assert first.metadata.runtime["minifold.batch_mode"] == "sequential-unpadded"
+    assert first.pae is None
+    core.close()
+    assert not core.ready and core.model is None and core.alphabet is None
 
 
-def test_minifold_batch(test_sequences: dict[str, str], gpu_device: Optional[str]):
-    """Test MiniFold batch prediction."""
-    with enable_output():
-        model = MiniFold(backend="modal", device=gpu_device, config={"include_fields": ["*"]})
-        sequences = [test_sequences["short"], test_sequences["medium"]]
-        result = model.fold(sequences)
+@pytest.mark.parametrize("fields", [None, [], ["plddt"], ["pdb"], ["cif"], ["*"]])
+def test_output_filtering_and_signed_transport(core, fields):
+    from boileroom.backend.transport import deserialize_transport_payload, serialize_transport_payload
 
-    assert result.atom_array is not None, "atom_array should be present"
-    assert len(result.atom_array) == 2, "Should have two atom arrays for two sequences"
-
-    assert result.plddt is not None, "plddt should be present"
-    assert len(result.plddt) == 2, "Should have two plddt arrays for two sequences"
-
-    # Check sequence lengths match
-    assert len(result.plddt[0]) == len(test_sequences["short"]), "plddt length should match short sequence"
-    assert len(result.plddt[1]) == len(test_sequences["medium"]), "plddt length should match medium sequence"
+    result = core.fold("ACD", {"include_fields": fields})
+    result = deserialize_transport_payload(serialize_transport_payload(result, "test-secret"), "test-secret")
+    assert result.metadata.sequence_lengths == [3]
+    assert len(result.atom_array) == 1
+    assert (result.plddt is not None) == bool(fields and ("plddt" in fields or "*" in fields))
+    assert (result.pdb is not None) == bool(fields and ("pdb" in fields or "*" in fields))
+    assert (result.cif is not None) == bool(fields and ("cif" in fields or "*" in fields))
 
 
-def test_minifold_multimer(test_sequences: dict[str, str], gpu_device: Optional[str]):
-    """Test MiniFold multimer functionality."""
-    with enable_output():
-        model = MiniFold(backend="modal", device=gpu_device, config={"include_fields": ["*"]})
-        result = model.fold(test_sequences["multimer"])
+def test_structural_numbering_and_confidence_agree_across_formats(core):
+    from biotite.structure.io import pdb, pdbx
 
-    assert result.pdb is not None, "PDB output should be generated"
-    assert result.residue_index is not None, "residue_index should be generated"
-    assert result.chain_index is not None, "chain_index should be generated"
-
-    # The multimer test sequence is two identical 54-residue chains
-    n_residues = len(test_sequences["multimer"].replace(":", ""))
-    chain_len = 54  # Each chain is 54 residues
-
-    assert np.all(result.residue_index[0][:chain_len] == np.arange(0, chain_len)), "First chain residue index mismatch"
-    assert np.all(
-        result.residue_index[0][chain_len:n_residues] == np.arange(0, chain_len)
-    ), "Second chain residue index mismatch"
-    assert np.all(result.chain_index[0][:chain_len] == 0), "First chain index mismatch"
-    assert np.all(result.chain_index[0][chain_len:n_residues] == 1), "Second chain index mismatch"
-
-    # Check chain assignments in atom array
-    structure = result.atom_array[0]
-    unique_chains = np.unique(structure.chain_id)
-    assert len(unique_chains) == 2, f"Expected 2 chains, got {len(unique_chains)}"
+    result = core.fold("ACD", {"include_fields": ["*"]})
+    expected = result.atom_array[0]
+    pdb_atoms = pdb.get_structure(pdb.PDBFile.read(StringIO(result.pdb[0])), model=1, extra_fields=["b_factor"])
+    cif_atoms = pdbx.get_structure(pdbx.CIFFile.read(StringIO(result.cif[0])), model=1, extra_fields=["b_factor"])
+    for atoms in (pdb_atoms, cif_atoms):
+        np.testing.assert_array_equal(atoms.res_id, expected.res_id)
+        np.testing.assert_allclose(atoms.coord, expected.coord)
+        np.testing.assert_allclose(atoms.b_factor, 50.0)
+    assert min(expected.res_id) == 1
+    assert max(expected.res_id) == 3
 
 
-def test_minifold_output_pdb_cif(test_sequences: dict[str, str], gpu_device: Optional[str]):
-    """Validate that MiniFold produces consistent PDB, CIF, and AtomArray outputs."""
-    from io import StringIO
-    from biotite.structure.io.pdb import PDBFile
-
-    with enable_output():
-        model = MiniFold(backend="modal", device=gpu_device, config={"include_fields": ["pdb", "atom_array"]})
-        sequences = [test_sequences["short"], test_sequences["medium"]]
-        result = model.fold(sequences)
-
-    assert result.pdb is not None, "PDB output should be generated"
-    assert result.cif is None, "CIF output should be None (not requested)"
-    assert result.atom_array is not None, "Atom array output should always be generated"
-
-    assert len(result.pdb) == len(result.atom_array) == len(sequences) == 2, "Batch output match"
-
-    short_pdb = PDBFile.read(StringIO(result.pdb[0])).get_structure(model=1)
-    short_atomarray = result.atom_array[0]
-
-    # Check residues are 0-indexed
-    num_residues = len(sequences[0])
-    assert np.all(
-        np.unique(short_atomarray.res_id) == np.arange(0, num_residues)
-    ), "AtomArray residues should be 0-indexed"
-
-    # Compare coordinates with tolerance
-    assert np.allclose(
-        short_pdb.coord, short_atomarray.coord, atol=0.1
-    ), "Atom coordinates should be equal within 0.1A tolerance"
-
-    # Compare other attributes exactly
-    assert np.array_equal(short_pdb.chain_id, short_atomarray.chain_id), "Chain IDs should match exactly"
-    assert np.array_equal(short_pdb.res_id, short_atomarray.res_id), "Residue IDs should match exactly"
-    assert np.array_equal(short_pdb.res_name, short_atomarray.res_name), "Residue names should match exactly"
-    assert np.array_equal(short_pdb.atom_name, short_atomarray.atom_name), "Atom names should match exactly"
+@pytest.mark.parametrize("sequences", [[], "", ["AC", ""], "AC:DE", "AC:DE:FG", [None], "AC?D", "acd", "A" * 2049])
+def test_invalid_input_refused_before_load(core, monkeypatch, sequences):
+    loader = Mock()
+    monkeypatch.setattr(core, "_load", loader)
+    with pytest.raises((ValueError, TypeError)):
+        core.fold(sequences)
+    loader.assert_not_called()
+    core.model.assert_not_called()
 
 
-def test_minifold_static_config_enforcement(test_sequences: dict[str, str]):
-    """Test that static config keys cannot be overridden in options."""
-    core = MiniFoldCore(config={"device": "cpu"})
-    # device is a static config key
-    with pytest.raises(ValueError, match="device"):
-        core.fold(test_sequences["short"], options={"device": "cuda:0"})
+@pytest.mark.parametrize(
+    "config",
+    [
+        {"model_size": "6L"},
+        {"num_recycling": -1},
+        {"num_recycling": True},
+        {"max_sequence_length": 0},
+        {"max_sequence_length": 2.5},
+        {"compile": "yes"},
+        {"kernels": True},
+        {"glycine_linker": "GG"},
+        {"msa": [">a\nAC"]},
+        {"templates": {"x": "data_x"}},
+        {"bogus": True},
+    ],
+)
+def test_invalid_config_refused_without_model_dependencies(config):
+    from boileroom.models.minifold.core import MiniFoldCore
+
+    with pytest.raises(ValueError):
+        MiniFoldCore(config)
 
 
-def test_sequence_validation(test_sequences: dict[str, str]):
-    """Test sequence validation in MiniFoldCore."""
-    core = MiniFoldCore(config={"device": "cpu"})
+def test_static_options_and_nonkit_mode_refused_before_load(core, monkeypatch):
+    from boileroom.models.minifold.core import MiniFoldCore
+    from boileroom.optimization import OptimizationUnavailableError
 
-    # Test single sequence
-    single_seq = test_sequences["short"]
-    validated = core._validate_sequences(single_seq)
-    assert isinstance(validated, list), "Single sequence should be converted to list"
-    assert len(validated) == 1, "Should contain one sequence"
-    assert validated[0] == single_seq, "Sequence should be unchanged"
-
-    # Test sequence list
-    seq_list = [test_sequences["short"], test_sequences["medium"]]
-    validated = core._validate_sequences(seq_list)
-    assert isinstance(validated, list), "Should return a list"
-    assert len(validated) == 2, "Should contain two sequences"
-    assert validated == seq_list, "Sequences should be unchanged"
-
-    # Test invalid sequence
-    with pytest.raises(ValueError) as exc_info:
-        core._validate_sequences(test_sequences["invalid"])
-    assert "Invalid amino acid" in str(exc_info.value), f"Expected 'Invalid amino acid', got {str(exc_info.value)}"
+    monkeypatch.setattr(core, "_load", Mock())
+    for key in core.STATIC_CONFIG_KEYS:
+        with pytest.raises(ValueError, match="initialization"):
+            core.fold("AC", {key: core.config[key]})
+    with pytest.raises(OptimizationUnavailableError):
+        MiniFoldCore({"optimization": "exact"})
+    core._load.assert_not_called()
 
 
-def test_minifold_model_sizes(test_sequences: dict[str, str], gpu_device: Optional[str]):
-    """Verify that both 48L and 12L model sizes can be used."""
-    for model_size in ["48L", "12L"]:
-        with enable_output():
-            model = MiniFold(backend="modal", device=gpu_device, config={"model_size": model_size})
-            result = model.fold(test_sequences["short"])
+def test_nonfinite_output_refused(core):
+    torch = pytest.importorskip("torch")
+    result = core.model({"seq": torch.zeros((1, 2))}, 1)
+    result["plddt"][0, 0] = float("nan")
+    core.model = Mock(return_value=result)
+    with pytest.raises(RuntimeError, match="non-finite"):
+        core.fold("AC")
 
-        assert isinstance(result, MiniFoldOutput), f"Result should be MiniFoldOutput for {model_size}"
-        assert result.atom_array is not None, f"atom_array should be generated for {model_size}"
-        assert len(result.atom_array) > 0, f"atom_array should contain structures for {model_size}"
+
+def test_cpu_autocast_does_not_request_cuda_or_bfloat16(core, monkeypatch):
+    import torch
+
+    autocast = Mock(side_effect=AssertionError("autocast unexpectedly enabled"))
+    monkeypatch.setattr(torch, "autocast", autocast)
+    core.fold("AC")
+    autocast.assert_not_called()
+
+
+def test_checkpoint_download_is_pinned_atomic_verified_and_reused(tmp_path, monkeypatch):
+    from boileroom.models.minifold import loading
+
+    payload = b"verified checkpoint fixture"
+    monkeypatch.setitem(loading.CHECKPOINT_SHA256, "12L", hashlib.sha256(payload).hexdigest())
+    response = Mock()
+    response.iter_bytes.return_value = [payload[:5], payload[5:]]
+
+    @contextmanager
+    def stream(method, url, **kwargs):
+        assert method == "GET" and loading.CHECKPOINT_REVISION in url
+        assert kwargs["timeout"].connect == 30.0 and kwargs["timeout"].read == 120.0
+        yield response
+
+    mocked = Mock(side_effect=stream)
+    monkeypatch.setattr(loading.httpx, "stream", mocked)
+    path = loading.checkpoint_path(tmp_path, "12L")
+    assert path.read_bytes() == payload
+    assert list(tmp_path.iterdir()) == [path]
+    assert loading.checkpoint_path(tmp_path, "12L") == path
+    assert mocked.call_count == 1
+    path.write_bytes(b"corrupted")
+    response.iter_bytes.return_value = [payload]
+    assert loading.checkpoint_path(tmp_path, "12L").read_bytes() == payload
+    assert mocked.call_count == 2
+
+
+@pytest.mark.parametrize("failure", ["http", "checksum", "interrupted"])
+def test_failed_download_leaves_no_partial_file(tmp_path, monkeypatch, failure):
+    from boileroom.models.minifold import loading
+
+    @contextmanager
+    def stream(*args, **kwargs):
+        response = Mock()
+        if failure == "http":
+            response.raise_for_status.side_effect = RuntimeError("HTTP failure")
+        if failure == "interrupted":
+
+            def interrupted(**kwargs):
+                yield b"partial"
+                raise RuntimeError("connection lost")
+
+            response.iter_bytes.side_effect = interrupted
+        else:
+            response.iter_bytes.return_value = [b"bad checksum"]
+        yield response
+
+    monkeypatch.setattr(loading.httpx, "stream", stream)
+    with pytest.raises(RuntimeError):
+        loading.checkpoint_path(tmp_path, "12L")
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_checkpoint_rejects_missing_learned_parameters():
+    from boileroom.models.minifold.loading import load_state_dict
+
+    model = Mock()
+    model.named_buffers.return_value = [("lm.layers.0.self_attn.rot_emb.inv_freq", object())]
+    model.named_parameters.return_value = [
+        ("lm.layers.0.weight", SimpleNamespace(requires_grad=False)),
+        ("lm.layers.34.weight", SimpleNamespace(requires_grad=True)),
+    ]
+    model.load_state_dict.return_value = SimpleNamespace(
+        missing_keys=["lm.layers.0.weight", "lm.layers.0.self_attn.rot_emb.inv_freq"], unexpected_keys=[]
+    )
+    load_state_dict(model, {"model._orig_mod.fold.weight": 1, "loss.boundaries": 2})
+    model.load_state_dict.assert_called_once_with({"fold.weight": 1}, strict=False)
+    model.load_state_dict.return_value = SimpleNamespace(missing_keys=["fold.weight"], unexpected_keys=[])
+    with pytest.raises(RuntimeError, match="checkpoint mismatch"):
+        load_state_dict(model, {})
+    model.load_state_dict.return_value = SimpleNamespace(missing_keys=["lm.layers.34.weight"], unexpected_keys=[])
+    with pytest.raises(RuntimeError, match="checkpoint mismatch"):
+        load_state_dict(model, {})
+    model.load_state_dict.return_value = SimpleNamespace(
+        missing_keys=["lm.layers.34.self_attn.rot_emb.inv_freq"], unexpected_keys=[]
+    )
+    with pytest.raises(RuntimeError, match="checkpoint mismatch"):
+        load_state_dict(model, {})
+
+
+@pytest.fixture
+def loader_case(monkeypatch, tmp_path):
+    """Exercise the real loader control flow without allocating model weights."""
+    import sys
+
+    import torch
+
+    from boileroom.models.minifold import core as module
+
+    model = Mock()
+    model.to.return_value = model
+    model.eval.return_value = model
+    model.lm.alphabet = object()
+    model.named_parameters.return_value = []
+    model.named_buffers.return_value = []
+    model.load_state_dict.return_value = SimpleNamespace(missing_keys=[], unexpected_keys=[])
+    factory = Mock(return_value=model)
+    config_module: Any = ModuleType("minifold.data.config")
+    config_module.model_config = Mock(return_value=SimpleNamespace(data={}))
+    model_module: Any = ModuleType("minifold.model.model")
+    model_module.MiniFoldModel = factory
+    monkeypatch.setitem(sys.modules, config_module.__name__, config_module)
+    monkeypatch.setitem(sys.modules, model_module.__name__, model_module)
+    checkpoint = {
+        "hyper_parameters": {"esm_model_name": module.ESM_MODEL_NAME, "num_blocks": 12, "no_bins": 64},
+        "state_dict": {"model.fold.weight": 1},
+    }
+    monkeypatch.setattr(module, "checkpoint_path", Mock(return_value=tmp_path / "checkpoint"))
+    safe_load = Mock(return_value=checkpoint)
+    monkeypatch.setattr(torch, "load", safe_load)
+    instance = module.MiniFoldCore({"device": "cpu", "cache_dir": str(tmp_path)})
+    return instance, model, factory, safe_load
+
+
+def test_loader_is_resident_safe_and_reuses_esm_alphabet(loader_case):
+    import torch
+
+    instance, model, factory, safe_load = loader_case
+    original_cache = torch.hub.get_dir()
+    instance._load()
+    instance._load()
+    factory.assert_called_once()
+    assert safe_load.call_args.kwargs == {"map_location": "cpu", "weights_only": True}
+    assert instance.alphabet is model.lm.alphabet
+    assert torch.hub.get_dir() == original_cache
+    assert instance.ready
+    instance.close()
+    instance._load()
+    assert factory.call_count == 2
+
+
+@pytest.mark.parametrize("where", ["constructor", "state_dict"])
+def test_failed_loader_restores_cache_and_keeps_core_unready(loader_case, where):
+    import torch
+
+    instance, model, factory, safe_load = loader_case
+    original_cache = torch.hub.get_dir()
+    (factory if where == "constructor" else model.load_state_dict).side_effect = RuntimeError("load failed")
+    with pytest.raises(RuntimeError, match="load failed"):
+        instance._load()
+    assert torch.hub.get_dir() == original_cache
+    assert instance.model is None and not instance.ready
+
+
+def test_unknown_backbone_is_refused_before_model_construction(loader_case):
+    instance, model, factory, safe_load = loader_case
+    safe_load.return_value["hyper_parameters"]["esm_model_name"] = "../../untrusted"
+    with pytest.raises(ValueError, match="unrecognized ESM backbone"):
+        instance._load()
+    factory.assert_not_called()
+
+
+def test_esm_loader_is_allowlisted_verified_and_weights_only(tmp_path, monkeypatch):
+    import argparse
+
+    import torch
+
+    from boileroom.models.minifold import loading
+
+    monkeypatch.setattr(torch.hub, "get_dir", lambda: str(tmp_path))
+    before = torch.serialization.get_safe_globals().copy()
+    observed = []
+
+    def download(url, destination, checksum):
+        observed.append((url, checksum))
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        torch.save({"cfg": argparse.Namespace(encoder_layers=36), "model": {"x": torch.zeros(1)}}, destination)
+        return destination
+
+    monkeypatch.setattr(loading, "_download_verified", download)
+    url = next(iter(loading.ESM_ARTIFACTS))
+    result = loading.load_esm_artifact(url)
+    assert result["cfg"].encoder_layers == 36
+    assert observed == [(url, loading.ESM_ARTIFACTS[url])]
+    assert torch.serialization.get_safe_globals() == before
+    with pytest.raises(ValueError, match="Unrecognized"):
+        loading.load_esm_artifact("https://example.com/model.pt")
+
+
+def test_upstream_patch_is_checked_and_preserves_non_kernel_math(tmp_path):
+    from boileroom.models.minifold.patch_upstream import patch
+
+    (tmp_path / "minifold/model").mkdir(parents=True)
+    (tmp_path / "minifold/utils").mkdir()
+    (tmp_path / "pyproject.toml").write_text('[tool.setuptools]\npackages = ["minifold"]\n')
+    model = tmp_path / "minifold/model/miniformer.py"
+    model.write_text(
+        "from minifold.model.kernels.gating import gating_kernel\n"
+        "from minifold.model.kernels.mlp import mlp_kernel\n"
+        "def ordinary(x):\n    return x + 1\n"
+        "def mlp_kernel_func(x, w1, w2, b1, b2, wn, bn):\n"
+        "    return mlp_kernel(x, w1, w2, b1, b2, wn, bn)\n"
+        "def triangular_kernel_func(x, gi_w, pi_w, gi_b, pi_b, ni_w, ni_b):\n"
+        "    x = gating_kernel(x, gi_w, pi_w, gi_b, pi_b, ni_w, ni_b)\n"
+    )
+    esm = tmp_path / "minifold/utils/esm.py"
+    esm.write_text(
+        "def load_hub_workaround(url):\n    torch.hub.load_state_dict_from_url(url)\n    torch.load(url)\n\ndef load_regression_hub(name):\n    return name\n"
+    )
+    patch(tmp_path)
+    assert "def ordinary(x):\n    return x + 1" in model.read_text()
+    assert "\nfrom minifold.model.kernels" not in model.read_text()
+    assert "    from minifold.model.kernels.mlp" in model.read_text()
+    assert "torch.load" not in esm.read_text()
+    assert "return load_esm_artifact(url)" in esm.read_text()
+    assert 'find = {include = ["minifold*"]}' in (tmp_path / "pyproject.toml").read_text()
+    with pytest.raises(ValueError, match="packaging"):
+        patch(tmp_path)

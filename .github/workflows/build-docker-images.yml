@@ -1,13 +1,48 @@
-name: Build and Push Boileroom Base and Chai-1 Images (Docker Hub)
+name: Build and Push Boileroom Images
 
 on:
   push:
-    branches: [ main ]
-    paths:
-      - 'boileroom/boileroom/images/Dockerfile'
-      - 'boileroom/boileroom/models/chai/Dockerfile'
-      - '.github/workflows/build-docker-images.yml'
+    branches:
+      - main
+    paths-ignore:
+      # Keep in sync with main_prerelease_number in scripts/ci/derive_version.py.
+      - README.md
+      - docs/**
+  release:
+    types: [published]
   workflow_dispatch:
+    inputs:
+      kit_family:
+        description: Build, smoke-test and publish one kit image under its commit tag.
+        required: false
+        type: choice
+        default: ""
+        options: ["", esmfold2, protenix, rf3]
+      promote:
+        description: Publish images with the derived prerelease version. Only allowed from main.
+        required: true
+        type: boolean
+        default: false
+      models:
+        description: Optional space-separated model selectors for validation-only runs.
+        required: false
+        type: string
+        default: ""
+      docker_repository:
+        description: Docker repository namespace for manual runs, for example docker.io/my-dockerhub-user.
+        required: true
+        type: string
+        default: docker.io/jakublala
+      dockerhub_username:
+        description: Docker Hub username for manual runs.
+        required: true
+        type: string
+        default: jakublala
+      dockerhub_token_secret:
+        description: Name of the GitHub secret containing the Docker Hub token for manual runs.
+        required: true
+        type: string
+        default: DOCKERHUB_TOKEN
 
 permissions:
   contents: read
@@ -15,75 +50,550 @@ permissions:
 concurrency: dockerhub-builds-${{ github.ref }}
 
 env:
-  REGISTRY: docker.io
-  IMAGE_NAMESPACE: jakublala
+  DOCKER_REPOSITORY_FOR_RUN: ${{ github.event.inputs.docker_repository || 'docker.io/jakublala' }}
+  DOCKERHUB_USERNAME_FOR_RUN: ${{ github.event.inputs.dockerhub_username || secrets.DOCKERHUB_USERNAME }}
+  DOCKERHUB_TOKEN_SECRET_FOR_RUN: ${{ github.event.inputs.dockerhub_token_secret || 'DOCKERHUB_TOKEN' }}
+  IMAGE_BUILD_MAX_WORKERS: "1"
+  SHOULD_PROMOTE: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'release' && github.event.release.prerelease == false) || inputs.promote }}
 
 jobs:
-  build-and-push:
+  build-kit:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.kit_family != '' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      KIT_FAMILY: ${{ inputs.kit_family }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: docker.io
+          username: ${{ env.DOCKERHUB_USERNAME_FOR_RUN }}
+          password: ${{ secrets[env.DOCKERHUB_TOKEN_SECRET_FOR_RUN] }}
+      - name: Build and publish commit image
+        run: |
+          image="$DOCKER_REPOSITORY_FOR_RUN/boileroom-$KIT_FAMILY-kit:sha-${GITHUB_SHA::12}"
+          docker buildx build --platform linux/amd64 --push --metadata-file kit-build.json \
+            --cache-from "type=registry,ref=$DOCKER_REPOSITORY_FOR_RUN/boileroom-$KIT_FAMILY-kit:buildcache" \
+            --cache-to "type=registry,ref=$DOCKER_REPOSITORY_FOR_RUN/boileroom-$KIT_FAMILY-kit:buildcache,mode=max" \
+            --file "boileroom/models/$KIT_FAMILY/kit/Dockerfile" \
+            --tag "$image" "boileroom/models/$KIT_FAMILY/kit"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kit-build-${{ inputs.kit_family }}
+          path: kit-build.json
+
+  prepare-release:
+    if: ${{ !inputs.kit_family && (github.event_name != 'release' || github.event.release.prerelease == false) }}
+    runs-on: ubuntu-latest
+    outputs:
+      release_version: ${{ steps.version.outputs.docker_tag }}
+      image_tag: ${{ steps.image_tag.outputs.value }}
+      candidate_tag: ${{ steps.image_tag.outputs.candidate }}
+      cuda_versions: ${{ steps.image_metadata.outputs.cuda_versions }}
+      default_cuda_version: ${{ steps.image_metadata.outputs.default_cuda_version }}
+      amd64_model_matrix: ${{ steps.image_metadata.outputs.amd64_model_matrix }}
+      arm64_model_matrix: ${{ steps.image_metadata.outputs.arm64_model_matrix }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate release ref
+        run: |
+          if [ "$SHOULD_PROMOTE" = "true" ] && [ "$GITHUB_REF" != "refs/heads/main" ] && [ "$GITHUB_EVENT_NAME" != "release" ]; then
+            echo "Publishing prerelease tags is only allowed from main."
+            exit 1
+          fi
+          if [ "$SHOULD_PROMOTE" != "true" ]; then
+            echo "Running validation-only image workflow for $GITHUB_REF."
+          fi
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-suffix: image-prepare
+
+      - name: Validate Docker publishing configuration
+        env:
+          DOCKERHUB_TOKEN_FOR_RUN: ${{ secrets[env.DOCKERHUB_TOKEN_SECRET_FOR_RUN] }}
+        run: |
+          if [ -z "${DOCKERHUB_USERNAME_FOR_RUN}" ]; then
+            echo "Docker Hub username must not be empty."
+            exit 1
+          fi
+          if [ -z "${DOCKERHUB_TOKEN_FOR_RUN}" ]; then
+            echo "Docker Hub token secret '${DOCKERHUB_TOKEN_SECRET_FOR_RUN}' is missing or empty."
+            exit 1
+          fi
+          uv run --no-project --with pyyaml python - <<'PY'
+          import os
+
+          from boileroom.images.metadata import normalize_docker_repository
+
+          normalize_docker_repository(os.environ["DOCKER_REPOSITORY_FOR_RUN"])
+          PY
+
+      - name: Determine Boileroom version
+        id: version
+        run: |
+          if [ "$SHOULD_PROMOTE" != "true" ]; then
+            echo "pep440=" >> "$GITHUB_OUTPUT"
+            echo "docker_tag=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          version_args=()
+          if [ "$GITHUB_EVENT_NAME" = "release" ]; then
+            version_args+=(--release-tag "$GITHUB_REF_NAME")
+          fi
+
+          uv run --no-project --with click --with pyyaml python ./scripts/ci/derive_version.py "${version_args[@]}" --github-output "$GITHUB_OUTPUT"
+
+      - name: Determine image tag
+        id: image_tag
+        env:
+          DERIVED_DOCKER_TAG: ${{ steps.version.outputs.docker_tag }}
+        run: |
+          # AMD64 images are pushed and smoked under the candidate tag; a promoted run then retags each verified image
+          # to value. A release uses the full commit SHA so it cannot share a candidate with a main run of that commit.
+          if [ "$GITHUB_EVENT_NAME" = "release" ]; then
+            echo "candidate=sha-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          else
+            echo "candidate=sha-${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+          fi
+          if [ "$SHOULD_PROMOTE" = "true" ]; then
+            echo "value=${DERIVED_DOCKER_TAG}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=sha-${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Determine image metadata
+        id: image_metadata
+        env:
+          MODELS_FOR_RUN: ${{ inputs.models || '' }}
+        run: |
+          uv run --no-project --with pyyaml python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          import os
+
+          from boileroom.images.metadata import (
+              DEFAULT_CUDA_VERSION,
+              SUPPORTED_CUDA_VERSIONS,
+              get_supported_cuda,
+              get_supported_platforms,
+              select_model_image_specs,
+          )
+
+          selected = [] if os.environ["SHOULD_PROMOTE"] == "true" else os.environ["MODELS_FOR_RUN"].split()
+          specs = select_model_image_specs(selected)
+          amd64_model_matrix = {
+              "include": [
+                  {"model": spec.key, "cuda_version": cuda_version}
+                  for spec in specs
+                  for cuda_version in get_supported_cuda(spec)
+                  if "linux/amd64" in get_supported_platforms(spec)
+              ]
+          }
+          arm64_model_matrix = {
+              "include": [
+                  {"model": spec.key, "cuda_version": DEFAULT_CUDA_VERSION}
+                  for spec in specs
+                  if DEFAULT_CUDA_VERSION in get_supported_cuda(spec)
+                  and "linux/arm64" in get_supported_platforms(spec)
+              ]
+          }
+
+          print(f"cuda_versions={json.dumps(sorted(SUPPORTED_CUDA_VERSIONS))}")
+          print(f"default_cuda_version={DEFAULT_CUDA_VERSION}")
+          print(f"amd64_model_matrix={json.dumps(amd64_model_matrix, separators=(',', ':'))}")
+          print(f"arm64_model_matrix={json.dumps(arm64_model_matrix, separators=(',', ':'))}")
+          PY
+
+  build-amd64-base:
+    needs: prepare-release
+    name: Build Base (linux/amd64, CUDA ${{ matrix.cuda_version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      CUDA_VERSION: ${{ matrix.cuda_version }}
+      IMAGE_TAG: ${{ needs.prepare-release.outputs.image_tag }}
+      CANDIDATE_TAG: ${{ needs.prepare-release.outputs.candidate_tag }}
+    strategy:
+      fail-fast: false
+      matrix:
+        cuda_version: ${{ fromJSON(needs.prepare-release.outputs.cuda_versions) }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-suffix: image-build-base-amd64-${{ matrix.cuda_version }}
+
+      - name: Prepare image script dependencies
+        run: uv run --no-project --with click --with pyyaml python -c "import click, yaml"
 
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Docker metadata (base)
-        id: meta_base
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.IMAGE_NAMESPACE }}/boileroom-base
-          tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=sha
-            type=semver,pattern={{version}},event=tag
-            type=semver,pattern={{major}}.{{minor}},event=tag
-          labels: |
-            org.opencontainers.image.version=${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
+          registry: docker.io
+          username: ${{ env.DOCKERHUB_USERNAME_FOR_RUN }}
+          password: ${{ secrets[env.DOCKERHUB_TOKEN_SECRET_FOR_RUN] }}
 
       - name: Build and push base image
-        id: build_base
-        uses: docker/build-push-action@v6
-        with:
-          context: ./boileroom/boileroom/images
-          file: ./boileroom/boileroom/images/Dockerfile
-          push: true
-          platforms: linux/amd64
-          tags: ${{ steps.meta_base.outputs.tags }}
-          labels: ${{ steps.meta_base.outputs.labels }}
-          cache-from: type=gha,scope=boileroom-base
-          cache-to: type=gha,scope=boileroom-base,mode=max
+        run: |
+          uv run --no-project --with click --with pyyaml python ./scripts/images/build_model_images.py \
+            --cuda-version="${CUDA_VERSION}" \
+            --tag="${CANDIDATE_TAG}" \
+            --docker-user="${DOCKER_REPOSITORY_FOR_RUN}" \
+            --platform=linux/amd64 \
+            --base-mode=only \
+            --push \
+            --max-workers=${IMAGE_BUILD_MAX_WORKERS} \
+            --verbose
 
-      - name: Docker metadata (chai1)
-        id: meta_chai
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.IMAGE_NAMESPACE }}/boileroom-chai1
-          tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=sha
-            type=semver,pattern={{version}},event=tag
-            type=semver,pattern={{major}}.{{minor}},event=tag
-          labels: |
-            org.opencontainers.image.version=${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
+      - name: Publish base image tags
+        # The base has no smoke check of its own (the model jobs smoke it); it gets its final tags once it is built.
+        if: needs.prepare-release.outputs.image_tag != needs.prepare-release.outputs.candidate_tag
+        run: |
+          uv run --no-project --with click --with pyyaml python - <<'PY'
+          import os
 
-      - name: Build and push Chai-1 image
-        uses: docker/build-push-action@v6
+          from boileroom.images.metadata import BASE_IMAGE_SPEC
+          from scripts.images.promote_image_tags import promote_one
+
+          promote_one(
+              BASE_IMAGE_SPEC,
+              os.environ["CUDA_VERSION"],
+              os.environ["CANDIDATE_TAG"],
+              os.environ["IMAGE_TAG"],
+              os.environ["DOCKER_REPOSITORY_FOR_RUN"],
+          )
+          PY
+
+      - name: Free disk space after build
+        if: always()
+        run: docker builder prune --all --force
+
+  build-amd64-models:
+    needs: [prepare-release, build-amd64-base]
+    name: Build Model (${{ matrix.model }}, linux/amd64, CUDA ${{ matrix.cuda_version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      CUDA_VERSION: ${{ matrix.cuda_version }}
+      IMAGE_TAG: ${{ needs.prepare-release.outputs.image_tag }}
+      CANDIDATE_TAG: ${{ needs.prepare-release.outputs.candidate_tag }}
+      MODEL: ${{ matrix.model }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare-release.outputs.amd64_model_matrix) }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          context: ./boileroom/boileroom/models/chai
-          file: ./boileroom/boileroom/models/chai/Dockerfile
-          push: true
-          platforms: linux/amd64
-          build-args: |
-            BASE_IMAGE=${{ env.IMAGE_NAMESPACE }}/boileroom-base@${{ steps.build_base.outputs.digest }}
-          tags: ${{ steps.meta_chai.outputs.tags }}
-          labels: ${{ steps.meta_chai.outputs.labels }}
-          cache-from: type=gha,scope=boileroom-chai1
-          cache-to: type=gha,scope=boileroom-chai1,mode=max
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-suffix: image-build-${{ matrix.model }}-amd64-${{ matrix.cuda_version }}
+
+      - name: Prepare image script dependencies
+        run: uv run --no-project --with click --with pyyaml python -c "import click, yaml"
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          registry: docker.io
+          username: ${{ env.DOCKERHUB_USERNAME_FOR_RUN }}
+          password: ${{ secrets[env.DOCKERHUB_TOKEN_SECRET_FOR_RUN] }}
+
+      - name: Build and push model image
+        run: |
+          uv run --no-project --with click --with pyyaml python ./scripts/images/build_model_images.py \
+            --cuda-version="${CUDA_VERSION}" \
+            --model="${MODEL}" \
+            --tag="${CANDIDATE_TAG}" \
+            --docker-user="${DOCKER_REPOSITORY_FOR_RUN}" \
+            --platform=linux/amd64 \
+            --base-mode=existing \
+            --push \
+            --max-workers=${IMAGE_BUILD_MAX_WORKERS} \
+            --verbose
+
+      - name: Free build cache before verification
+        run: docker builder prune --all --force
+
+      - name: Verify canonical image imports
+        run: |
+          uv run --no-project --with click --with pyyaml python ./scripts/images/check_model_imports.py \
+            --cuda-version="${CUDA_VERSION}" \
+            --model="${MODEL}" \
+            --docker-user="${DOCKER_REPOSITORY_FOR_RUN}" \
+            --tag="${CANDIDATE_TAG}" \
+            --pull
+
+      - name: Verify canonical image server health
+        run: |
+          uv run --no-project --with click --with pyyaml python ./scripts/images/check_model_server_health.py \
+            --cuda-version="${CUDA_VERSION}" \
+            --model="${MODEL}" \
+            --docker-user="${DOCKER_REPOSITORY_FOR_RUN}" \
+            --tag="${CANDIDATE_TAG}" \
+            --cleanup
+
+      - name: Verify default-CUDA alias image imports
+        if: matrix.cuda_version == needs.prepare-release.outputs.default_cuda_version
+        run: |
+          uv run --no-project --with click --with pyyaml python ./scripts/images/check_model_imports.py \
+            --model="${MODEL}" \
+            --docker-user="${DOCKER_REPOSITORY_FOR_RUN}" \
+            --tag="${CANDIDATE_TAG}" \
+            --pull
+
+      - name: Verify default-CUDA alias image server health
+        if: matrix.cuda_version == needs.prepare-release.outputs.default_cuda_version
+        run: |
+          uv run --no-project --with click --with pyyaml python ./scripts/images/check_model_server_health.py \
+            --model="${MODEL}" \
+            --docker-user="${DOCKER_REPOSITORY_FOR_RUN}" \
+            --tag="${CANDIDATE_TAG}" \
+            --cleanup
+
+      - name: Publish verified model image tags
+        # Runs only after every verify step passed, so the final tags name the manifest that was smoked.
+        if: needs.prepare-release.outputs.image_tag != needs.prepare-release.outputs.candidate_tag
+        run: |
+          uv run --no-project --with click --with pyyaml python - <<'PY'
+          import os
+
+          from boileroom.images.metadata import get_model_image_spec
+          from scripts.images.promote_image_tags import promote_one
+
+          promote_one(
+              get_model_image_spec(os.environ["MODEL"]),
+              os.environ["CUDA_VERSION"],
+              os.environ["CANDIDATE_TAG"],
+              os.environ["IMAGE_TAG"],
+              os.environ["DOCKER_REPOSITORY_FOR_RUN"],
+          )
+          PY
+
+      - name: Free disk space after build
+        if: always()
+        run: docker builder prune --all --force
+
+  build-arm64-base:
+    if: ${{ fromJSON(needs.prepare-release.outputs.arm64_model_matrix).include[0] != null }}
+    needs: prepare-release
+    name: Build Base (linux/arm64, CUDA ${{ needs.prepare-release.outputs.default_cuda_version }})
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    env:
+      CUDA_VERSION: ${{ needs.prepare-release.outputs.default_cuda_version }}
+      IMAGE_TAG: ${{ needs.prepare-release.outputs.image_tag }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-suffix: image-build-base-arm64-${{ needs.prepare-release.outputs.default_cuda_version }}
+
+      - name: Prepare image script dependencies
+        run: uv run --no-project --with click --with pyyaml python -c "import click, yaml"
+
+      - name: Normalize Docker repository
+        run: |
+          uv run --no-project --with pyyaml python - <<'PY' >> "$GITHUB_ENV"
+          import os
+
+          from boileroom.images.metadata import normalize_docker_repository
+
+          print(f"DOCKER_REPOSITORY={normalize_docker_repository(os.environ['DOCKER_REPOSITORY_FOR_RUN'])}")
+          PY
+
+      - name: Build ARM64 base image locally
+        run: |
+          uv run --no-project --with click --with pyyaml python ./scripts/images/build_model_images.py \
+            --cuda-version="${CUDA_VERSION}" \
+            --tag="${IMAGE_TAG}" \
+            --docker-user="${DOCKER_REPOSITORY}" \
+            --platform=linux/arm64 \
+            --base-mode=only \
+            --max-workers=${IMAGE_BUILD_MAX_WORKERS} \
+            --verbose
+
+      - name: Export ARM64 base image
+        run: |
+          docker save \
+            --output /tmp/boileroom-arm64-base.tar \
+            "${DOCKER_REPOSITORY}/boileroom-base:cuda${CUDA_VERSION}-${IMAGE_TAG}"
+
+      - name: Upload ARM64 base image
+        uses: actions/upload-artifact@v4
+        with:
+          name: arm64-base-${{ github.run_id }}
+          path: /tmp/boileroom-arm64-base.tar
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
+          overwrite: true
+
+  build-arm64-models:
+    if: ${{ fromJSON(needs.prepare-release.outputs.arm64_model_matrix).include[0] != null }}
+    needs: [prepare-release, build-arm64-base]
+    name: Build Model (${{ matrix.model }}, linux/arm64, CUDA ${{ matrix.cuda_version }})
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 180
+    env:
+      CUDA_VERSION: ${{ matrix.cuda_version }}
+      IMAGE_TAG: ${{ needs.prepare-release.outputs.image_tag }}
+      MODEL: ${{ matrix.model }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare-release.outputs.arm64_model_matrix) }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-suffix: image-build-${{ matrix.model }}-arm64-${{ matrix.cuda_version }}
+
+      - name: Prepare image script dependencies
+        run: uv run --no-project --with click --with pyyaml python -c "import click, yaml"
+
+      - name: Download ARM64 base image
+        uses: actions/download-artifact@v4
+        with:
+          name: arm64-base-${{ github.run_id }}
+          path: /tmp/boileroom-arm64-base
+
+      - name: Load ARM64 base image
+        run: |
+          docker load --input /tmp/boileroom-arm64-base/boileroom-arm64-base.tar
+          rm -- /tmp/boileroom-arm64-base/boileroom-arm64-base.tar
+
+      - name: Build model image locally
+        run: |
+          uv run --no-project --with click --with pyyaml python ./scripts/images/build_model_images.py \
+            --cuda-version="${CUDA_VERSION}" \
+            --model="${MODEL}" \
+            --tag="${IMAGE_TAG}" \
+            --docker-user="${DOCKER_REPOSITORY_FOR_RUN}" \
+            --platform=linux/arm64 \
+            --base-mode=existing \
+            --max-workers=${IMAGE_BUILD_MAX_WORKERS} \
+            --verbose
+
+      - name: Verify canonical image imports
+        run: |
+          uv run --no-project --with click --with pyyaml python ./scripts/images/check_model_imports.py \
+            --cuda-version="${CUDA_VERSION}" \
+            --model="${MODEL}" \
+            --docker-user="${DOCKER_REPOSITORY_FOR_RUN}" \
+            --tag="${IMAGE_TAG}"
+
+      - name: Verify canonical image server health
+        run: |
+          uv run --no-project --with click --with pyyaml python ./scripts/images/check_model_server_health.py \
+            --cuda-version="${CUDA_VERSION}" \
+            --model="${MODEL}" \
+            --docker-user="${DOCKER_REPOSITORY_FOR_RUN}" \
+            --tag="${IMAGE_TAG}" \
+            --cleanup
+
+      - name: Verify local alias image imports
+        run: |
+          uv run --no-project --with click --with pyyaml python ./scripts/images/check_model_imports.py \
+            --model="${MODEL}" \
+            --docker-user="${DOCKER_REPOSITORY_FOR_RUN}" \
+            --tag="${IMAGE_TAG}"
+
+      - name: Verify local alias image server health
+        run: |
+          uv run --no-project --with click --with pyyaml python ./scripts/images/check_model_server_health.py \
+            --model="${MODEL}" \
+            --docker-user="${DOCKER_REPOSITORY_FOR_RUN}" \
+            --tag="${IMAGE_TAG}" \
+            --cleanup
+
+      - name: Free disk space after build
+        if: always()
+        run: docker builder prune --all --force
+
+  publish-kit-image-tags:
+    # The kit images are not rebuilt per release: a full release tags the digest each kit image is pinned to in
+    # KIT_IMAGE_DIGESTS with the stable X.Y.Z tag, so every released pin stays tagged on Docker Hub. A tag that already
+    # names another digest is refused, never moved.
+    if: ${{ github.event_name == 'release' && github.event.release.prerelease == false }}
+    needs: prepare-release
+    name: Publish kit image tags
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      IMAGE_TAG: ${{ needs.prepare-release.outputs.image_tag }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-suffix: image-publish-kit
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          registry: docker.io
+          username: ${{ env.DOCKERHUB_USERNAME_FOR_RUN }}
+          password: ${{ secrets[env.DOCKERHUB_TOKEN_SECRET_FOR_RUN] }}
+
+      - name: Tag the pinned kit image digests
+        run: |
+          uv run --no-project --with click --with pyyaml python ./scripts/images/promote_image_tags.py \
+            --kit-images-only \
+            --target-tag="${IMAGE_TAG}" \
+            --docker-user="${DOCKER_REPOSITORY_FOR_RUN}"

@@ -1,0 +1,98 @@
+name: Integration Tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      execution-mode:
+        description: "Run integration tests in parallel model shards or in series"
+        required: false
+        default: "parallel"
+        type: choice
+        options:
+          - parallel
+          - series
+      image-tag:
+        description: "Optional explicit Docker/Modal image tag override"
+        required: false
+        default: ""
+        type: string
+  schedule:
+    - cron: "0 2 * * 0"
+  # Run after the image-build workflow succeeds on main so integration tests
+  # exercise the freshly-published image for the exact main commit that built it.
+  workflow_run:
+    workflows: ["Build and Push Boileroom Images"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency: integration-tests-${{ github.event.workflow_run.head_sha || github.ref }}
+
+jobs:
+  integration-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    if: >-
+      github.event_name != 'workflow_run' ||
+      github.event.workflow_run.conclusion == 'success'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # Pin to the commit that triggered the image build, otherwise the default
+          # checkout would pick up a later main commit whose image is not yet built.
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          # derive_version.py needs the full history to count commits since the baseline.
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-suffix: integration-tests
+
+      - name: Resolve freshly-built image tag
+        id: resolve_tag
+        env:
+          IMAGE_TAG_OVERRIDE: ${{ github.event.inputs.image-tag || '' }}
+          WORKFLOW_RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha || '' }}
+        run: |
+          if [ -n "$IMAGE_TAG_OVERRIDE" ]; then
+            echo "docker_tag=$IMAGE_TAG_OVERRIDE" >> "$GITHUB_OUTPUT"
+          elif [ -n "$WORKFLOW_RUN_HEAD_SHA" ]; then
+            uv run --no-project --with click python scripts/ci/derive_version.py \
+              --head-ref "$WORKFLOW_RUN_HEAD_SHA" \
+              --github-output "$GITHUB_OUTPUT"
+          else
+            uv run --no-project --with click python scripts/ci/derive_version.py \
+              --head-ref HEAD \
+              --github-output "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install dependencies
+        run: |
+          uv sync --extra dev
+          uv pip install huggingface_hub safetensors
+
+      - name: Install the package
+        run: uv pip install -e .
+
+      - name: Authenticate Modal
+        shell: bash -l {0}
+        run: uv run modal token set --token-id ${{ secrets.MODAL_API_TOKEN_ID }} --token-secret ${{ secrets.MODAL_API_TOKEN_SECRET }}
+
+      - name: Run integration tests
+        shell: bash -l {0}
+        run: |
+          if [ "${{ inputs.execution-mode || 'parallel' }}" = "series" ]; then
+            uv run pytest -v -m integration --image-tag "${{ steps.resolve_tag.outputs.docker_tag }}"
+          else
+            uv run pytest -v -n 4 --dist loadgroup -m integration --image-tag "${{ steps.resolve_tag.outputs.docker_tag }}"
+          fi

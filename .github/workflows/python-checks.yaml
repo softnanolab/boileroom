@@ -7,6 +7,28 @@ on:
     branches: [ main ]
 
 jobs:
+  harness-checks:
+    runs-on: "ubuntu-latest"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-suffix: python-harness
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Run repo harness
+        run: uv run python scripts/harness/check_repo.py
+
   lint-checks:
     runs-on: "ubuntu-latest"
     steps:
@@ -18,9 +40,10 @@ jobs:
           python-version: '3.12'
 
       - name: Install uv
-        run: |
-          curl -LsSf https://astral.sh/uv/install.sh | sh
-          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-suffix: python-lint
 
       - name: Install dependencies
         run: uv sync --extra dev
@@ -39,9 +62,10 @@ jobs:
           python-version: '3.12'
 
       - name: Install uv
-        run: |
-          curl -LsSf https://astral.sh/uv/install.sh | sh
-          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-suffix: python-unit
 
       - name: Install dependencies
         run: uv sync --extra dev
@@ -49,10 +73,6 @@ jobs:
       - name: Install the package
         run: uv pip install -e .
 
-      - name: Authenticate Modal
-        shell: bash -l {0}
-        run: uv run modal token set --token-id ${{ secrets.MODAL_API_TOKEN_ID }} --token-secret ${{ secrets.MODAL_API_TOKEN_SECRET }}
-
       - name: Run tests
         shell: bash -l {0}
-        run: uv run pytest -n auto
+        run: uv run pytest -n 4 -m "not integration"

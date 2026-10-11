@@ -1,27 +1,27 @@
-FROM mambaorg/micromamba:2.3.2-cuda11.8.0-ubuntu20.04
+# BuildKit platform arguments
+ARG TARGETPLATFORM
+ARG TARGETARCH
+ARG TARGETOS
+ARG BUILDPLATFORM
 
-USER root
+ARG PYTHON_BASE=python:3.12-slim-bookworm
+FROM ${PYTHON_BASE}
 
-USER ${MAMBA_USER}
+ENV PIP_NO_CACHE_DIR=1
+ENV UV_SYSTEM_PYTHON=1
 
-ARG MAMBA_DOCKERFILE_ACTIVATE=1
-
-USER root
-RUN apt-get update && apt-get install -y --no-install-recommends \
-      git wget ca-certificates tini \
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends eatmydata \
+    && eatmydata apt-get install -y --no-install-recommends \
+      git wget ca-certificates tini build-essential \
+    && apt-get purge -y eatmydata \
+    && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
-USER ${MAMBA_USER}
 
-RUN micromamba install -y -c conda-forge python=3.12 pip \
-    && python -m pip install --upgrade pip \
-    && python -m pip install --no-cache-dir "biotite>=1.0.1"
+RUN python -m pip install --upgrade pip uv \
+    && rm -rf /root/.cache/pip
 
 ENV MODEL_DIR=/mnt/models
-
-# TODO: unclear whether this is the way to gos
-USER root
-RUN mkdir -p "/mnt/models" \
-    && chown -R ${MAMBA_USER}:${MAMBA_USER} /mnt/models
-USER ${MAMBA_USER}
+ENV TINI_SUBREAPER=1
 
 ENTRYPOINT ["/usr/bin/tini", "--"]

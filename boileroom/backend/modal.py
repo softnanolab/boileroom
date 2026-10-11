@@ -8,8 +8,35 @@ from modal.exception import InvalidError
 
 from .base import Backend
 
+_modal_app_managers_lock = threading.Lock()
+_modal_app_managers: dict[modal.App, "ModalAppManager"] = {}
 
-app = modal.App("boileroom")
+
+def get_modal_app(name: str) -> modal.App:
+    """Create a Modal app for a specific model entrypoint."""
+    return modal.App(f"boileroom-{name}")
+
+
+def modal_app_of(model_cls: Any) -> modal.App:
+    """Return the app that owns a Modal-decorated class.
+
+    This centralizes the Modal SDK ``Cls._get_app()`` usage required by
+    Modal >=1.1.0 so callers do not reach into the SDK directly.
+    """
+    try:
+        return model_cls._get_app()
+    except (AttributeError, AssertionError, InvalidError) as error:
+        raise TypeError("ModalBackend requires a Modal-decorated class registered on a Modal app.") from error
+
+
+def _get_modal_app_manager(modal_app: modal.App) -> "ModalAppManager":
+    """Return the shared manager for a Modal app object."""
+    with _modal_app_managers_lock:
+        manager = _modal_app_managers.get(modal_app)
+        if manager is None:
+            manager = ModalAppManager(modal_app)
+            _modal_app_managers[modal_app] = manager
+        return manager
 
 
 class _ModalAppToken:
@@ -22,12 +49,12 @@ class _ModalAppToken:
 
 
 class ModalAppManager:
-    """Manage shared access to the global Modal app context."""
+    """Manage shared access to a Modal app context."""
 
     def __init__(self, modal_app: modal.App) -> None:
         self._app = modal_app
         self._lock = threading.Lock()
-        self._context = None
+        self._context: Any = None
         self._attached_external = False
         self._tokens: set[int] = set()
         self._next_token_id = 0
@@ -84,15 +111,13 @@ class ModalAppManager:
             self._context = context
 
 
-modal_app_manager = ModalAppManager(app)
-
-
 class ModalBackend(Backend):
     """Backend for Modal."""
 
     def __init__(self, model_cls, config: dict | None = None, device: str | None = None) -> None:
         super().__init__()
-        self._app = app
+        self._app = modal_app_of(model_cls)
+        self._app_manager = _get_modal_app_manager(self._app)
         self._config = dict(config) if config is not None else {}
         self._model_cls = model_cls
         self._device = device
@@ -102,11 +127,11 @@ class ModalBackend(Backend):
 
     def startup(self) -> None:
         if self._context_token is None:
-            token = modal_app_manager.acquire()
+            token = self._app_manager.acquire()
             try:
                 self._ensure_model()
             except Exception:
-                modal_app_manager.release(token)
+                self._app_manager.release(token)
                 raise
             self._context_token = token
             return
@@ -115,7 +140,7 @@ class ModalBackend(Backend):
 
     def shutdown(self) -> None:
         if self._context_token is not None:
-            modal_app_manager.release(self._context_token)
+            self._app_manager.release(self._context_token)
             self._context_token = None
         self.model = None
 

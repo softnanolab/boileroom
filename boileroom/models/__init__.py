@@ -1,6 +1,10 @@
-# Lazy imports to avoid importing modal when not needed (e.g., in conda backend)
+# Lazy imports to avoid importing modal when not needed (e.g., in image-backed runtimes)
 def __getattr__(name: str):
     """Lazy import for model classes to avoid importing modal dependencies."""
+    if name == "MiniFold":
+        from .minifold.minifold import MiniFold
+
+        return MiniFold
     if name == "ESMFold":
         from .esm.esmfold import ESMFold
 
@@ -9,6 +13,18 @@ def __getattr__(name: str):
         from .esm.esm2 import ESM2
 
         return ESM2
+    if name == "ESMC":
+        from .esm3.esmc import ESMC
+
+        return ESMC
+    if name == "ESM3":
+        from .esm3.esm3 import ESM3
+
+        return ESM3
+    if name == "ESMFold2":
+        from .esmfold2.esmfold2 import ESMFold2
+
+        return ESMFold2
     if name == "Chai1":
         from .chai.chai1 import Chai1
 
@@ -17,17 +33,41 @@ def __getattr__(name: str):
         from .boltz.boltz2 import Boltz2
 
         return Boltz2
-    if name == "MiniFold":
-        from .minifold.minifold import MiniFold
+    if name == "Protenix":
+        from .protenix.protenix import Protenix
 
-        return MiniFold
+        return Protenix
+    if name == "OpenDDE":
+        from .opendde.opendde import OpenDDE
+
+        return OpenDDE
+    if name == "RF3":
+        from .rf3.rf3 import RF3
+
+        return RF3
+    if name == "AlphaFold2Multimer":
+        from .alphafold.alphafold2_multimer import AlphaFold2Multimer
+
+        return AlphaFold2Multimer
+    if name == "SAE":
+        from .sae.sae import SAE
+
+        return SAE
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 __all__ = [
+    "MiniFold",
     "ESMFold",
     "ESM2",
+    "ESMC",
+    "ESM3",
+    "ESMFold2",
     "Chai1",
     "Boltz2",
-    "MiniFold",
+    "Protenix",
+    "OpenDDE",
+    "RF3",
+    "AlphaFold2Multimer",
+    "SAE",
 ]

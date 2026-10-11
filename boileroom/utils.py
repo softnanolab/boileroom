@@ -5,7 +5,6 @@ import os
 import tempfile
 import time
 from pathlib import Path
-from typing import Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +53,38 @@ def validate_sequence(sequence: str) -> bool:
     return True
 
 
+def safe_mkdir(path: Path, parents: bool = False) -> None:
+    """Safely create a directory, avoiding parent directory creation issues in containers.
+
+    When `parents=False`, creates the directory and its immediate parent if needed.
+    This is useful for bind-mounted paths where only the immediate parent should exist
+    (e.g., MODEL_DIR is bind-mounted, so we can create MODEL_DIR/boltz but not ancestors).
+
+    Parameters
+    ----------
+    path : Path
+        Directory path to create.
+    parents : bool
+        If True, create all parent directories. If False, only create immediate parent if missing.
+    """
+    if path.exists():
+        return
+    if parents:
+        path.mkdir(parents=True, exist_ok=True)
+    else:
+        # For bind-mounted paths: create immediate parent if missing, then create target
+        if not path.parent.exists():
+            # Only create immediate parent, not ancestors (bind mount should handle that)
+            try:
+                path.parent.mkdir(exist_ok=True)
+            except OSError as err:
+                raise OSError(
+                    f"Cannot create {path}: parent directory {path.parent} does not exist "
+                    f"and could not be created. Ensure the bind mount is set up correctly."
+                ) from err
+        path.mkdir(exist_ok=True)
+
+
 def ensure_cache_dir() -> Path:
     """Create the cache directory (including parent directories) if it does not exist and return its path.
 
@@ -71,7 +102,7 @@ def get_model_dir() -> Path:
     """Resolve and set the MODEL_DIR environment variable to a user-writable cache location following XDG conventions.
 
     Precedence:
-    1) Respect existing MODEL_DIR if set.
+    1) Respect existing MODEL_DIR if set (assumed to be bind-mounted in containers, don't resolve).
     2) Use XDG_CACHE_HOME if defined; otherwise default to ~/.cache.
     3) Append "boileroom/models" and create the directory if it does not exist.
 
@@ -84,17 +115,21 @@ def get_model_dir() -> Path:
     """
     try:
         if os.environ.get("MODEL_DIR"):
-            resolved = Path(os.environ["MODEL_DIR"]).expanduser().resolve()
+            # If MODEL_DIR is set, assume it's already absolute and possibly bind-mounted
+            # Don't use resolve() as it may fail in containers where parent dirs don't exist
+            model_dir_str = os.environ["MODEL_DIR"]
+            resolved = Path(model_dir_str).expanduser()
+            # Only expand user, don't resolve (bind-mounted paths may not have parent dirs in container)
+            if not resolved.is_absolute():
+                resolved = resolved.resolve()
         else:
             xdg_cache_home = os.getenv("XDG_CACHE_HOME")
-            if xdg_cache_home:
-                base_cache_dir = Path(xdg_cache_home).expanduser().resolve()
-            else:
-                base_cache_dir = Path.home() / ".cache"
+            base_cache_dir = Path(xdg_cache_home).expanduser().resolve() if xdg_cache_home else Path.home() / ".cache"
 
             resolved = (base_cache_dir / "boileroom" / "models").resolve()
 
-        resolved.mkdir(parents=True, exist_ok=True)
+        # Use safe_mkdir with parents=True for local paths
+        safe_mkdir(resolved, parents=True)
         os.environ["MODEL_DIR"] = str(resolved)
         return resolved
     except (OSError, PermissionError) as exc:
@@ -107,6 +142,35 @@ def get_model_dir() -> Path:
     fallback_base.mkdir(parents=True, exist_ok=True)
     os.environ["MODEL_DIR"] = str(fallback_base)
     return fallback_base
+
+
+def get_model_cache_dir(model_name: str) -> Path:
+    """Get model-specific cache directory under MODEL_DIR.
+
+    Returns MODEL_DIR/{model_name}, creating it if needed.
+    Falls back to temporary directory if MODEL_DIR is not set.
+
+    Parameters
+    ----------
+    model_name : str
+        Model name (e.g., 'boltz', 'chai', 'esm').
+
+    Returns
+    -------
+    Path
+        Path to model-specific cache directory.
+    """
+    model_dir = os.environ.get("MODEL_DIR")
+    if model_dir:
+        cache_dir = Path(model_dir).expanduser() / model_name
+        # Use safe_mkdir with parents=False since MODEL_DIR should already exist
+        safe_mkdir(cache_dir, parents=False)
+        return cache_dir
+    else:
+        # Fallback to temporary directory
+        fallback_dir = Path(tempfile.gettempdir()) / "boileroom" / "models" / model_name
+        fallback_dir.mkdir(parents=True, exist_ok=True)
+        return fallback_dir
 
 
 def format_time(seconds: float) -> str:
@@ -139,7 +203,7 @@ def format_time(seconds: float) -> str:
     return " ".join(parts)
 
 
-def get_gpu_memory_info() -> Optional[Dict[str, int]]:
+def get_gpu_memory_info() -> dict[str, int] | None:
     """Get GPU memory information if available.
 
     Returns
@@ -169,7 +233,7 @@ class Timer:
 
     def __init__(self, description: str):
         self.description = description
-        self.duration = None
+        self.duration: float | None = None
 
     def __enter__(self):
         self.start_time = time.perf_counter()

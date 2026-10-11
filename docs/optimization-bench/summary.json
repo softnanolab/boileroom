@@ -1,0 +1,152 @@
+{
+ "unit": "seconds per fold (median warm / first fold / mean of 15), USD per second",
+ "source": "boileroom ESMFold2Core/ProtenixCore on Modal, 3 complexes x 5 seeds, bakeoff sampler settings, no MSA; OpenDDE: OpenDDECore, default sampler settings (10 cycles, 200 steps, 5 samples), A100-80GB SXM4 and H100, image cuda12.6-sha-bdc9a27",
+ "results": {
+  "ESMFold2": {
+   "A100 exact": {
+    "first": 12.612,
+    "warm": 0.7905,
+    "price": 0.000694,
+    "mean15": 1.8418
+   },
+   "A100 fast": {
+    "first": 27.152,
+    "warm": 0.4675,
+    "price": 0.000694,
+    "mean15": 2.4319333333333333
+   },
+   "H100 exact": {
+    "first": 9.003,
+    "warm": 0.479,
+    "price": 0.001097,
+    "mean15": 1.2981333333333334
+   },
+   "H100 fast": {
+    "first": 26.301,
+    "warm": 0.261,
+    "price": 0.001097,
+    "mean15": 2.2125999999999997
+   },
+   "H200 exact": {
+    "first": 9.887,
+    "warm": 0.4695,
+    "price": 0.001261,
+    "mean15": 1.3446
+   },
+   "H200 fast": {
+    "first": 21.821,
+    "warm": 0.226,
+    "price": 0.001261,
+    "mean15": 1.8224666666666667
+   },
+   "L4 vanilla": {
+    "first": 7.297,
+    "warm": 4.4005,
+    "price": 0.000222,
+    "mean15": 4.806666666666667
+   }
+  },
+  "ESMFold2-Fast": {
+   "A100 exact": {
+    "first": 9.339,
+    "warm": 0.6165,
+    "price": 0.000694,
+    "mean15": 1.4689333333333334
+   },
+   "A100 fast": {
+    "first": 21.554,
+    "warm": 0.325,
+    "price": 0.000694,
+    "mean15": 1.9042
+   },
+   "H100 exact": {
+    "first": 8.039,
+    "warm": 0.39,
+    "price": 0.001097,
+    "mean15": 1.1574666666666666
+   },
+   "H100 fast": {
+    "first": 17.963,
+    "warm": 0.189,
+    "price": 0.001097,
+    "mean15": 1.5878666666666668
+   },
+   "L4 vanilla": {
+    "first": 4.619,
+    "warm": 2.509,
+    "price": 0.000222,
+    "mean15": 2.7764666666666664
+   }
+  },
+  "Protenix v2": {
+   "A100 exact": {
+    "first": 32.206,
+    "warm": 3.6065,
+    "price": 0.000694,
+    "mean15": 5.7436
+   },
+   "A100 fast": {
+    "first": 27.771,
+    "warm": 3.4844999999999997,
+    "price": 0.000694,
+    "mean15": 5.438866666666667
+   },
+   "H100 exact": {
+    "first": 22.57,
+    "warm": 1.9209999999999998,
+    "price": 0.001097,
+    "mean15": 3.4368
+   },
+   "H100 fast": {
+    "first": 41.13,
+    "warm": 1.3559999999999999,
+    "price": 0.001097,
+    "mean15": 4.559733333333334
+   },
+   "L40S vanilla": {
+    "first": 34.458,
+    "warm": 12.188500000000001,
+    "price": 0.000542,
+    "mean15": 13.745533333333332
+   }
+  },
+  "OpenDDE": {
+   "A100 vanilla": {
+    "first": 71.90470116958022,
+    "warm": 16.06608713977039,
+    "price": 0.000694,
+    "mean15": 19.62940600278477
+   },
+   "A100 exact": {
+    "first": 77.52210435457528,
+    "warm": 12.707513839006424,
+    "price": 0.000694,
+    "mean15": 16.919470501318575
+   },
+   "A100 fast": {
+    "first": 78.16300183720887,
+    "warm": 9.279475089162588,
+    "price": 0.000694,
+    "mean15": 13.846818454563618
+   },
+   "H100 vanilla": {
+    "first": 61.00242118909955,
+    "warm": 14.047673646360636,
+    "price": 0.001097,
+    "mean15": 17.158210967481136
+   },
+   "H100 exact": {
+    "first": 64.69041770510375,
+    "warm": 11.431452521122992,
+    "price": 0.001097,
+    "mean15": 15.476571713884672
+   },
+   "H100 fast": {
+    "first": 65.61130092851818,
+    "warm": 5.808359341695905,
+    "price": 0.001097,
+    "mean15": 9.877376148104668
+   }
+  }
+ }
+}

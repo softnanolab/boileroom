@@ -1,0 +1,66 @@
+name: Cleanup Docker Hub Tags
+
+on:
+  schedule:
+    - cron: "0 3 * * 0"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Compute and print cleanup actions without deleting tags.
+        required: true
+        type: boolean
+        default: false
+      docker_repository:
+        description: Docker repository namespace, for example docker.io/jakublala.
+        required: true
+        type: string
+        default: docker.io/jakublala
+      keep_alpha:
+        description: Number of newest alpha versions to keep.
+        required: true
+        type: number
+        default: 3
+      sha_max_age_days:
+        description: Delete sha-* tags older than this number of days.
+        required: true
+        type: number
+        default: 7
+
+permissions:
+  contents: read
+
+concurrency: dockerhub-tag-cleanup-${{ github.event.inputs.docker_repository || 'docker.io/jakublala' }}
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    env:
+      DOCKER_REPOSITORY: ${{ github.event.inputs.docker_repository || 'docker.io/jakublala' }}
+      KEEP_ALPHA: ${{ github.event.inputs.keep_alpha || 3 }}
+      SHA_MAX_AGE_DAYS: ${{ github.event.inputs.sha_max_age_days || 7 }}
+      DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Clean up stale Docker Hub tags
+        run: |
+          args=(
+            "--docker-user=${DOCKER_REPOSITORY}"
+            "--keep-alpha=${KEEP_ALPHA}"
+            "--sha-max-age-days=${SHA_MAX_AGE_DAYS}"
+          )
+          if [ "${DRY_RUN}" = "true" ]; then
+            args+=("--dry-run")
+          fi
+          uv run --no-project --with click python ./scripts/images/cleanup_dockerhub_tags.py "${args[@]}"

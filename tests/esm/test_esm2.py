@@ -1,44 +1,61 @@
-import pytest
 import numpy as np
-from typing import Optional
+import pytest
+import torch
 
 from boileroom import ESM2
 
+pytestmark = [pytest.mark.integration, pytest.mark.slow, pytest.mark.gpu, pytest.mark.xdist_group("esm2")]
 
-# Each test instantiates its own model; keeping function scope avoids long-lived Modal handles.
+
+# Each test instantiates its own model; keeping function scope avoids long-lived backend handles.
 @pytest.fixture
-def esm2_model_factory(gpu_device: Optional[str]):
+def esm2_model_factory(backend_option: str, gpu_device: str | None, device_option: str | None):
     """Create a factory that builds configured ESM2 model instances.
 
     Parameters
     ----------
+    backend_option : str
+        Backend selector as provided via ``--backend`` ("modal" or "apptainer[:<tag>]").
     gpu_device : Optional[str]
-        If provided, forces the model device to this value; otherwise the device is inferred from the provided model_name in the factory call:
+        Modal GPU class from ``--gpu`` (e.g. ``T4``, ``A100-80GB``). When not
+        provided, the Modal device is inferred from model_name:
         - model_name containing "15B" → "A100-80GB"
         - model_name containing "3B" → "A100-40GB"
         - otherwise → "T4"
+    device_option : Optional[str]
+        Backend-resolved device string. For apptainer this is ``--device``
+        (defaulting to ``cuda:0``).
 
     Returns
     -------
     Callable[..., ESM2]
-        A function that accepts model configuration kwargs (must include `model_name`) and returns an ESM2 instance with backend "modal" and device chosen as described above.
+        A function that accepts model configuration kwargs (must include `model_name`) and returns an ESM2 instance with the chosen backend and resolved device.
     """
+    is_modal = backend_option.split(":", 1)[0].strip() == "modal"
 
     def _make_model(**kwargs):
         config = {**kwargs}
+        device: str | None
 
-        # Use gpu_device from command line if provided, otherwise fall back to model-name-based selection
-        if gpu_device is not None:
-            gpu_type = gpu_device
-        else:
-            if "15B" in config["model_name"]:
-                gpu_type = "A100-80GB"
-            elif "3B" in config["model_name"]:
-                gpu_type = "A100-40GB"
+        if is_modal:
+            # Modal: pick a GPU class. Honor --gpu if set, else infer from model size.
+            if gpu_device is not None:
+                device = gpu_device
             else:
-                gpu_type = "T4"
+                model_name = config.get("model_name")
+                if model_name is None:
+                    raise ValueError("model_name is required when --gpu is not provided")
+                if "15B" in model_name:
+                    device = "A100-80GB"
+                elif "3B" in model_name:
+                    device = "A100-40GB"
+                else:
+                    device = "T4"
+        else:
+            # Apptainer: device is whichever local CUDA index the user picked.
+            device = device_option
 
-        return ESM2(backend="modal", device=gpu_type, config=config)
+        return ESM2(backend=backend_option, device=device, config=config)
 
     return _make_model
 
@@ -67,6 +84,7 @@ def test_esm2_embed_basic(esm2_model_factory, model_config):
     assert result.metadata is not None, "metadata should always be present"
     # hidden_states should be None when not requested via include_fields
     assert result.hidden_states is None, "hidden_states should be None when not requested"
+    assert result.lm_logits is None, "lm_logits should be None when not requested"
     del model
 
 
@@ -99,16 +117,156 @@ def test_esm2_embed_with_hidden_states(esm2_model_factory, model_config):
     del model
 
 
-def test_esm2_embed_hidden_states(esm2_model_factory):
-    """Test ESM2 embedding hidden states control via include_fields."""
-    sequence = "MALWMRLLPLLALLALWGPDPAAA"
-    model = esm2_model_factory(model_name="esm2_t33_650M_UR50D")
+def test_esm2_embed_with_lm_logits(esm2_model_factory):
+    """Test ESM2 embedding with full-vocabulary LM-head logits."""
+    sequence = "ACDE"
+    model = esm2_model_factory(model_name="esm2_t6_8M_UR50D", include_fields=["lm_logits"])
+
     result = model.embed([sequence])
-    assert result.hidden_states is None, "hidden_states should be None when not requested via include_fields"
-    # Even without hidden_states, minimal output should still include embeddings, chain_index, residue_index
-    assert result.embeddings is not None
-    assert result.chain_index is not None
-    assert result.residue_index is not None
+
+    assert result.embeddings.shape == (1, len(sequence), 320)
+    assert result.hidden_states is None
+    assert result.lm_logits is not None
+    assert result.lm_logits.shape == (1, len(sequence), 33)
+    del model
+
+
+def test_esm2_embed_upgrades_to_lm_logits_per_call(esm2_model_factory):
+    """Test that a base-path model upgrades when lm_logits are requested per call."""
+    sequence = "ACDE"
+    model = esm2_model_factory(model_name="esm2_t6_8M_UR50D")
+
+    base_result = model.embed([sequence])
+    logits_result = model.embed([sequence], options={"include_fields": ["lm_logits"]})
+
+    assert base_result.embeddings.shape == (1, len(sequence), 320)
+    assert base_result.hidden_states is None
+    assert base_result.lm_logits is None
+    assert logits_result.embeddings.shape == (1, len(sequence), 320)
+    assert logits_result.hidden_states is None
+    assert logits_result.lm_logits is not None
+    assert logits_result.lm_logits.shape == (1, len(sequence), 33)
+    del model
+
+
+def test_esm2_embed_masked_sequence_with_lm_logits(esm2_model_factory):
+    """Test that inline <mask> tokens align to the residue axis."""
+    sequence = "AC<mask>D"
+    model = esm2_model_factory(model_name="esm2_t6_8M_UR50D", include_fields=["lm_logits"])
+
+    result = model.embed([sequence])
+
+    assert result.metadata.sequence_lengths == [4]
+    assert result.embeddings.shape == (1, 4, 320)
+    assert result.lm_logits is not None
+    assert result.lm_logits.shape == (1, 4, 33)
+    del model
+
+
+def test_esm2_embed_masked_multimer_with_lm_logits(esm2_model_factory):
+    """Test masked multimer logits stay aligned to residues after linker removal."""
+    sequence = "A<mask>:CD"
+    model = esm2_model_factory(
+        model_name="esm2_t6_8M_UR50D",
+        include_fields=["lm_logits"],
+        glycine_linker="GG",
+        position_ids_skip=512,
+    )
+
+    result = model.embed([sequence])
+
+    assert result.metadata.sequence_lengths == [4]
+    assert result.embeddings.shape == (1, 4, 320)
+    assert result.lm_logits is not None
+    assert result.lm_logits.shape == (1, 4, 33)
+    assert np.array_equal(result.chain_index[0], np.array([0, 0, 1, 1]))
+    assert np.array_equal(result.residue_index[0], np.array([0, 1, 0, 1]))
+    del model
+
+
+def test_esm2_embed_with_hidden_states_and_lm_logits(esm2_model_factory):
+    """Test that hidden states and LM-head logits can be requested together."""
+    sequence = "ACDE"
+    model = esm2_model_factory(
+        model_name="esm2_t6_8M_UR50D",
+        include_fields=["hidden_states", "lm_logits"],
+    )
+
+    result = model.embed([sequence])
+
+    assert result.embeddings.shape == (1, len(sequence), 320)
+    assert result.hidden_states is not None
+    assert result.hidden_states.shape == (1, 7, len(sequence), 320)
+    assert result.lm_logits is not None
+    assert result.lm_logits.shape == (1, len(sequence), 33)
+    del model
+
+
+def test_esm2_position_id_skip_changes_embeddings(esm2_model_factory):
+    """Custom multimer position skips are wired into rotary embeddings by default."""
+    sequence = "AC:DEFG"
+    model = esm2_model_factory(model_name="esm2_t6_8M_UR50D", include_fields=["hidden_states"])
+
+    result_skip0 = model.embed([sequence], options={"position_ids_skip": 0})
+    result_skip1024 = model.embed([sequence], options={"position_ids_skip": 1024})
+
+    max_diff = np.max(np.abs(result_skip0.embeddings - result_skip1024.embeddings))
+    assert max_diff > 0.0
+    max_hidden_diff = np.max(np.abs(result_skip0.hidden_states - result_skip1024.hidden_states))
+    assert max_hidden_diff > 0.0
+
+
+def test_esm2_maybe_build_position_ids_rotary_cache_shape_mismatch_noop():
+    """Shape-mismatched position ids must skip custom RoPE cache generation."""
+    pytest.importorskip("transformers", reason="requires transformers")
+    from boileroom.models.esm import position_routing
+
+    class _DummyRotary:
+        inv_freq = torch.tensor([0.1, 0.2], dtype=torch.float32)
+
+    dummy = _DummyRotary()
+    k = torch.zeros(1, 2, 3, 4, dtype=torch.float32)
+    shape_mismatched_position_ids = torch.tensor([[0, 1, 0, 2]], dtype=torch.long)
+
+    cache = position_routing._maybe_build_position_ids_rotary_cache(dummy, k, shape_mismatched_position_ids)
+    assert cache is None
+
+
+def test_esm2_embed_with_all_optional_fields(esm2_model_factory):
+    """Test that wildcard include_fields returns both optional ESM2 outputs."""
+    sequence = "ACDE"
+    model = esm2_model_factory(model_name="esm2_t6_8M_UR50D", include_fields=["*"])
+
+    result = model.embed([sequence])
+
+    assert result.embeddings.shape == (1, len(sequence), 320)
+    assert result.hidden_states is not None
+    assert result.hidden_states.shape == (1, 7, len(sequence), 320)
+    assert result.lm_logits is not None
+    assert result.lm_logits.shape == (1, len(sequence), 33)
+    del model
+
+
+def test_esm2_embed_masked_multimer_with_hidden_states_and_lm_logits(esm2_model_factory):
+    """Test masked multimers when both optional outputs are requested together."""
+    sequence = "A<mask>:CD"
+    model = esm2_model_factory(
+        model_name="esm2_t6_8M_UR50D",
+        include_fields=["hidden_states", "lm_logits"],
+        glycine_linker="GG",
+        position_ids_skip=512,
+    )
+
+    result = model.embed([sequence])
+
+    assert result.metadata.sequence_lengths == [4]
+    assert result.embeddings.shape == (1, 4, 320)
+    assert result.hidden_states is not None
+    assert result.hidden_states.shape == (1, 7, 4, 320)
+    assert result.lm_logits is not None
+    assert result.lm_logits.shape == (1, 4, 33)
+    assert np.array_equal(result.chain_index[0], np.array([0, 0, 1, 1]))
+    assert np.array_equal(result.residue_index[0], np.array([0, 1, 0, 1]))
     del model
 
 
@@ -170,17 +328,14 @@ def test_esm2_embed_multimer(esm2_model_factory, test_sequences):
         # First chain should be 0, second chain should be 1, third chain should be 2
         first_chain_length = len(complex_sequence.split(":")[0])
         second_chain_length = len(complex_sequence.split(":")[1])
-        third_chain_length = len(complex_sequence.split(":")[2])
         assert np.all(result.chain_index[0, :first_chain_length] == 0), "First chain indices should be 0"
-        assert np.all(
-            result.chain_index[0, first_chain_length : first_chain_length + second_chain_length] == 1
-        ), "Second chain indices should be 1"
-        assert np.all(
-            result.chain_index[0, first_chain_length + second_chain_length :] == 2
-        ), "Third chain indices should be 2"
-        assert np.all(
-            result.chain_index[0, first_chain_length + second_chain_length + third_chain_length :] == 3
-        ), "Fourth chain indices should be 3"
+        assert np.all(result.chain_index[0, first_chain_length : first_chain_length + second_chain_length] == 1), (
+            "Second chain indices should be 1"
+        )
+        assert np.all(result.chain_index[0, first_chain_length + second_chain_length :] == 2), (
+            "Third chain indices should be 2"
+        )
+        assert not np.any(result.chain_index[0] == 3), "Unexpected fourth chain indices"
 
         # Last test for a batched multimer, each sequence has different number of chains and length
         sequences = [
@@ -213,7 +368,10 @@ def test_esm2_embed_multimer(esm2_model_factory, test_sequences):
 
         for i, seq in enumerate(sequences):
             expected_length = len(seq.replace(":", ""))
-            assert np.all(result.embeddings[i, :expected_length] != 0), "No padding should be 0"
+            non_padding_embeddings = result.embeddings[i, :expected_length]
+            assert not np.any(np.all(non_padding_embeddings == 0, axis=-1)), (
+                "Non-padding embeddings should not contain fully zero vectors"
+            )
             assert np.all(result.embeddings[i, expected_length:] == 0), "Padding should be 0"
             assert np.all(result.chain_index[i, :expected_length] != -1), "No padding should be -1"
             assert np.all(result.chain_index[i, expected_length:] == -1), "Padding should be -1"
@@ -228,7 +386,8 @@ def test_esm2_embed_multimer(esm2_model_factory, test_sequences):
 
 def test_esm2_static_config_enforcement():
     """Test that static config keys cannot be overridden in options."""
-    from boileroom.models.esm.esm2 import ESM2Core
+    pytest.importorskip("transformers", reason="requires transformers (backend dependency)")
+    from boileroom.models.esm.core import ESM2Core
 
     core = ESM2Core(config={"device": "cpu", "model_name": "esm2_t33_650M_UR50D"})
     # device and model_name are static config keys
@@ -236,3 +395,40 @@ def test_esm2_static_config_enforcement():
         core.embed("MALWMRLLPLLALLALWGPDPAAA", options={"device": "cuda:0"})
     with pytest.raises(ValueError, match="model_name"):
         core.embed("MALWMRLLPLLALLALWGPDPAAA", options={"model_name": "esm2_t6_8M_UR50D"})
+
+
+def test_esm2_mask_linker_region_pads_hidden_states_on_sequence_axis():
+    """Hidden states should pad on sequence length before batch stacking."""
+    pytest.importorskip("transformers", reason="requires transformers (backend dependency)")
+    torch = pytest.importorskip("torch", reason="requires torch")
+    from boileroom.models.esm.core import ESM2Core
+
+    core = ESM2Core(config={"device": "cpu", "model_name": "esm2_t6_8M_UR50D"})
+    embeddings = np.arange(2 * 5 * 3, dtype=np.float32).reshape(2, 5, 3)
+    hidden_states = np.arange(2 * 4 * 5 * 3, dtype=np.float32).reshape(2, 4, 5, 3)
+    lm_logits = np.arange(2 * 5 * 7, dtype=np.float32).reshape(2, 5, 7)
+    linker_map = torch.tensor([[1, 1, 1, -1, -1], [1, 1, 1, 1, -1]])
+    residue_index = torch.tensor([[0, 1, 2, -1, -1], [0, 1, 2, 3, -1]])
+    chain_index = torch.tensor([[0, 0, 1, -1, -1], [0, 0, 1, 1, -1]])
+
+    _, filtered_hidden_states, filtered_lm_logits, filtered_chain_index, filtered_residue_index = (
+        core._mask_linker_region(
+            embeddings,
+            hidden_states,
+            lm_logits,
+            linker_map,
+            residue_index,
+            chain_index,
+        )
+    )
+
+    assert filtered_hidden_states is not None
+    assert filtered_hidden_states.shape == (2, 4, 4, 3)
+    assert np.all(filtered_hidden_states[0, :, 3] == 0)
+    assert filtered_lm_logits is not None
+    assert filtered_lm_logits.shape == (2, 4, 7)
+    assert np.all(filtered_lm_logits[0, 3] == 0)
+    assert filtered_chain_index.shape == (2, 4)
+    assert filtered_residue_index.shape == (2, 4)
+    assert filtered_chain_index[0, 3] == -1
+    assert filtered_residue_index[0, 3] == -1

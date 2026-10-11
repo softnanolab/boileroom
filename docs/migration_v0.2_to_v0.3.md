@@ -1,99 +1,146 @@
 # Migration Guide: v0.2 to v0.3
 
-This guide helps you upgrade from boileroom v0.2 to v0.3.
+This guide covers the user-visible changes that matter when upgrading from `boileroom` `v0.2.x` to `v0.3.x`.
 
-## Breaking Changes
+If you only used the high-level Python API, there are three things to check:
 
-### Optional Dependency Key Renamed: `local` → `esm`
+1. Stop using `app.run()` and `.remote()`.
+2. Request optional output fields explicitly.
+3. Rename the `local` extra to `esm` if you installed it.
 
-**What changed:**
-The optional dependency key in `pyproject.toml` was renamed from `local` to `esm` in v0.3.0. This is a breaking change for users who install the package with the `[local]` extra.
+## 1. High-Level API No Longer Uses `app.run()` or `.remote()`
 
-**Before (v0.2):**
-```bash
-pip install boileroom[local]
-```
+`v0.3` uses the high-level model classes directly. You no longer need to import `app`, open a Modal context manager, or call `.remote()`.
 
-**After (v0.3):**
-```bash
-pip install boileroom[esm]
-```
+### Before (`v0.2`)
 
-**Why the change:**
-The dependency key was renamed to better reflect its purpose: it installs dependencies required for ESM models (ESMFold and ESM-2). The name `esm` is more descriptive and aligns with the model-specific extras pattern used elsewhere in the project.
-
-**Action required:**
-If you were previously installing with `pip install boileroom[local]`, update your installation commands, CI/CD scripts, and documentation to use `pip install boileroom[esm]` instead.
-
-**Example:**
-```bash
-# Old (v0.2)
-pip install boileroom[local]
-
-# New (v0.3)
-pip install boileroom[esm]
-```
-
-### High-Level API Simplification
-
-**What changed:**
-The high-level API has been simplified in v0.3.0. You no longer need to import and use the `app` context manager, or call `.remote()` on model methods. Instead, models now use a backend parameter and handle execution automatically.
-
-**Before (v0.2):**
 ```python
-from boileroom import app, ESMFold
+from boileroom import ESMFold, app
 
-# Initialize the model
+sequence = "MLKNVHVLVLGAGDVGSVVVRLLEK"
 model = ESMFold()
 
-# Predict structure for a protein sequence
+with app.run():
+    result = model.fold.remote([sequence])
+```
+
+### After (`v0.3`)
+
+```python
+from boileroom import ESMFold
+
 sequence = "MLKNVHVLVLGAGDVGSVVVRLLEK"
+model = ESMFold()
+result = model.fold([sequence])
+```
+
+### What You Need To Change
+
+- Remove `app` from your imports.
+- Remove `with app.run():`.
+- Replace `.remote(...)` with a normal method call such as `.fold(...)` or `.embed(...)`.
+
+## 2. Optional Outputs Are Now Opt-In
+
+`v0.3` returns a smaller default payload. Structure models always return `metadata` and `atom_array`, but optional fields such as `plddt`, `pae`, `pdb`, `cif`, and model-specific confidence outputs are no longer assumed to be present unless you request them.
+
+This is the biggest behavioral change to watch for if your `v0.2` code accessed extra result fields directly.
+
+### Before (`v0.2`)
+
+```python
+from boileroom import ESMFold, app
+
+sequence = "MLKNVHVLVLGAGDVGSVVVRLLEK"
+model = ESMFold()
 
 with app.run():
     result = model.fold.remote([sequence])
 
-# Access prediction results
 coordinates = result.positions
 confidence = result.plddt
 ```
 
-**After (v0.3):**
+### After (`v0.3`)
+
 ```python
 from boileroom import ESMFold
 
-# Initialize the model
-model = ESMFold(backend="modal")
-
-# Predict structure for a protein sequence
 sequence = "MLKNVHVLVLGAGDVGSVVVRLLEK"
+model = ESMFold()
 
-result = model.fold([sequence])
+result = model.fold([sequence], options={"include_fields": ["pdb"]})
 
-# Access prediction results
-# Extract coordinates from atom_array (which contains full metadata)
-atom_array = result.atom_array[0]  # Get first structure
-coordinates = atom_array.coord  # Get coordinates
-confidence = result.plddt
+atom_array = result.atom_array[0]
+coordinates = atom_array.coord
+pdb_string = result.pdb[0]
 ```
 
-**Why the change:**
-The new API simplifies usage by:
-- Removing the need for explicit context managers (`with app.run()`)
-- Eliminating the `.remote()` method call requirement
-- Providing a unified interface that works with both Modal and other backends (some already implemented)
-- Making the backend selection explicit via the `backend` parameter
+### If You Need Optional Fields
 
-**Action required:**
-1. Remove `app` from your imports
-2. Add `backend="modal"` (or `backend="local"`) when initializing models
-3. Remove `with app.run():` context managers
-4. Remove `.remote()` calls from method invocations
+Request them per call:
 
-**Key differences:**
-- Model initialization: `ESMFold()` → `ESMFold(backend="modal")`
-- Method calls: `model.fold.remote([sequence])` → `model.fold([sequence])`
-- Context manager: No longer needed
+```python
+result = model.fold(
+    [sequence],
+    options={"include_fields": ["plddt", "pae", "pdb", "cif"]},
+)
+```
 
-## Other Changes
+Or set them in the model config if you want the same fields every time:
 
-_Add other breaking changes, deprecations, or important updates here as needed._
+```python
+model = ESMFold(config={"include_fields": ["plddt", "pae"]})
+result = model.fold([sequence])
+```
+
+### What You Need To Change
+
+- Audit code that reads fields such as `plddt`, `pae`, `pde`, `pdb`, `cif`, `hidden_states`, or other non-minimal outputs.
+- Add `include_fields` wherever those fields are required.
+- Prefer `atom_array` as the default structure representation.
+
+## 3. Optional Dependency Extra Renamed: `local` -> `esm`
+
+If you were installing the old `local` extra, rename it to `esm`.
+
+### Before (`v0.2`)
+
+```bash
+pip install boileroom[local]
+```
+
+### After (`v0.3`)
+
+```bash
+pip install boileroom[esm]
+```
+
+### What You Need To Change
+
+- Update installation commands.
+- Update CI setup and environment files.
+- Update any internal docs or notebooks that still reference `boileroom[local]`.
+
+## Backend Selection
+
+The default high-level backend remains Modal, so most users do not need to pass `backend="modal"` explicitly.
+
+Only specify `backend` when you want something other than the default, for example:
+
+```python
+from boileroom import ESMFold
+
+model = ESMFold(backend="apptainer")
+result = model.fold(["MLKNVHVLVLGAGDVGSVVVRLLEK"])
+```
+
+Valid examples in `v0.3` are `backend="modal"` and `backend="apptainer"`. `backend="local"` is not a valid replacement.
+
+## Quick Upgrade Checklist
+
+- Remove `app.run()` usage.
+- Remove `.remote()` calls.
+- Rename `boileroom[local]` to `boileroom[esm]` if applicable.
+- Add `include_fields` anywhere you rely on optional outputs.
+- Switch code that previously read raw coordinates from legacy fields to `result.atom_array`.

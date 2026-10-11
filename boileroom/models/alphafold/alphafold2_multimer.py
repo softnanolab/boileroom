@@ -1,0 +1,84 @@
+"""Public and Modal wrappers for AlphaFold2-Multimer."""
+
+import logging
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Any
+
+import modal
+
+from ...backend.modal import get_modal_app
+from ...backend.modal_server import ModalFoldServer
+from ...base import ModelWrapper
+from ...images.volumes import model_weights
+from ...utils import HOURS, MINUTES, MODAL_MODEL_DIR
+from ..registry import ALPHAFOLD2_MULTIMER_SPEC
+from .image import alphafold2_multimer_image
+from .msa import encode_msa_option, materialize_msa, split_chains
+from .types import AlphaFold2MultimerOutput
+
+if TYPE_CHECKING:
+    from .core import AlphaFold2MultimerCore
+
+logger = logging.getLogger(__name__)
+app = get_modal_app("alphafold2_multimer")
+
+
+@app.cls(
+    image=alphafold2_multimer_image,
+    gpu="A100-80GB",
+    timeout=6 * HOURS,
+    scaledown_window=10 * MINUTES,
+    volumes={MODAL_MODEL_DIR: model_weights},
+)
+class ModalAlphaFold2Multimer(ModalFoldServer):
+    """Modal entrypoint for AlphaFold2-Multimer."""
+
+    config: bytes = modal.parameter(default=b"{}")
+
+    def _build_core(self, config: dict[str, Any]) -> "AlphaFold2MultimerCore":
+        from .core import AlphaFold2MultimerCore
+
+        return AlphaFold2MultimerCore(config)
+
+
+class AlphaFold2Multimer(ModelWrapper):
+    """Interface for AlphaFold2-Multimer structure prediction."""
+
+    MODEL_SPEC = ALPHAFOLD2_MULTIMER_SPEC
+
+    def __init__(self, backend: str = "modal", device: str | None = None, config: dict | None = None) -> None:
+        """Create an AlphaFold2-Multimer model wrapper."""
+        super().__init__(backend=backend, device=device, config=config)
+        self._initialize_backend_from_spec(self.MODEL_SPEC, backend=backend, device=device, config=config)
+
+    def fold(self, sequences: str | Sequence[str], options: dict | None = None) -> "AlphaFold2MultimerOutput":
+        """Run AlphaFold2-Multimer for a single sequence entry.
+
+        Keep one instance open and call ``fold()`` for each job to reuse the
+        loaded runners and parameters. Model settings belong in ``config``;
+        seeds, MSA inputs and output selection can change in ``options``.
+        Use ``:`` inside a sequence string to define multiple chains.
+
+        ``options["msa"]`` may be an :class:`~boileroom.inputs.MSAInput` or a list
+        with one A3M text (unpaired MSA) or ``None`` per chain. It is validated
+        against the requested sequence here, and file-backed MSAs are read on the
+        caller's side, so the same value works on the Modal and Apptainer backends.
+        """
+        validated_sequences = [sequences] if isinstance(sequences, str) else list(sequences)
+        if len(validated_sequences) != 1:
+            raise ValueError(
+                "AlphaFold2-Multimer currently supports exactly one top-level sequence per call; use ':' to join chains."
+            )
+        if options is not None:
+            static_keys = self.MODEL_SPEC.contract.static_config_keys & set(options)
+            if static_keys:
+                raise ValueError(
+                    "The following config keys can only be set at initialization and cannot be overridden per-call: "
+                    f"{sorted(static_keys)}"
+                )
+        if options is not None and options.get("msa") is not None:
+            encoded = encode_msa_option(options["msa"])
+            chains = split_chains(validated_sequences[0])
+            materialize_msa(encoded, chains)  # fail before starting a backend
+            options = {**options, "msa": encoded}
+        return self._call_backend_method("fold", sequences, options=options)
