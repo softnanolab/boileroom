@@ -8,3 +8,4 @@ numpy<2.0
 fastapi
 uvicorn
 pydantic
+httpx

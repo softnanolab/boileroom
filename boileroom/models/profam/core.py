@@ -24,6 +24,11 @@ CHECKPOINT_SHA256 = "8ec54d80323f188d3454fb4457f63f12158fe55552b919554806b12730c
 AMINO_ACIDS = frozenset("ACDEFGHIKLMNPQRSTVWY")
 
 
+def _violates_repeat_guard(sequence: str) -> bool:
+    """Detect any prefix the pinned upstream 9-mer/9-repeat guard would stop."""
+    return any(sequence[:end].count(sequence[end - 9 : end]) >= 9 for end in range(81, len(sequence) + 1))
+
+
 class ProFamCore(GenerationAlgorithm):
     """Load once, generate repeatedly, and discard model state on close.
 
@@ -127,12 +132,25 @@ class ProFamCore(GenerationAlgorithm):
         max_length = int(generated_limit)
         if merged["max_generated_length"] is not None:
             max_length = min(max_length, merged["max_generated_length"])
-        # Reserve [RAW], two [SEP] tokens and one complete shortest sequence.
-        # Upstream truncates/subsamples the prompt to the remaining budget.
-        if max_length < 1 or max_length + min(map(len, prompt)) + 3 > merged["max_context_tokens"]:
+        # Upstream's shuffled greedy sampler can stop at the first non-fitting
+        # sequence, and single preprocessing rejects equality. Every family
+        # member must fit with strict surplus, independently of the shuffle seed.
+        if max_length < 3 or max_length + max(map(len, prompt)) + 3 >= merged["max_context_tokens"]:
             raise ValueError(
                 "max_context_tokens cannot fit a complete prompt sequence and the requested generation cap"
             )
+        if max_length < int(min(map(len, prompt)) * merged["minimum_sequence_length_proportion"]):
+            raise ValueError("generation cap is below the requested minimum sequence length")
+        if merged["sampler"] == "ensemble":
+            # The pinned builder reserves 1.2*longest even with a different cap,
+            # then samples a context budget with a lower bound of half the
+            # remainder. Require every member to fit even that lowest budget.
+            longest = max(map(len, prompt))
+            reserved = int(longest * 1.2)
+            if max_length > reserved or (merged["max_context_tokens"] - reserved) // 2 < longest + 3:
+                raise ValueError(
+                    "ensemble context budget must reserve 1.2*longest plus twice (longest+3); generation cap cannot exceed the upstream reserve"
+                )
         if merged["prompt_accessions"] is not None and len(merged["prompt_accessions"]) != len(prompt):
             raise ValueError("prompt_accessions must match the number of prompt sequences")
         return prompt, merged
@@ -215,12 +233,42 @@ class ProFamCore(GenerationAlgorithm):
                 "ProFam returned fewer samples or scores than requested; increase maximum_retries or adjust filters"
             )
         if any(not sequence or not set(sequence) <= AMINO_ACIDS for sequence in sequences_out) or any(
-            not math.isfinite(score) for score in scores
+            not math.isfinite(score) or score > 1e-6 for score in scores
         ):
             raise RuntimeError("ProFam returned invalid amino-acid sequences or nonfinite sampling scores")
         effective_cap = int(max(map(len, prompt)) * merged["max_sequence_length_multiplier"])
         if merged["max_generated_length"] is not None:
             effective_cap = min(effective_cap, merged["max_generated_length"])
+        conditioning = list(result.conditioning_prompts or [])
+        if not conditioning or any(not item.sequences for item in conditioning):
+            raise RuntimeError("ProFam returned no conditioning provenance")
+        accessions = merged["prompt_accessions"] or [f"seq_{i}" for i in range(len(prompt))]
+        family = dict(zip(accessions, prompt, strict=True))
+        expected_prompts = min(merged["num_prompts_in_ensemble"], len(prompt)) if merged["sampler"] == "ensemble" else 1
+        if len(conditioning) != expected_prompts or any(
+            len(item.accessions) != len(item.sequences)
+            or any(
+                family.get(accession) != sequence
+                for accession, sequence in zip(item.accessions, item.sequences, strict=True)
+            )
+            for item in conditioning
+        ):
+            raise RuntimeError("ProFam conditioning provenance does not match the requested family")
+        if any(
+            2 + sum(len(sequence) + 1 for sequence in item.sequences) + effective_cap > merged["max_context_tokens"]
+            for item in conditioning
+        ):
+            raise RuntimeError("ProFam returned a conditioning prompt outside the context budget")
+        threshold_prompt = list(conditioning[0].sequences) if merged["sampler"] == "single" else prompt
+        minimum_length = int(min(map(len, threshold_prompt)) * merged["minimum_sequence_length_proportion"])
+        # Both upstream samplers eventually disable filters/repeat guarding to
+        # fill the requested count. Enforce the public contract on fallback too.
+        if any(not minimum_length <= len(sequence) <= effective_cap for sequence in sequences_out):
+            raise RuntimeError(
+                "ProFam exhausted filtering retries and returned a sequence outside requested length limits"
+            )
+        if merged["repeat_guard"] and any(_violates_repeat_guard(sequence) for sequence in sequences_out):
+            raise RuntimeError("ProFam exhausted repeat-guard retries and returned a repetitive sequence")
         sampling_facts = {
             f"profam.{key}": str(merged[key])
             for key in (
@@ -230,6 +278,7 @@ class ProFamCore(GenerationAlgorithm):
                 "temperature",
                 "top_p",
                 "reduction",
+                "num_prompts_in_ensemble",
                 "max_context_tokens",
                 "maximum_retries",
                 "repeat_guard",
@@ -237,7 +286,18 @@ class ProFamCore(GenerationAlgorithm):
             )
         }
         sampling_facts["profam.generation_cap"] = str(effective_cap)
-        sampling_facts["profam.num_conditioning_prompts"] = str(len(result.conditioning_prompts or []))
+        sampling_facts["profam.num_conditioning_prompts"] = str(len(conditioning))
+        sampling_facts["profam.minimum_generated_length"] = str(minimum_length)
+        sampling_facts["profam.score_semantics"] = "mean_post_warper_token_log_probability"
+        effective_temperature: Any = merged["temperature"]
+        if effective_temperature is None:
+            native = getattr(getattr(self.model, "_model", None), "model", None)
+            generation_config = getattr(native, "generation_config", None)
+            if merged["sampler"] == "ensemble":
+                effective_temperature = 1.0
+            else:
+                effective_temperature = getattr(generation_config, "temperature", "unknown")
+        sampling_facts["profam.temperature_effective"] = str(effective_temperature)
         return ProFamOutput(
             metadata=PredictionMetadata(
                 model_name=self.name,

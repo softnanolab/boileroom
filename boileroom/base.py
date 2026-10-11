@@ -84,7 +84,8 @@ class EmbeddingPrediction(Protocol):
 class GenerationOutput:
     """Generated sequences and their mean per-token sampling log-probabilities.
 
-    The scores describe sampling confidence, not experimental fitness or the
+    Scores use the post-temperature, post-nucleus sampling distribution (including
+    terminal tokens where present). They describe sampling confidence, not experimental fitness or the
     full-sequence likelihood. A family prompt is one generation input, even
     when it contains several homologous sequences.
     """

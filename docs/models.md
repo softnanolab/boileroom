@@ -420,16 +420,29 @@ sequences. `max_context_tokens` defaults to 4096 and cannot exceed the 8192-toke
 training context. The effective generation cap is the smaller of
 `max_generated_length` (when supplied) and
 `floor(longest_prompt_length * max_sequence_length_multiplier)` (default 1.2).
-The remaining budget must fit at least one intact prompt sequence plus special
-tokens. Generated sequences can be shorter than the cap. `maximum_retries`
-bounds upstream filtering attempts; an incomplete result raises an error rather
-than silently returning fewer samples. Temperature, top-p, length filtering,
+Single sampling requires `max_context_tokens > longest_prompt_length + cap + 3`.
+For ensemble sampling, the pinned upstream builder reserves
+`R=floor(1.2*longest_prompt_length)` regardless of the requested cap. Boileroom
+conservatively requires `cap <= R` and
+`floor((max_context_tokens-R)/2) >= longest_prompt_length+3`. These bounds
+ensure every shuffled family member fits even the smallest randomly chosen
+context budget; they avoid upstream empty-prompt and context-overflow edge cases.
+The effective cap must be at least three tokens, matching upstream generation. Generated sequences can be shorter than the cap. `maximum_retries`
+bounds upstream filtering attempts. Upstream eventually fills remaining samples
+without filters; Boileroom rechecks minimum length, the effective cap and every
+prefix against the 9-mer/9-repeat guard and raises if fallback breaks those
+requirements. An incomplete result also raises. Temperature, top-p, length filtering,
 repeat guarding, ensemble reduction and seed are per-call settings.
 
 `log_likelihoods` retains the original PR's field name but means upstream's **mean
 per-token natural log sampling probability**: temperature-scaled and bad-token
-masked, before top-p truncation, including terminal `[SEP]` if emitted. Ensemble
-scores use the aggregated distribution. These are neither full-sequence
+masked and nucleus-truncated/renormalized, including terminal `[SEP]` if emitted.
+Single sampling uses Transformers post-warper generation scores; ensemble
+sampling uses its renormalized nucleus probabilities after prompt aggregation.
+This follows the pinned sampler implementation; the upstream API docstring
+incorrectly describes these as pre-top-p scores. The two implementations also
+use different nucleus selection details, so compare each with its own sampler
+reference, not with each other. These are neither full-sequence
 likelihoods nor ProFam's separate `.score()` output, fitness, or experimental
 validation. Boileroom exposes generation only; upstream scoring, identity
 filtering (which requires MMseqs), continuous sampling and the older
@@ -474,8 +487,19 @@ uv run --extra dev pytest tests/profam/test_profam_integration.py -m integration
 uv run --extra dev pytest tests/test_memory_stability.py -m integration -k profam --backend modal --gpu L4
 ```
 
-The image must be built and published under a validation tag before a registry
-backend can use it; use `--image-tag` / `BOILEROOM_IMAGE_TAG` for that exact image.
+For a source-only branch, the manual **Integration Tests** workflow accepts
+`run-target=profam` and builds the canonical base + family Dockerfiles in a temporary
+Modal app, without publishing an image. Its bounded harness records stock-API
+adapter parity for both samplers and ensemble reductions, multi-sample ordering,
+seed repeatability on one stack, real signed loopback HTTP, context responsiveness,
+4 cycles of 3 allocation shapes for both samplers, and post-close release. It
+records actual sequences/scores, pins, phase failures and memory traces as artifacts.
+RCSB 1UBQ/1CRN sequences plus explicitly synthetic point variants are controlled
+inputs, not biological validation. The teacher-forced context-response check is
+separate from generation-score parity and makes no fitness claim. Loopback HTTP
+does not establish that the Apptainer launcher or its SIF worked.
+
+The public registry backends need an image published under a validation tag; use `--image-tag` / `BOILEROOM_IMAGE_TAG` for that exact image.
 Passing mocked tests establishes API/lifecycle/transport behavior, not scientific
 performance or container/GPU validation. See the PR's latest verification report
 for actual backend, image and device coverage.

@@ -146,12 +146,13 @@ def test_corrupt_checkpoint_never_reaches_pickle_loader(monkeypatch: pytest.Monk
 def test_generation_maps_api_options_and_returns_independent_cpu_outputs(
     sampler: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    core = _core({"num_samples": 2})
+    core = _core({"num_samples": 2, "minimum_sequence_length_proportion": 0.1})
     calls: list[dict] = []
     result = SimpleNamespace(
         sequences=["ACDE", "ACDF"],
         scores=[-0.1, -0.5],
-        conditioning_prompts=[SimpleNamespace(sequences=[PROMPT[1]], accessions=["second"])],
+        conditioning_prompts=[SimpleNamespace(sequences=[PROMPT[1]], accessions=["second"])]
+        * (2 if sampler == "ensemble" else 1),
     )
 
     def generate(**kwargs: Any) -> Any:
@@ -172,7 +173,9 @@ def test_generation_maps_api_options_and_returns_independent_cpu_outputs(
     assert first.sequences == ["ACDE", "ACDF"]
     assert first.log_likelihoods == [-0.1, -0.5]
     assert first.metadata.sequence_lengths == [4, 4]
-    assert first.conditioning_prompts == [ConditioningPrompt([PROMPT[1]], ["second"])]
+    assert first.conditioning_prompts == [ConditioningPrompt([PROMPT[1]], ["second"])] * (
+        2 if sampler == "ensemble" else 1
+    )
     first.sequences.append("M")
     first.conditioning_prompts[0].sequences.clear()
     assert first.metadata.runtime is not None and second.metadata.runtime is not None
@@ -183,7 +186,7 @@ def test_generation_maps_api_options_and_returns_independent_cpu_outputs(
 
 
 @pytest.mark.parametrize(
-    ("sequences", "scores"), [([], []), (["ACD"], []), (["A?D"], [-0.2]), (["ACD"], [float("nan")])]
+    ("sequences", "scores"), [([], []), (["ACD"], []), (["A?D"], [-0.2]), (["ACD"], [float("nan")]), (["ACD"], [0.1])]
 )
 def test_invalid_or_incomplete_upstream_results_are_errors(
     sequences: list, scores: list, monkeypatch: pytest.MonkeyPatch
@@ -242,3 +245,104 @@ def test_canonical_image_pins_upstream_without_baking_weights_or_secrets() -> No
     assert f"git+https://github.com/alex-hh/profam.git@{UPSTREAM_COMMIT}" in requirements
     assert "ARG HF_TOKEN" not in dockerfile and "snapshot_download" not in dockerfile
     assert ":latest" not in dockerfile
+
+
+@pytest.mark.parametrize(
+    ("prompt", "options"),
+    [
+        (["A" * 20], {"max_generated_length": 8, "minimum_sequence_length_proportion": 0.1, "max_context_tokens": 31}),
+        (
+            ["A" * 20],
+            {
+                "sampler": "ensemble",
+                "max_generated_length": 8,
+                "minimum_sequence_length_proportion": 0.1,
+                "max_context_tokens": 32,
+            },
+        ),
+        (["A" * 60], {"sampler": "ensemble", "max_sequence_length_multiplier": 2.5, "max_context_tokens": 300}),
+        (
+            ["A" * 60, "ACD"],
+            {"max_generated_length": 8, "minimum_sequence_length_proportion": 0.1, "max_context_tokens": 40},
+        ),
+    ],
+)
+def test_upstream_random_prompt_budget_edges_are_rejected(prompt, options) -> None:
+    with pytest.raises(ValueError):
+        _core().validate_request(prompt, options)
+
+
+@pytest.mark.parametrize("sampler", ["single", "ensemble"])
+@pytest.mark.parametrize("bad_sequence", ["ACD", "ACDEFGHIK" * 9 + "LMNPQ", "ACDEFGHIKLMNPQRSTVWY" * 7])
+def test_upstream_unfiltered_fallback_cannot_bypass_constraints(sampler, bad_sequence, monkeypatch) -> None:
+    prompt = ["ACDEFGHIKLMNPQRSTVWY" * 5]
+    core = _core({"num_samples": 1, "sampler": sampler})
+    core.ready = True
+    core.model = SimpleNamespace(
+        generate=lambda **kwargs: SimpleNamespace(
+            sequences=[bad_sequence],
+            scores=[-0.1],
+            conditioning_prompts=[SimpleNamespace(sequences=prompt, accessions=["seq_0"])],
+        )
+    )
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(inference_mode=nullcontext))
+    with pytest.raises(RuntimeError, match="length limits|repeat-guard"):
+        core.generate(prompt)
+
+
+def test_single_minimum_length_uses_actual_selected_prompt(monkeypatch) -> None:
+    core = _core({"num_samples": 1})
+    core.ready = True
+    core.model = SimpleNamespace(
+        generate=lambda **kwargs: SimpleNamespace(
+            sequences=["ACDEF"],
+            scores=[-0.1],
+            conditioning_prompts=[SimpleNamespace(sequences=["ACDEFGHIKLMNPQRSTVWY"], accessions=["long"])],
+        )
+    )
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(inference_mode=nullcontext))
+    with pytest.raises(RuntimeError, match="length limits"):
+        core.generate(["ACD", "ACDEFGHIKLMNPQRSTVWY"], {"prompt_accessions": ["short", "long"]})
+
+
+def test_conditioning_requires_accession_sequence_pairs(monkeypatch: pytest.MonkeyPatch) -> None:
+    core = _core({"num_samples": 1})
+    core.ready = True
+    core.model = SimpleNamespace(
+        generate=lambda **kwargs: SimpleNamespace(
+            sequences=[PROMPT[0]],
+            scores=[-0.1],
+            conditioning_prompts=[SimpleNamespace(sequences=[PROMPT[1]], accessions=["first"])],
+        )
+    )
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(inference_mode=nullcontext))
+    with pytest.raises(RuntimeError, match="provenance"):
+        core.generate(PROMPT, {"prompt_accessions": ["first", "second"]})
+
+
+def test_repeat_guard_checks_earlier_prefix_not_only_final_suffix() -> None:
+    from boileroom.models.profam.core import _violates_repeat_guard
+
+    assert _violates_repeat_guard("ACDEFGHIK" * 9 + "LMNPQRSTVWY")
+    assert not _violates_repeat_guard("ACDEFGHIK" * 8)
+
+
+@pytest.mark.parametrize("sampler", ["single", "ensemble"])
+def test_effective_temperature_and_sampler_provenance(sampler: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    core = _core({"num_samples": 1})
+    core.ready = True
+    native = SimpleNamespace(model=SimpleNamespace(generation_config=SimpleNamespace(temperature=0.8)))
+    core.model = SimpleNamespace(
+        _model=native,
+        generate=lambda **kwargs: SimpleNamespace(
+            sequences=[PROMPT[0]],
+            scores=[-0.1],
+            conditioning_prompts=[SimpleNamespace(sequences=[PROMPT[0]], accessions=["seq_0"])],
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(inference_mode=nullcontext))
+    result = core.generate(PROMPT[0], {"sampler": sampler, "temperature": None})
+    assert result.metadata.runtime["profam.temperature_effective"] == ("0.8" if sampler == "single" else "1.0")
+    assert result.metadata.runtime["profam.num_prompts_in_ensemble"] == "4"
+    assert result.metadata.runtime["profam.num_conditioning_prompts"] == "1"
+    assert result.metadata.runtime["profam.score_semantics"] == "mean_post_warper_token_log_probability"
