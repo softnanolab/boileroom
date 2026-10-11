@@ -52,7 +52,7 @@ def test_compiled_flag_is_strict_boolean(value):
         run_validation(compiled=value)
 
 
-def test_preimported_torch_refuses_compiled_probe_without_launch(monkeypatch):
+def test_withdrawn_compiled_probe_refuses_without_launch(monkeypatch):
     import minifold_runtime_validation as validation
 
     monkeypatch.setitem(sys.modules, "torch", object())
@@ -60,7 +60,7 @@ def test_preimported_torch_refuses_compiled_probe_without_launch(monkeypatch):
     monkeypatch.setattr(validation, "_run_validation", implementation)
     result = validation.run_validation(compiled=True)
     assert result["passed"] is False and result["compiled"] is True
-    assert "fresh process" in result["phases"]["compiler_preflight"]["message"]
+    assert "withdrawn" in result["phases"]["compiler_preflight"]["message"]
     implementation.assert_not_called()
     _assert_native_json_tree(result)
     json.dumps(result, allow_nan=False)
@@ -89,9 +89,12 @@ def test_compiler_environment_precedes_import_and_restores_previous_values(monke
             raise RuntimeError("probe failed")
         return {"passed": True}
 
-    monkeypatch.setattr(validation, "_run_validation", implementation)
-    result = validation.run_validation(compiled=True)
-    assert result["passed"] is not fails
+    if fails:
+        with pytest.raises(RuntimeError, match="probe failed"), validation._compiler_environment() as environment:
+            implementation("12L", True, environment)
+    else:
+        with validation._compiler_environment() as environment:
+            assert implementation("12L", True, environment)["passed"] is True
     assert os.environ["TORCHINDUCTOR_COMPILE_THREADS"] == "9"
     assert os.environ["TORCHINDUCTOR_CACHE_DIR"] == "/unused-prior-cache"
     assert "TRITON_CACHE_DIR" not in os.environ

@@ -17,6 +17,7 @@ from ...base import FoldingAlgorithm
 from ...optimization import describe_gpu
 from ...provenance import runtime_provenance
 from ...utils import get_model_dir
+from .config import validate_compile
 from .loading import (
     CHECKPOINT_REVISION,
     ESM_ARTIFACTS,
@@ -64,8 +65,7 @@ class MiniFoldCore(FoldingAlgorithm):
             value = config[key]
             if type(value) is not int or value < minimum:
                 raise ValueError(f"MiniFold {key} must be an integer >= {minimum}")
-        if type(config["compile"]) is not bool:
-            raise ValueError("MiniFold compile must be a boolean")
+        validate_compile(config["compile"])
 
     def _initialize(self) -> None:
         """Load once per live runtime."""
@@ -121,8 +121,6 @@ class MiniFoldCore(FoldingAlgorithm):
             torch.hub.set_dir(previous_cache)
         load_state_dict(model, checkpoint["state_dict"])
         del checkpoint
-        if self.config["compile"]:
-            model.fold.miniformer = torch.compile(model.fold.miniformer, dynamic=True, fullgraph=True)
         device = self._resolve_device()
         model = model.to(device).eval()
         self.model, self.alphabet = model, model.lm.alphabet

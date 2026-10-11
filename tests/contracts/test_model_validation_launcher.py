@@ -700,57 +700,39 @@ def test_sigint_cleanup_recovers_unmerged_public_ledger(tmp_path: Path) -> None:
             process.communicate(timeout=5)
 
 
-def test_compiled_gate_is_explicit_minifold_only_and_keeps_resource_bounds() -> None:
-    with pytest.raises(ValueError, match="MiniFold only"):
-        launcher.make_plan(ROOT, "profam", "12L", None, "compiled")
-    plain = launcher.make_plan(ROOT, "minifold", "12L", None)
-    compiled = launcher.make_plan(ROOT, "minifold", "12L", None, "compiled")
-    assert plain["compiled"] is False and compiled["compiled"] is True
-    assert compiled["entrypoint"] == "tests/minifold/minifold_runtime_validation.py"
-    assert compiled["limits"] == plain["limits"]
-    assert compiled["limits"]["remote_timeout_seconds"] == 1200
-    assert compiled["limits"]["gpu"] == "L4" and compiled["limits"]["max_containers"] == 1
+@pytest.mark.parametrize("family", ["minifold", "profam"])
+def test_withdrawn_compiled_gate_refuses_before_any_source_or_cloud_work(monkeypatch, family):
+    monkeypatch.setattr(launcher, "git", lambda *_args: pytest.fail("must refuse before source or cloud work"))
+    with pytest.raises(ValueError, match="withdrawn.*strict upstream parity"):
+        launcher.make_plan(ROOT, family, "12L", None, "compiled")
+    with pytest.raises(ValueError, match="withdrawn.*strict upstream parity"):
+        launcher.remote_validation(family, "12L", True)
 
 
-def test_compiled_remote_call_forwards_true_without_affecting_core(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    modal, _events = _fake_modal(monkeypatch)
-    calls = []
-    original = modal.App.function
-
-    def function(self: Any, **kwargs: Any) -> Any:
-        decorate = original(self, **kwargs)
-
-        def wrap(fn: Any) -> Any:
-            obj = decorate(fn)
-            remote = obj.remote.aio
-
-            async def observed(*args: Any) -> Any:
-                calls.append(args)
-                return await remote(*args[:2])
-
-            obj.remote.aio = observed
-            return obj
-
-        return wrap
-
-    monkeypatch.setattr(modal.App, "function", function)
-    for mode in ("core", "compiled"):
-        plan = launcher.make_plan(ROOT, "minifold", "12L", None, mode)
-        asyncio.run(launcher.run_apps(modal, ROOT, plan, tmp_path, {"apps": [], "passed": False}))
-    assert calls == [("minifold", "12L"), ("minifold", "12L", True)]
-
-
-def test_compiled_mode_is_not_a_default_or_broad_workflow_gate() -> None:
+def test_compiled_mode_is_not_available_in_manual_or_broad_workflow_gates() -> None:
     workflow = yaml.safe_load((ROOT / ".github/workflows/integration-tests.yaml").read_text())
     events = workflow.get("on", workflow.get(True))
     inputs = events["workflow_dispatch"]["inputs"]
     assert inputs["run-target"]["default"] == "none"
     assert inputs["validation-mode"]["default"] == "core"
-    assert "compiled" in inputs["validation-mode"]["options"]
-    assert "inputs.validation-mode == 'compiled'" in workflow["jobs"]["model-validation"]["if"]
+    assert "compiled" not in inputs["validation-mode"]["options"]
+    assert "compiled" not in workflow["jobs"]["model-validation"]["if"]
     assert "compiled" not in workflow["jobs"]["integration-tests"]["if"]
+
+
+@pytest.mark.parametrize(
+    "plan",
+    [
+        {"mode": "compiled", "compiled": True},
+        {"mode": "compiled", "compiled": False},
+        {"mode": "core", "compiled": True},
+        {"mode": "public-modal", "compiled": "false"},
+    ],
+)
+def test_stale_compiled_plan_never_builds_or_silently_falls_back(monkeypatch, tmp_path, plan):
+    monkeypatch.setattr(launcher, "build_image", lambda *_args: pytest.fail("must refuse before image or app creation"))
+    with pytest.raises(ValueError, match="withdrawn; no eager fallback"):
+        asyncio.run(launcher.run_apps(None, ROOT, plan, tmp_path, {}))
 
 
 def test_extracted_sif_routes_are_distinct_and_explicit() -> None:

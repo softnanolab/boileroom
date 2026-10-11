@@ -449,30 +449,23 @@ def _compiled_cleanup(report: dict, resident_ref: Any, before: dict | None) -> N
 
 
 def run_validation(model_size: str = "12L", compiled: bool = False) -> dict[str, Any]:
-    """Opt into a compiled probe in a fresh process; never change the default path."""
+    """Run supported eager validation; retain a fail-closed retired-probe response."""
     if type(compiled) is not bool:
         raise ValueError("compiled must be a boolean")
-    if not compiled:
-        return _run_validation(model_size)
-    started = time.monotonic()
-    try:
-        with _compiler_environment() as environment:
-            return _run_validation(model_size, compiled=True, compiler_environment=environment)
-    except Exception as error:
+    if compiled:
         return {
             "passed": False,
             "model_size": model_size,
             "compiled": True,
-            "seconds": time.monotonic() - started,
             "phases": {
                 "compiler_preflight": {
                     "passed": False,
-                    "error_type": type(error).__name__,
-                    "message": str(error),
-                    "traceback": traceback.format_exc(),
+                    "error_type": "ValueError",
+                    "message": "MiniFold compiled validation was withdrawn after failing strict upstream parity",
                 }
             },
         }
+    return _run_validation(model_size)
 
 
 def _run_validation(

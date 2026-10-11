@@ -12,6 +12,7 @@ from ...base import ModelWrapper
 from ...images.volumes import model_weights
 from ...utils import MINUTES, MODAL_MODEL_DIR
 from ..registry import MINIFOLD_SPEC
+from .config import validate_compile
 from .image import minifold_image
 from .types import MiniFoldOutput
 
@@ -81,6 +82,8 @@ class MiniFold(ModelWrapper):
             If an unsupported backend string is provided.
         """
         config = dict(config or {})
+        # Keep the host lightweight and refuse before any backend/image startup.
+        validate_compile(config.get("compile", False))
         if self.parse_backend(backend)[0] == "apptainer":
             configured = config.get("device")
             if device is not None and configured is not None and device != configured:

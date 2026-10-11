@@ -14,14 +14,13 @@ on:
           - profam
           - full-suite
       validation-mode:
-        description: "Selected gate; public-modal after core; compiled is MiniFold-only"
+        description: "Selected gate; public-modal after core"
         required: false
         default: "core"
         type: choice
         options:
           - core
           - public-modal
-          - compiled
           - cpu-sif
           - cpu-vm-probe
           - cpu-vm-sif
@@ -143,7 +142,7 @@ jobs:
     if: >-
       github.event_name == 'workflow_dispatch' &&
       (inputs.run-target == 'minifold' || inputs.run-target == 'profam') &&
-      (inputs.validation-mode == 'core' || inputs.validation-mode == 'public-modal' || inputs.validation-mode == 'compiled' || inputs.validation-mode == '')
+      (inputs.validation-mode == 'core' || inputs.validation-mode == 'public-modal' || inputs.validation-mode == '')
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
