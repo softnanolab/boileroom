@@ -338,7 +338,7 @@ def test_esm_loader_is_allowlisted_verified_and_weights_only(tmp_path, monkeypat
     result = loading.load_esm_artifact(url)
     assert result["cfg"].encoder_layers == 36
     assert observed == [(url, loading.ESM_ARTIFACTS[url])]
-    assert torch.serialization.get_safe_globals() == before
+    assert set(torch.serialization.get_safe_globals()) == set(before)
     with pytest.raises(ValueError, match="Unrecognized"):
         loading.load_esm_artifact("https://example.com/model.pt")
 
@@ -372,3 +372,81 @@ def test_upstream_patch_is_checked_and_preserves_non_kernel_math(tmp_path):
     assert 'find = {include = ["minifold*"]}' in (tmp_path / "pyproject.toml").read_text()
     with pytest.raises(ValueError, match="packaging"):
         patch(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "device,config,expected",
+    [
+        ("cpu", {}, "cpu"),
+        ("cuda:3", {}, "cuda:0"),
+        (None, {"device": "cpu"}, "cpu"),
+        (None, {"device": "cuda:2"}, "cuda:0"),
+    ],
+)
+def test_apptainer_device_is_forwarded_in_core_local_coordinates(monkeypatch, device, config, expected):
+    from boileroom import MiniFold
+    from boileroom.base import ModelWrapper
+
+    initialize = Mock()
+    monkeypatch.setattr(ModelWrapper, "_initialize_backend_from_spec", initialize)
+    original_config = config.copy()
+    with MiniFold(backend="apptainer", device=device, config=config):
+        pass
+    assert initialize.call_args.kwargs["config"].get("device") == (expected if "device" in config else None)
+    assert initialize.call_args.kwargs["device"] == (device or config["device"])
+    assert config == original_config
+
+
+def test_conflicting_apptainer_device_refused_before_backend(monkeypatch):
+    from boileroom import MiniFold
+    from boileroom.base import ModelWrapper
+
+    initialize = Mock()
+    monkeypatch.setattr(ModelWrapper, "_initialize_backend_from_spec", initialize)
+    with pytest.raises(ValueError, match="same Apptainer device"):
+        MiniFold(backend="apptainer", device="cpu", config={"device": "cuda:0"})
+    initialize.assert_not_called()
+
+
+def test_failed_load_tracebacks_release_model_before_retry(loader_case, monkeypatch):
+    import gc
+    import weakref
+
+    from boileroom.optimization import GuardedCore
+
+    instance, _, factory, _ = loader_case
+    references = []
+
+    class Model:
+        def __init__(self, **kwargs):
+            references.append(weakref.ref(self))
+
+        def load_state_dict(self, *args, **kwargs):
+            return SimpleNamespace(missing_keys=[], unexpected_keys=[])
+
+        def named_parameters(self):
+            return []
+
+        def named_buffers(self):
+            return []
+
+        def to(self, device):
+            try:
+                raise OSError("device unavailable")
+            except OSError as cause:
+                raise RuntimeError("move failed") from cause
+
+    factory.side_effect = Model
+    guard = GuardedCore(lambda: instance)
+    gc.collect()
+    assert references[0]() is None
+    assert guard.failure is not None
+    assert str(guard.failure) == "move failed"
+    assert str(guard.failure.__cause__) == "device unavailable"
+    with pytest.raises(RuntimeError, match="move failed"):
+        guard.get()
+    gc.collect()
+    assert len(references) == 2 and all(ref() is None for ref in references)
+    guard.close()
+    assert guard.failure is not None
+    assert instance.model is None and not instance.ready

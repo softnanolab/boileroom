@@ -80,6 +80,15 @@ class MiniFold(ModelWrapper):
         ValueError
             If an unsupported backend string is provided.
         """
+        config = dict(config or {})
+        if self.parse_backend(backend)[0] == "apptainer":
+            configured = config.get("device")
+            if device is not None and configured is not None and device != configured:
+                raise ValueError("MiniFold device and config['device'] must select the same Apptainer device")
+            device = device or configured
+            if configured is not None:
+                assert device is not None
+                config["device"] = "cuda:0" if device.startswith("cuda") else device
         super().__init__(backend=backend, device=device, config=config)
         self._initialize_backend_from_spec(self.MODEL_SPEC, backend=backend, device=device, config=config)
 

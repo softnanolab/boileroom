@@ -441,3 +441,37 @@ Both variants exercise repeated and mixed-length calls. Memory validation is a
 separate test: `uv run pytest tests/test_memory_stability.py -k minifold --image-tag <candidate>`.
 Upstream-reference parity and actual Docker/Modal/Apptainer inference must be
 reported separately from mocked CPU contracts and import/preprocessing smoke.
+
+### MiniFold validation scope
+
+The explicit runtime suite uses independently sourced experimental monomers
+[1VII](https://www.rcsb.org/structure/1VII),
+[1CRN](https://www.rcsb.org/structure/1CRN), and
+[1UBQ](https://www.rcsb.org/structure/1UBQ), with checked mmCIF snapshots and exact
+sequence/residue mappings in `tests/data/minifold`. These are outside upstream's
+example FASTA, not proven held-out training examples. Experimental CA metrics are
+reported descriptively; they do not establish general predictive accuracy.
+
+`tests/minifold/runtime_validation.py` independently loads pinned upstream
+weights, runs the original checked `predict.py` preprocessing, releases that
+model, then loads the adapter. It checks unrounded atom-mask/coordinate/pLDDT
+parity through a real signed loopback HTTP service, parsed PDB/CIF agreement,
+reversed mixed-length lists, recycling overrides, output filtering, refusal
+recovery, retained-output immutability, four memory cycles and cleanup. One
+selected checkpoint runs at a time. The bounded manual launcher records exactly
+which variant, image, device and gates ran; a 12L pass does not cover 48L.
+
+This scoped service test does not start an Apptainer SIF or exercise the public
+Modal class lifecycle. Public-wrapper tests are separately in
+`tests/minifold/test_minifold_integration.py`. They require independently generated
+reference artifacts via `BOILEROOM_MINIFOLD_REFERENCE_DIR`; missing artifacts fail.
+The supplied stock-reference script generates L4 Modal references. Strict image,
+GPU, Torch/CUDA and precision matching intentionally prevents reusing those as
+proof for a different backend/device: an Apptainer parity run additionally needs
+references generated inside the same pinned SIF/image identity. Compilation,
+long sequences near the configured limit, and other GPUs are separate gates.
+
+Apptainer `device` selects the physical GPU (or CPU); MiniFold resolves GPU indices
+to device zero after visibility remapping. Conflicting `device` and
+`config['device']` selectors are rejected. Effective precision and matmul settings
+are recorded without silently changing global production Torch settings.

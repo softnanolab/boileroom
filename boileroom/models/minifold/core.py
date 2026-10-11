@@ -1,6 +1,7 @@
 """Resident, single-chain MiniFold inference using the pinned upstream model."""
 
 import os
+import traceback
 from collections.abc import Mapping, Sequence
 from contextlib import nullcontext
 from io import StringIO
@@ -42,6 +43,12 @@ class MiniFoldCore(FoldingAlgorithm):
     STATIC_CONFIG_KEYS = frozenset({"device", "model_size", "cache_dir", "compile", "max_sequence_length"})
 
     def __init__(self, config: dict | None = None) -> None:
+        config = dict(config or {})
+        # The image-backed server selects physical GPUs via CUDA_VISIBLE_DEVICES.
+        # Its DEVICE is a host selector; only device zero is visible in the core.
+        if "device" not in config and "DEVICE" in os.environ:
+            selected = os.environ["DEVICE"]
+            config["device"] = "cuda:0" if selected.startswith("cuda") else selected
         super().__init__(config)
         self.model: Any = None
         self.alphabet: Any = None
@@ -68,6 +75,24 @@ class MiniFoldCore(FoldingAlgorithm):
         """Load verified weights without unsafe pickle fallback or duplicate ESM construction."""
         if self.ready:
             return
+        try:
+            self._load_impl()
+        except BaseException as error:
+            self.close()
+            # GuardedCore retains errors for refusal/retry. Preserve diagnostics but
+            # release completed constructor/.to() frames holding multi-GB weights.
+            pending, seen = [error], set()
+            while pending:
+                failure = pending.pop()
+                if id(failure) in seen:
+                    continue
+                seen.add(id(failure))
+                traceback.clear_frames(failure.__traceback__)
+                pending.extend(e for e in (failure.__cause__, failure.__context__) if e is not None)
+            raise
+
+    def _load_impl(self) -> None:
+        """Construct the resident model in a frame that can be released on failure."""
         from minifold.data.config import model_config
         from minifold.model.model import MiniFoldModel
 
@@ -122,6 +147,15 @@ class MiniFoldCore(FoldingAlgorithm):
             if len(seq) > config["max_sequence_length"]:
                 raise ValueError(f"MiniFold sequence exceeds max_sequence_length={config['max_sequence_length']}")
         return self._validate_sequences(items)
+
+    def _precision(self) -> str:
+        """Record effective execution precision without changing global Torch settings."""
+        assert self._device is not None
+        if self._device.type == "cuda":
+            with torch.cuda.device(self._device):
+                if torch.cuda.is_bf16_supported():
+                    return "fp32-lm/bf16-fold"
+        return "fp32"
 
     def _autocast(self) -> Any:
         """Use BF16 only on a CUDA device that supports it; CPU/T4 use FP32."""
@@ -178,6 +212,9 @@ class MiniFoldCore(FoldingAlgorithm):
                 "minifold.checkpoint_revision": CHECKPOINT_REVISION,
                 "minifold.batch_mode": "sequential-unpadded",
                 "minifold.device": str(self._device),
+                "minifold.precision": self._precision(),
+                "minifold.matmul_precision": torch.get_float32_matmul_precision(),
+                "minifold.allow_tf32": torch.backends.cuda.matmul.allow_tf32,
             },
         )
         arrays, plddt = [], []
