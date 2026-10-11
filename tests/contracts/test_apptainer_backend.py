@@ -529,3 +529,21 @@ def test_other_server_errors_stay_runtime_errors(tmp_path: Path, response: httpx
 def test_client_errors_are_raised_as_http_errors(tmp_path: Path) -> None:
     with pytest.raises(httpx.HTTPStatusError):
         _proxy(httpx.Response(422, json={"detail": "bad request"}), tmp_path).fold("MKV")
+
+
+@pytest.mark.parametrize("device", ["cpu", "cuda:0"])
+def test_server_subprocess_listens_only_on_loopback(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, device: str
+) -> None:
+    backend = _backend(monkeypatch, tmp_path, TAGGED)
+    backend._device = device
+    commands = _fake_startup(monkeypatch, _FakeProcess())
+    monkeypatch.setattr(ApptainerBackend, "_wait_for_health_check", lambda self, timeout: None)
+    backend.startup()
+    try:
+        (command,) = commands
+        assert command[command.index("--host") + 1] == "127.0.0.1"
+        assert "0.0.0.0" not in command
+        assert backend._base_url == "http://127.0.0.1:8123"
+    finally:
+        backend.shutdown()
