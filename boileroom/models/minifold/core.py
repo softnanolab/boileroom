@@ -46,7 +46,7 @@ class MiniFoldCore(FoldingAlgorithm):
         config = dict(config or {})
         # The image-backed server selects physical GPUs via CUDA_VISIBLE_DEVICES.
         # Its DEVICE is a host selector; only device zero is visible in the core.
-        if "device" not in config and "DEVICE" in os.environ:
+        if config.get("device") is None and "DEVICE" in os.environ:
             selected = os.environ["DEVICE"]
             config["device"] = "cuda:0" if selected.startswith("cuda") else selected
         super().__init__(config)

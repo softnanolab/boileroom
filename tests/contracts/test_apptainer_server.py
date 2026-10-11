@@ -275,6 +275,8 @@ def test_every_served_output_records_the_gpu_memory(stubs: Path, tmp_path: Path)
     "device,config,expected,visible",
     [
         ("cpu", {}, "cpu", None),
+        ("cpu", {"device": None}, "cpu", None),
+        ("cuda:3", {"device": None}, "cuda:0", "3"),
         ("cuda:3", {}, "cuda:0", "3"),
         ("cuda:2", {"device": "cuda:0"}, "cuda:0", "2"),
         ("cuda:1", {"device": "cpu"}, "cpu", "1"),

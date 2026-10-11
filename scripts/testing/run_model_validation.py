@@ -30,6 +30,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -41,6 +42,7 @@ TOTAL_TIMEOUT = 53 * 60  # Leave room for cleanup and artifact upload in the 60-
 MODAL_VERSION = "1.3.0.post1"
 CLEANUP_VERIFY_SECONDS = 30
 CLEANUP_POLL_SECONDS = 2
+PROFAM_GPUS = ("T4", "L4")
 MODEL_LIMITS: dict[str, dict[str, Any]] = {
     "minifold": {"gpu": "L4", "memory_mib": 32768, "remote_timeout_seconds": 20 * 60},
     "profam": {"gpu": "T4", "memory_mib": 16384, "remote_timeout_seconds": 30 * 60},
@@ -84,8 +86,12 @@ def model_dockerfile_body(text: str) -> str:
     return "".join(lines[from_lines[0] + 1 :])
 
 
-def make_plan(root: Path, model: str, model_size: str, expected_sha: str | None) -> dict[str, Any]:
+def make_plan(
+    root: Path, model: str, model_size: str, expected_sha: str | None, mode: str = "core", profam_gpu: str = "T4"
+) -> dict[str, Any]:
     """Describe exact source and fixed resource bounds without creating an app."""
+    if profam_gpu not in PROFAM_GPUS:
+        raise ValueError("ProFam validation GPU must be T4 or L4")
     sha = git(root, "rev-parse", "HEAD")
     if expected_sha is not None and (not re.fullmatch(r"[0-9a-f]{40}", expected_sha) or expected_sha != sha):
         raise ValueError("--expected-sha must match this checkout's full HEAD SHA")
@@ -96,16 +102,17 @@ def make_plan(root: Path, model: str, model_size: str, expected_sha: str | None)
         if name and (root / name).is_file()
     }
     source_hash = hashlib.sha256(json.dumps(hashes, sort_keys=True).encode()).hexdigest()
-    entrypoint = f"tests/{model}/runtime_validation.py"
+    entrypoint = f"tests/{model}/{model}_{'public_validation' if mode == 'public-modal' else 'runtime_validation'}.py"
     return {
         "model": model,
+        "mode": mode,
         "model_size": model_size if model == "minifold" else None,
         "other_minifold_variant": "unrun" if model == "minifold" else "not_applicable",
         "git_sha": sha,
         "dirty": bool(git(root, "status", "--porcelain", "--untracked-files=normal")),
         "source_sha256": source_hash,
         "source_files_sha256": hashes,
-        "source_reference": f"source:{sha}:{model}:{source_hash}",
+        "source_reference": f"source:{sha}:{model}:{mode}:{source_hash}",
         "image_kind": "Modal source composition of canonical Dockerfiles; not a Docker/Apptainer image build",
         "base_dockerfile": "boileroom/images/Dockerfile",
         "model_dockerfile": f"boileroom/models/{model}/Dockerfile",
@@ -114,6 +121,7 @@ def make_plan(root: Path, model: str, model_size: str, expected_sha: str | None)
         "modal_sdk": MODAL_VERSION,
         "limits": {
             **MODEL_LIMITS[model],
+            "gpu": profam_gpu if model == "profam" else MODEL_LIMITS[model]["gpu"],
             "cpu": 2,
             "max_containers": 1,
             "gpu_count": 1,
@@ -141,7 +149,7 @@ def build_image(modal: Any, root: Path, plan: dict[str, Any]) -> Any:
     image = image.env(
         {
             "PYTHONPATH": "/validation",
-            "MODEL_DIR": "/tmp/validation-models",
+            "MODEL_DIR": "/mnt/models" if plan["mode"] == "public-modal" else "/tmp/validation-models",
             "BOILEROOM_IMAGE_REF": plan["source_reference"],
             "BOILEROOM_VALIDATION_GIT_SHA": plan["git_sha"],
             "PYTHONUNBUFFERED": "1",
@@ -149,6 +157,11 @@ def build_image(modal: Any, root: Path, plan: dict[str, Any]) -> Any:
             "DO_NOT_TRACK": "1",
         }
     )
+    return mount_sources(image, root, plan)
+
+
+def mount_sources(image: Any, root: Path, plan: dict[str, Any]) -> Any:
+    """Mount the reviewed source without baking it into the canonical dependency image."""
     tracked = {str((root / name).resolve()) for name in plan["source_files_sha256"]}
 
     for directory in ("boileroom", "tests", "scripts"):
@@ -176,7 +189,7 @@ def remote_validation(model: str, model_size: str | None) -> dict[str, Any]:
     root = Path("/validation")
     os.chdir(root)
     sys.path.insert(0, str(root))
-    path = root / "tests" / model / "runtime_validation.py"
+    path = root / "tests" / model / f"{model}_runtime_validation.py"
     spec = importlib.util.spec_from_file_location(f"{model}_runtime_validation", path)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Cannot load {path}")
@@ -192,11 +205,11 @@ def remote_validation(model: str, model_size: str | None) -> dict[str, Any]:
     return report
 
 
-def remember_app(state: dict[str, Any], app: Any, phase: str, output: Path) -> None:
+def remember_app(state: dict[str, Any], app: Any, phase: str, output: Path, filename: str = "run.json") -> None:
     app_id = app.app_id
     if app_id and not any(record["app_id"] == app_id for record in state["apps"]):
         state["apps"].append({"app_id": app_id, "phase": phase, "recorded_at": utc_now()})
-        write_json(output / "run.json", state)
+        write_json(output / filename, state)
 
 
 async def run_apps(modal: Any, root: Path, plan: dict[str, Any], output: Path, state: dict[str, Any]) -> None:
@@ -213,6 +226,10 @@ async def run_apps(modal: Any, root: Path, plan: dict[str, Any], output: Path, s
         state["build_wall_seconds"] = time.monotonic() - started
         remember_app(state, build_app, "cpu_image_build", output)
         write_json(output / "run.json", state)
+
+    if plan["mode"] == "public-modal":
+        await run_public_process(root, plan, output, state)
+        return
 
     limits = plan["limits"]
     app = modal.App(f"boileroom-validate-{plan['model']}-{plan['git_sha'][:12]}", include_source=False)
@@ -238,6 +255,7 @@ async def run_apps(modal: Any, root: Path, plan: dict[str, Any], output: Path, s
         async with asyncio.timeout(limits["remote_timeout_seconds"]), app.run(detach=False):
             remember_app(state, app, "gpu_validation", output)
             report = await function.remote.aio(plan["model"], plan["model_size"])
+            report["launcher_requested_gpu"] = limits["gpu"]
             write_json(output / "validation.json", report)
             state["passed"] = report.get("passed") is True
             if not state["passed"]:
@@ -246,6 +264,169 @@ async def run_apps(modal: Any, root: Path, plan: dict[str, Any], output: Path, s
         state["validation_wall_seconds"] = time.monotonic() - started
         remember_app(state, app, "gpu_validation", output)
         write_json(output / "run.json", state)
+
+
+async def run_public_process(root: Path, plan: dict[str, Any], output: Path, state: dict[str, Any]) -> None:
+    """Bound blocking public-wrapper calls in a fresh, killable control process."""
+    command = [
+        sys.executable,
+        "-u",
+        str(root / "scripts/testing/run_model_validation.py"),
+        "--public-worker",
+        "--execute",
+        "--mode",
+        "public-modal",
+        "--model",
+        plan["model"],
+        "--minifold-size",
+        plan["model_size"] or "12L",
+        "--expected-sha",
+        plan["git_sha"],
+        "--output-dir",
+        str(output),
+    ]
+    if plan["model"] == "profam":
+        command.extend(["--profam-gpu", plan["limits"]["gpu"]])
+    started = time.monotonic()
+    process = await asyncio.create_subprocess_exec(*command)
+    try:
+        async with asyncio.timeout(plan["limits"]["remote_timeout_seconds"]):
+            code = await process.wait()
+        if code != 0:
+            raise RuntimeError(f"Public Modal validation process exited {code}")
+        report = json.loads((output / "validation.json").read_text())
+        state["passed"] = report.get("passed") is True
+        if not state["passed"]:
+            raise RuntimeError("Public Modal validation failed; see validation.json")
+    finally:
+        if process.returncode is None:
+            process.terminate()
+            try:
+                await asyncio.wait_for(process.wait(), timeout=15)
+            except TimeoutError:
+                process.kill()
+                await process.wait()
+        path = output / "public-run.json"
+        if path.exists():
+            child = json.loads(path.read_text())
+            state["public_wrapper"] = child
+            for record in child.get("apps", []):
+                if not any(old["app_id"] == record["app_id"] for old in state["apps"]):
+                    state["apps"].append(record)
+        state["validation_wall_seconds"] = time.monotonic() - started
+        write_json(output / "run.json", state)
+
+
+def public_worker(root: Path, plan: dict[str, Any], output: Path) -> int:
+    """Exercise the production public wrapper with only test-scoped image/resource overrides.
+
+    The actual ModalBackend, app manager, Modal class and lifecycle hooks are not
+    substituted. Only image lookup and the otherwise-persistent weights volume
+    are overridden before importing the selected family. This process is never
+    reused, so the override cannot leak into normal production lookup.
+    """
+    import importlib
+    import importlib.util
+
+    os.environ["MODAL_CONFIG_PATH"] = "/dev/null"
+    import modal
+
+    if modal.__version__ != MODAL_VERSION:
+        raise RuntimeError(f"Use modal=={MODAL_VERSION} for this reviewed launcher")
+    sys.path[:0] = [str(root), str(root / "tests")]
+    model = plan["model"]
+    wrapper_name, modal_name = {"profam": ("ProFam", "ModalProFam"), "minifold": ("MiniFold", "ModalMiniFold")}[model]
+    module_name = f"boileroom.models.{model}.{model}"
+    if module_name in sys.modules or "boileroom.images.volumes" in sys.modules:
+        raise RuntimeError("Public validation must start in a fresh process before wrapper/volume import")
+    build_state = json.loads((output / "run.json").read_text())
+    image = mount_sources(modal.Image.from_id(build_state["image_id"]), root, plan)
+    image_helpers: Any = importlib.import_module("boileroom.images.modal")
+    original_lookup = image_helpers.get_modal_image
+    volumes_module: Any = importlib.import_module("boileroom.images.volumes")
+    original_weights = volumes_module.model_weights
+
+    def selected_image(identifier: str) -> Any:
+        return image if identifier == model else original_lookup(identifier)
+
+    image_helpers.get_modal_image = selected_image
+    state: dict[str, Any] = {
+        "apps": [],
+        "started_at": utc_now(),
+        "image_id": build_state["image_id"],
+        "requested_gpu": plan["limits"]["gpu"],
+        "source_reference": plan["source_reference"],
+        "passed": False,
+        "scope": "Actual public wrapper, ModalBackend, Modal class, remote transport and guarded lifecycle",
+        "test_overrides": ["selected-family source image", "ephemeral weights volume", "bounded class resources"],
+        "persistent_volume_created": False,
+        "buffer_containers": "inherited platform default; SDK 1.3 does not apply a zero-valued class override",
+    }
+    stop_watching = threading.Event()
+    watcher: threading.Thread | None = None
+    wrapper_module: Any = None
+
+    def record_app() -> None:
+        if wrapper_module is not None:
+            remember_app(state, wrapper_module.app, "public_modal_wrapper", output, "public-run.json")
+
+    def watch_app() -> None:
+        while not stop_watching.wait(0.1):
+            record_app()
+
+    def terminate(signum: int, frame: Any) -> None:
+        raise KeyboardInterrupt("Public Modal worker terminated")
+
+    old_handler = signal.signal(signal.SIGTERM, terminate)
+    try:
+        with modal.enable_output(), modal.Volume.ephemeral() as volume:
+            state["ephemeral_volume_id"] = volume.object_id
+            write_json(output / "public-run.json", state)
+            # from_name created only a lazy descriptor, never an API request.
+            # Replace it before wrapper import/hydration, retaining the module
+            # spec/file needed by Modal source discovery and remote imports.
+            volumes_module.model_weights = volume
+            wrapper_module = importlib.import_module(module_name)
+            limits = plan["limits"]
+            bounded_class = getattr(wrapper_module, modal_name).with_options(
+                gpu=limits["gpu"],
+                cpu=(2, 2),
+                memory=(limits["memory_mib"], limits["memory_mib"]),
+                retries=0,
+                max_containers=1,
+                buffer_containers=0,
+                scaledown_window=2,
+                timeout=limits["remote_timeout_seconds"],
+            )
+            setattr(wrapper_module, modal_name, bounded_class)
+            watcher = threading.Thread(target=watch_app, daemon=True)
+            watcher.start()
+            spec = importlib.util.spec_from_file_location(f"{model}_public_validation", root / plan["entrypoint"])
+            if spec is None or spec.loader is None:
+                raise RuntimeError("Cannot import the public validation harness")
+            harness = importlib.util.module_from_spec(spec)
+            sys.modules[spec.name] = harness
+            spec.loader.exec_module(harness)
+            kwargs = {"model_size": plan["model_size"]} if model == "minifold" else {}
+            report = harness.run_public_modal_validation(getattr(wrapper_module, wrapper_name), **kwargs)
+            if not isinstance(report, dict):
+                raise TypeError("Public validation must return a JSON-serializable dict")
+            report["launcher"] = {
+                key: state[key] for key in ("scope", "image_id", "source_reference", "test_overrides", "requested_gpu")
+            }
+            write_json(output / "validation.json", report)
+            state["passed"] = report.get("passed") is True
+    finally:
+        stop_watching.set()
+        if watcher is not None:
+            watcher.join(timeout=2)
+        record_app()
+        state["finished_at"] = utc_now()
+        write_json(output / "public-run.json", state)
+        image_helpers.get_modal_image = original_lookup
+        volumes_module.model_weights = original_weights
+        signal.signal(signal.SIGTERM, old_handler)
+    return 0 if state["passed"] else 1
 
 
 async def execute(root: Path, plan: dict[str, Any], output: Path, state: dict[str, Any]) -> None:
@@ -277,7 +458,7 @@ def cleanup(output: Path) -> bool:
     state = json.loads(path.read_text())
     records = state.get("apps", [])
     ids = [record["app_id"] for record in records]
-    if any(not APP_ID.fullmatch(app_id) for app_id in ids) or len(ids) > 2:
+    if any(not APP_ID.fullmatch(app_id) for app_id in ids) or len(ids) > 3:
         raise ValueError("Refusing cleanup of invalid/unbounded app IDs")
     evidence: dict[str, Any] = {"at": utc_now(), "stop_results": [], "verified_stopped": not ids}
     env = {**os.environ, "MODAL_CONFIG_PATH": "/dev/null"}
@@ -324,6 +505,9 @@ def cleanup(output: Path) -> bool:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", choices=tuple(MODEL_LIMITS))
+    parser.add_argument("--mode", choices=("core", "public-modal"), default="core")
+    parser.add_argument("--profam-gpu", choices=PROFAM_GPUS, default="T4", help="ProFam only; MiniFold remains on L4")
+    parser.add_argument("--public-worker", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--minifold-size", choices=("12L", "48L"), default="12L")
     parser.add_argument("--expected-sha")
     parser.add_argument(
@@ -340,7 +524,14 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if cleanup(output) else 1
     if not args.model:
         parser.error("--model is required unless --cleanup-only")
-    plan = make_plan(ROOT, args.model, args.minifold_size, args.expected_sha)
+    plan = make_plan(ROOT, args.model, args.minifold_size, args.expected_sha, args.mode, args.profam_gpu)
+    if args.public_worker:
+        if not args.execute or args.mode != "public-modal" or not args.expected_sha or plan["dirty"]:
+            parser.error("The public worker requires explicit execution from the exact clean source")
+        saved = json.loads((output / "plan.json").read_text())
+        if saved != plan:
+            parser.error("Public worker source or mode differs from the reviewed build plan")
+        return public_worker(ROOT, plan, output)
     write_json(output / "plan.json", plan)
     if not args.execute:
         print(json.dumps({key: value for key, value in plan.items() if key != "source_files_sha256"}, indent=2))
@@ -351,6 +542,7 @@ def main(argv: list[str] | None = None) -> int:
         "started_at": utc_now(),
         "git_sha": plan["git_sha"],
         "model": args.model,
+        "requested_gpu": plan["limits"]["gpu"],
         "apps": [],
         "passed": False,
     }

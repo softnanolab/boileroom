@@ -450,3 +450,62 @@ def test_failed_load_tracebacks_release_model_before_retry(loader_case, monkeypa
     guard.close()
     assert guard.failure is not None
     assert instance.model is None and not instance.ready
+
+
+@pytest.mark.parametrize("apptainer_like", [False, True])
+def test_public_validation_harness_control_flow_without_network(core, apptainer_like):
+    """Fake only the backend; validate harness assertions and cleanup, not real inference."""
+    import json
+    import sys
+
+    from biotite.sequence import ProteinSequence
+    from minifold_public_validation import run_public_modal_validation
+
+    from boileroom.backend.base import Backend
+
+    constants: Any = sys.modules["minifold.utils.residue_constants"]
+    constants.restype_1to3 = {letter: ProteinSequence.convert_letter_1to3(letter) for letter in "ACDEFGHIKLMNPQRSTVWY"}
+
+    class TestBackend(Backend):
+        def __init__(self):
+            super().__init__()
+            self.exited = False
+            if apptainer_like:
+                self._process: Any = SimpleNamespace(pid=123, poll=lambda: 0 if self.exited else None)
+                self._client: Any = SimpleNamespace(is_closed=False)
+
+        def startup(self):
+            pass
+
+        def shutdown(self):
+            core.close()
+            if apptainer_like:
+                self.exited = True
+                self._client.is_closed = True
+                self._client = None
+                self._process = None
+
+        def get_model(self):
+            return object() if apptainer_like else core
+
+    class Wrapper:
+        def __init__(self, config):
+            core.config.update(config)
+            self._backend = TestBackend()
+            self._backend.start()
+
+        def fold(self, sequences, options=None):
+            return core.fold(sequences, options)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self._backend.stop()
+
+    report = run_public_modal_validation(Wrapper, "12L")
+    assert report["passed"], report
+    assert report["upstream_parity"].startswith("unrun")
+    assert report["phases"]["public_backend_shutdown"]["passed"]
+    assert not core.ready
+    json.dumps(report)

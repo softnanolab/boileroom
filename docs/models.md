@@ -452,7 +452,7 @@ sequence/residue mappings in `tests/data/minifold`. These are outside upstream's
 example FASTA, not proven held-out training examples. Experimental CA metrics are
 reported descriptively; they do not establish general predictive accuracy.
 
-`tests/minifold/runtime_validation.py` independently loads pinned upstream
+`tests/minifold/minifold_runtime_validation.py` independently loads pinned upstream
 weights, runs the original checked `predict.py` preprocessing, releases that
 model, then loads the adapter. It checks unrounded atom-mask/coordinate/pLDDT
 parity through a real signed loopback HTTP service, parsed PDB/CIF agreement,
@@ -462,7 +462,24 @@ selected checkpoint runs at a time. The bounded manual launcher records exactly
 which variant, image, device and gates ran; a 12L pass does not cover 48L.
 
 This scoped service test does not start an Apptainer SIF or exercise the public
-Modal class lifecycle. Public-wrapper tests are separately in
+Modal class lifecycle. The manual workflow's `public-modal` mode separately runs
+`tests/minifold/minifold_public_validation.py` through the actual public wrapper,
+with one bounded L4 and an ephemeral weights volume. It checks lifecycle,
+serialization, output independence and the same external cases. Its report marks
+upstream parity unrun unless matching raw-reference artifacts are supplied;
+passing core parity and passing public-backend behavior are separate evidence.
+
+The `cpu-sif` mode builds a canonical local Docker archive/SIF and invokes the
+public Apptainer wrapper on CPU. Standard 16-GiB GitHub runners fail MiniFold's
+24-GiB available-memory preflight rather than attempting an unsafe load. The
+MiniFold-only `cpu-vm-probe` route tests unmodified non-setuid Apptainer support in
+a small five-minute CPU VM without weights. A separately selected `cpu-vm-sif`
+route repeats that probe and proceeds only on success to a bounded 32-GiB VM.
+These test-only routes do not change the production Modal SDK. CPU/SIF results do
+not establish GPU or independent FP32 stock parity; those need matching runs.
+Every paid route requires an approved budget and records exact source and cleanup.
+
+Public-wrapper parity tests are separately in
 `tests/minifold/test_minifold_integration.py`. They require independently generated
 reference artifacts via `BOILEROOM_MINIFOLD_REFERENCE_DIR`; missing artifacts fail.
 The supplied stock-reference script generates L4 Modal references. Strict image,

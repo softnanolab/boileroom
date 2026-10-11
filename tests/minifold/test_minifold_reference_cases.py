@@ -29,7 +29,7 @@ def test_runtime_validation_refuses_missing_gpu_without_launch(monkeypatch):
     import json
 
     import torch
-    from runtime_validation import run_validation
+    from minifold_runtime_validation import run_validation
 
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     result = run_validation("12L")
@@ -41,10 +41,73 @@ def test_runtime_validation_refuses_missing_gpu_without_launch(monkeypatch):
 
 @pytest.mark.parametrize("case", CASES, ids=lambda case: case["id"])
 def test_memory_inputs_vary_identity_at_fixed_length_and_composition(case):
-    from runtime_validation import _memory_sequence
+    from minifold_runtime_validation import _memory_sequence
 
     source = case["sequence"]
     sequences = [_memory_sequence(source, cycle) for cycle in range(4)]
     assert len(set(sequences + [source])) == 5
     assert all(len(seq) == len(source) and sorted(seq) == sorted(source) for seq in sequences)
     assert all(seq[0] == source[0] and seq[-1] == source[-1] for seq in sequences)
+
+
+@pytest.fixture
+def reference_manifest():
+    from _minifold_reference import PREDICT_SHA256
+
+    from boileroom.models.minifold.loading import CHECKPOINT_REVISION, CHECKPOINT_SHA256, ESM_ARTIFACTS, UPSTREAM_COMMIT
+
+    files = {f"{case['id']}-r3.npz": "0" * 64 for case in CASES} | {f"{CASES[0]['id']}-r0.npz": "0" * 64}
+    return {
+        "model_size": "12L",
+        "upstream_commit": UPSTREAM_COMMIT,
+        "predict_sha256": PREDICT_SHA256,
+        "checkpoint_revision": CHECKPOINT_REVISION,
+        "checkpoint_sha256": CHECKPOINT_SHA256["12L"],
+        "esm_artifacts": ESM_ARTIFACTS.copy(),
+        "runtime": {"image_ref": "source:test-only"},
+        "compile": False,
+        "kernels": False,
+        "batch_mode": "one-unpadded-sequence",
+        "matmul_precision": "highest",
+        "gpu": "test-only L4",
+        "files": files,
+        "cases": [
+            {"id": case["id"], "sequence": case["sequence"], "experimental_sha256": case["sha256"]} for case in CASES
+        ],
+    }
+
+
+def test_known_manifest_contract(reference_manifest):
+    from _minifold_cases import _validate_reference_manifest
+
+    _validate_reference_manifest(reference_manifest, "12L")
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("compile", True),
+        ("kernels", True),
+        ("checkpoint_sha256", "wrong"),
+        ("upstream_commit", "wrong"),
+        ("esm_artifacts", {}),
+        ("cases", []),
+        ("files", {}),
+        ("runtime", {"image_ref": "unknown"}),
+        ("matmul_precision", "medium"),
+        ("gpu", "unknown"),
+        ("model_size", "48L"),
+    ],
+)
+def test_unproven_reference_is_rejected_before_public_backend(reference_manifest, field, value):
+    from unittest.mock import Mock
+
+    from minifold_public_validation import run_public_modal_validation
+
+    reference_manifest[field] = value
+    factory = Mock(side_effect=AssertionError("must not construct a backend"))
+    result = run_public_modal_validation(
+        factory, "12L", {"reference_manifest": reference_manifest, "reference_artifacts_base64": {}}
+    )
+    assert result["passed"] is False
+    factory.assert_not_called()

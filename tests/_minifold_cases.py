@@ -61,15 +61,7 @@ def _reference(model_size, case, recycling):
     assert location, "Generate independent stock references and set BOILEROOM_MINIFOLD_REFERENCE_DIR first"
     root = Path(location) / model_size
     manifest = json.loads((root / "manifest.json").read_text())
-    assert manifest["model_size"] == model_size
-    assert manifest["upstream_commit"] == UPSTREAM_COMMIT
-    assert manifest["checkpoint_revision"] == CHECKPOINT_REVISION
-    assert manifest["checkpoint_sha256"] == CHECKPOINT_SHA256[model_size]
-    assert manifest["esm_artifacts"] == ESM_ARTIFACTS
-    assert manifest["runtime"]["image_ref"] != "unknown"
-    assert not manifest["compile"] and not manifest["kernels"]
-    record = next(item for item in manifest["cases"] if item["id"] == case["id"])
-    assert record["sequence"] == case["sequence"] and record["experimental_sha256"] == case["sha256"]
+    _validate_reference_manifest(manifest, model_size)
     path = root / f"{case['id']}-r{recycling}.npz"
     assert hashlib.sha256(path.read_bytes()).hexdigest() == manifest["files"][path.name]
     with np.load(path, allow_pickle=False) as file:
@@ -98,6 +90,12 @@ def _assert_stock_parity(result, index, case, reference, manifest):
     assert runtime["torch"] == manifest["runtime"]["torch"]
     assert runtime["cuda"] == manifest["runtime"]["cuda"]
     assert runtime["gpu"] == manifest["gpu"]
+    _assert_serialized_structure(result, index)
+
+
+def _assert_serialized_structure(result, index):
+    """Compare CPU structures and confidence after real PDB/mmCIF round trips."""
+    atoms = result.atom_array[index]
     for rendered, kind in ((result.pdb[index], "pdb"), (result.cif[index], "cif")):
         parsed = (
             pdb.get_structure(pdb.PDBFile.read(StringIO(rendered)), model=1, extra_fields=["b_factor"])
@@ -110,3 +108,25 @@ def _assert_stock_parity(result, index, case, reference, manifest):
         np.testing.assert_array_equal(parsed.chain_id, atoms.chain_id)
         np.testing.assert_allclose(parsed.coord, atoms.coord, atol=0.00051, rtol=0)
         np.testing.assert_allclose(parsed.b_factor, atoms.b_factor, atol=0.0051, rtol=0)
+
+
+def _validate_reference_manifest(manifest, model_size):
+    """Refuse missing, stale, optimized or untraceable references before parity is claimed."""
+    from _minifold_reference import PREDICT_SHA256
+
+    assert model_size in ("12L", "48L") and manifest["model_size"] == model_size
+    assert manifest["upstream_commit"] == UPSTREAM_COMMIT
+    assert manifest["predict_sha256"] == PREDICT_SHA256
+    assert manifest["checkpoint_revision"] == CHECKPOINT_REVISION
+    assert manifest["checkpoint_sha256"] == CHECKPOINT_SHA256[model_size]
+    assert manifest["esm_artifacts"] == ESM_ARTIFACTS
+    assert manifest["runtime"]["image_ref"] and manifest["runtime"]["image_ref"] not in ("unknown", "none", "absent")
+    assert manifest["compile"] is False and manifest["kernels"] is False
+    assert manifest["batch_mode"] == "one-unpadded-sequence"
+    assert manifest["matmul_precision"] == "highest"
+    assert manifest["gpu"] and manifest["gpu"] not in ("unknown", "none", "absent")
+    assert manifest["cases"] == [
+        {"id": case["id"], "sequence": case["sequence"], "experimental_sha256": case["sha256"]} for case in CASES
+    ]
+    expected_files = {f"{case['id']}-r3.npz" for case in CASES} | {f"{CASES[0]['id']}-r0.npz"}
+    assert expected_files <= set(manifest["files"]), "Missing expected raw reference artifacts"
