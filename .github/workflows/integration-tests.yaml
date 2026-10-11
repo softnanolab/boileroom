@@ -127,7 +127,7 @@ jobs:
       VALIDATION_MODEL: ${{ inputs.run-target }}
       MINIFOLD_SIZE: ${{ inputs.minifold-size || '12L' }}
       MODAL_CONFIG_PATH: /dev/null
-      ARTIFACT_DIR: ${{ runner.temp }}/model-validation
+      ARTIFACT_DIR: /tmp/boileroom-validation-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - name: Checkout exact selected commit
         uses: actions/checkout@v4
@@ -181,6 +181,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: model-validation-${{ inputs.run-target }}-${{ inputs.minifold-size || '12L' }}-${{ github.sha }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/model-validation/
+          path: ${{ env.ARTIFACT_DIR }}/
           if-no-files-found: warn
           retention-days: 14

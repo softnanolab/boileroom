@@ -36,6 +36,8 @@ def test_dispatch_defaults_do_not_start_paid_work() -> None:
     assert "inputs.run-target == 'minifold'" in job["if"]
     assert "inputs.run-target == 'profam'" in job["if"]
     assert job["timeout-minutes"] <= 60
+    # GitHub does not allow the runner context in job-level env expressions.
+    assert "runner." not in json.dumps(job.get("env", {}))
     steps = job["steps"]
     cleanup = next(step for step in steps if "--cleanup-only" in step.get("run", ""))
     assert cleanup["if"] == "always()"
