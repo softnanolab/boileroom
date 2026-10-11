@@ -563,3 +563,137 @@ def test_profam_l4_reaches_bounded_function_and_saved_report(monkeypatch: pytest
     assert options["max_containers"] == 1 and options["timeout"] == 1800
     report = json.loads((tmp_path / "validation.json").read_text())
     assert report["launcher_requested_gpu"] == "L4"
+
+
+@pytest.mark.parametrize("model", AVAILABLE_MODELS)
+def test_remote_class_import_without_package_metadata_keeps_dependencies_inert(model: str, tmp_path: Path) -> None:
+    """Reproduce remote decorator import without the client's image override."""
+    import os
+    import shutil
+    import sys
+    import textwrap
+
+    shutil.copytree(ROOT / "boileroom", tmp_path / "boileroom", ignore=shutil.ignore_patterns("__pycache__"))
+    plan = launcher.make_plan(ROOT, model, "12L", None, "public-modal")
+    runtime_env = launcher.source_runtime_env(plan)
+    assert runtime_env["BOILEROOM_IMAGE_REF"] == plan["source_reference"]
+    script = textwrap.dedent("""
+        import importlib
+        import importlib.metadata
+        import os
+        import sys
+        sys.path.insert(0, SOURCE)
+        original_version = importlib.metadata.version
+        def version(name):
+            if name == "boileroom":
+                raise importlib.metadata.PackageNotFoundError(name)
+            return original_version(name)
+        importlib.metadata.version = version
+        import modal
+        async def no_network(*args, **kwargs):
+            raise AssertionError("descriptor import must never contact Modal")
+        modal.client._Client.from_env = no_network
+        module = importlib.import_module(f"boileroom.models.{MODEL}.{MODEL}")
+        cls = getattr(module, {"profam": "ModalProFam", "minifold": "ModalMiniFold"}[MODEL])
+        dependencies = cls.deps()[0].deps(only_explicit_mounts=True)
+        assert len(dependencies) == 2
+        assert isinstance(dependencies[0], modal.Image)
+        assert isinstance(dependencies[1], modal.Volume)
+        assert all(not dependency.is_hydrated for dependency in dependencies)
+        assert module.app.app_id is None
+        from boileroom.provenance import runtime_provenance
+        assert runtime_provenance()["image_ref"] == os.environ["BOILEROOM_IMAGE_REF"]
+    """)
+    code = f"MODEL={model!r}\nSOURCE={str(tmp_path)!r}\n" + script
+    env = {key: value for key, value in os.environ.items() if not key.startswith(("MODAL_", "BOILEROOM_"))}
+    env.update(runtime_env, MODAL_CONFIG_PATH="/dev/null")
+    failed = subprocess.run(
+        [sys.executable, "-I", "-c", code],
+        cwd=tmp_path,
+        env={key: value for key, value in env.items() if key != "BOILEROOM_IMAGE_TAG"},
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+    assert failed.returncode != 0 and "Unable to determine the default boileroom image tag" in failed.stderr
+    subprocess.run([sys.executable, "-I", "-c", code], cwd=tmp_path, env=env, check=True, timeout=30)
+
+
+@pytest.mark.parametrize("parent_present", [False, True])
+def test_cancelled_parent_cleanup_reads_child_ledger_directly(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, parent_present: bool
+) -> None:
+    build, public = "ap-" + "b" * 22, "ap-" + "p" * 22
+    if parent_present:
+        launcher.write_json(tmp_path / "run.json", {"apps": [{"app_id": build}, {"app_id": public}]})
+    launcher.write_json(tmp_path / "public-run.json", {"apps": [{"app_id": public}]})
+    expected = [build, public] if parent_present else [public]
+    calls = []
+
+    def run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        rows = [{"App ID": app_id, "State": "stopped", "Tasks": "0"} for app_id in expected]
+        return subprocess.CompletedProcess(command, 0, json.dumps(rows))
+
+    monkeypatch.setattr(launcher.subprocess, "run", run)
+    assert launcher.cleanup(tmp_path)
+    assert [command[-1] for command in calls if command[-2] == "stop"] == expected
+    evidence = json.loads((tmp_path / "cleanup.json").read_text())
+    assert "public-run.json" in evidence["record_files"]
+    launcher.write_json(tmp_path / "public-run.json", {"apps": [{"app_id": "production"}]})
+    monkeypatch.setattr(launcher.subprocess, "run", lambda *a, **k: pytest.fail("must reject before any stop"))
+    with pytest.raises(ValueError, match="invalid/unbounded"):
+        launcher.cleanup(tmp_path)
+
+
+def test_sigint_cleanup_recovers_unmerged_public_ledger(tmp_path: Path) -> None:
+    """Real SIGINT interruption must still clean a persisted child-only app ID."""
+    import signal
+    import sys
+    import textwrap
+    import time
+
+    public = "ap-" + "p" * 22
+    script = textwrap.dedent("""
+        import asyncio
+        import json
+        import subprocess
+        from pathlib import Path
+        from scripts.testing import run_model_validation as launcher
+        output = Path(OUTPUT)
+        launcher.make_plan = lambda *args: {
+            "dirty": False, "entrypoint_exists": True, "git_sha": "0" * 40,
+            "limits": {"gpu": "T4", "memory_mib": 16384}, "cost_evidence": {},
+        }
+        async def execute(*args):
+            launcher.write_json(output / "public-run.json", {"apps": [{"app_id": PUBLIC}]})
+            (output / "ready").write_text("ready")
+            await asyncio.sleep(60)
+        launcher.execute = execute
+        def run(command, **kwargs):
+            with (output / "commands.jsonl").open("a") as stream:
+                stream.write(json.dumps(command) + "\\n")
+            return subprocess.CompletedProcess(command, 0, json.dumps([
+                {"App ID": PUBLIC, "State": "stopped", "Tasks": "0"}]))
+        launcher.subprocess.run = run
+        raise SystemExit(launcher.main(["--model", "profam", "--execute",
+            "--expected-sha", "0" * 40, "--output-dir", str(output)]))
+    """)
+    command = [sys.executable, "-c", f"OUTPUT={str(tmp_path)!r}\nPUBLIC={public!r}\n" + script]
+    process = subprocess.Popen(command, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        deadline = time.monotonic() + 10
+        while not (tmp_path / "ready").exists() and process.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert (tmp_path / "ready").exists(), "subprocess did not reach its active phase"
+        process.send_signal(signal.SIGINT)
+        stdout, stderr = process.communicate(timeout=10)
+        assert process.returncode == 1, stdout + stderr
+        evidence = json.loads((tmp_path / "cleanup.json").read_text())
+        assert evidence["verified_stopped"] and "public-run.json" in evidence["record_files"]
+        calls = [json.loads(line) for line in (tmp_path / "commands.jsonl").read_text().splitlines()]
+        assert [command[-1] for command in calls if command[-2] == "stop"] == [public]
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.communicate(timeout=5)
