@@ -412,10 +412,11 @@ def test_cpu_sif_is_an_isolated_manual_non_setuid_job() -> None:
     assert job["timeout-minutes"] <= 60
     assert "runner." not in json.dumps(job.get("env", {}))
     assert "secrets." not in json.dumps(job)
-    install = next(step["run"] for step in job["steps"] if "sha256sum" in step.get("run", ""))
-    assert "https://github.com/apptainer/apptainer/releases/download/v1.5.4/apptainer_1.5.4_amd64.deb" in install
-    assert "281cf9bd68f16b6f7c34a3a94d77668bc327b9c09db0412ce7890162734a97f7" in install
-    assert install.index("sha256sum") < install.index("sudo apt-get install")
+    install = next(step["run"] for step in job["steps"] if "build_cpu_apptainer.sh" in step.get("run", ""))
+    assert install == "bash scripts/testing/build_cpu_apptainer.sh"
+    source = (ROOT / "scripts/testing/build_cpu_apptainer.sh").read_text()
+    assert "ec1f51e696ba384f90bc7ab2c7a438fee70da98763d001b8f3175d14a91cfcf6" in source
+    assert "--without-suid --without-libsubid" in source
     cleanup = next(step for step in job["steps"] if "--cleanup-only" in step.get("run", ""))
     assert cleanup["if"] == "always()"
     assert '[ -f "$ARTIFACT_DIR/run.json" ]' in cleanup["run"]

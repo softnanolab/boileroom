@@ -26,6 +26,7 @@ def owned_runner_temp(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
 def _plan(model: str = "profam") -> dict[str, Any]:
     return {
         "model": model,
+        "sif_runtime": "mounted",
         "model_size": "12L" if model == "minifold" else None,
         "dirty": False,
         "entrypoint_exists": True,
@@ -73,8 +74,8 @@ def test_execute_requires_clean_full_source(
                 "a" * 40,
                 "--output-dir",
                 str(tmp_path),
-                "--apptainer-package",
-                "official.deb",
+                "--apptainer-source",
+                "official.tar.gz",
                 "--execute",
             ]
         )
@@ -122,12 +123,12 @@ def test_each_filesystem_is_checked_without_freeing_preexisting_data() -> None:
 def test_host_rejects_unverified_public_host_and_package(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
     with pytest.raises(ValueError, match="GitHub-hosted"):
-        launcher.verify_host(tmp_path / "missing.deb")
+        launcher.verify_host(tmp_path / "missing.tar.gz")
     monkeypatch.setenv("GITHUB_ACTIONS", "true")
     monkeypatch.setenv("RUNNER_ENVIRONMENT", "github-hosted")
     monkeypatch.setenv("GITHUB_REPOSITORY_VISIBILITY", "private")
     with pytest.raises(ValueError, match="public repository"):
-        launcher.verify_host(tmp_path / "missing.deb")
+        launcher.verify_host(tmp_path / "missing.tar.gz")
     monkeypatch.setenv("GITHUB_REPOSITORY_VISIBILITY", "public")
     original = Path.read_text
     monkeypatch.setattr(
@@ -139,7 +140,7 @@ def test_host_rejects_unverified_public_host_and_package(monkeypatch: pytest.Mon
     )
     monkeypatch.setattr(launcher.platform, "machine", lambda: "x86_64")
     monkeypatch.setattr(launcher.os, "geteuid", lambda: 1001)
-    package = tmp_path / "official.deb"
+    package = tmp_path / "official.tar.gz"
     package.write_bytes(b"unverified bytes")
     with pytest.raises(ValueError, match="SHA256 mismatch"):
         launcher.verify_host(package)
@@ -249,7 +250,7 @@ def test_resource_failure_records_unrun_and_cleans_without_build(
     output.mkdir()
     monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
     monkeypatch.setattr(launcher, "verify_host", lambda package: None)
-    monkeypatch.setattr(launcher, "sha256", lambda path: launcher.APPTAINER_PACKAGE_SHA256)
+    monkeypatch.setattr(launcher, "sha256", lambda path: launcher.APPTAINER_SOURCE_SHA256)
     monkeypatch.setattr(
         launcher,
         "resource_snapshot",
@@ -272,7 +273,7 @@ def test_resource_failure_records_unrun_and_cleans_without_build(
         return "version recorded"
 
     monkeypatch.setattr(launcher.Commands, "run", run)
-    assert not launcher.execute(ROOT, _plan("minifold"), output, tmp_path / "official.deb")
+    assert not launcher.execute(ROOT, _plan("minifold"), output, tmp_path / "official.tar.gz")
     report = json.loads((output / "run.json").read_text())
     assert report["validation_status"] == "unrun" and report["passed"] is False
     assert report["cleanup"]["passed"]
@@ -293,8 +294,8 @@ def test_48l_cpu_cannot_silently_substitute_12l(monkeypatch: pytest.MonkeyPatch,
                 "48L",
                 "--expected-sha",
                 "a" * 40,
-                "--apptainer-package",
-                "official.deb",
+                "--apptainer-source",
+                "official.tar.gz",
                 "--output-dir",
                 str(tmp_path),
                 "--execute",
@@ -326,14 +327,19 @@ def test_missing_failed_build_image_is_cleanable(monkeypatch: pytest.MonkeyPatch
 
 
 @pytest.mark.parametrize("model,wrapper_name", [("profam", "ProFam"), ("minifold", "MiniFold")])
+@pytest.mark.parametrize("runtime", ["mounted", "unsquash"])
 def test_child_uses_selected_public_wrapper_cpu_and_checks_retained_process_and_client(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, model: str, wrapper_name: str
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, model: str, wrapper_name: str, runtime: str
 ) -> None:
     import boileroom
     from boileroom.backend import apptainer
 
     state = _state(tmp_path)
     cache = Path(state["scratch"]) / "models"
+    (cache / "logs").mkdir(parents=True)
+    (cache / "logs/server.log").write_text(
+        "Converting SIF file to temporary sandbox" if runtime == "unsquash" else "test double for mounted server log"
+    )
     monkeypatch.setenv("MODEL_DIR", str(cache))
     state["image_uri"] = f"docker://docker.io/task/boileroom-{model}:local"
     sif = apptainer._get_cached_sif_path(state["image_uri"], cache)
@@ -377,8 +383,9 @@ def test_child_uses_selected_public_wrapper_cpu_and_checks_retained_process_and_
     monkeypatch.setattr(launcher.os, "sched_getaffinity", lambda pid: {0, 1, 2, 3})
     affinity = []
     monkeypatch.setattr(launcher.os, "sched_setaffinity", lambda pid, cpus: affinity.append(cpus))
-    plan = _plan(model) | {"entrypoint": str(helper)}
+    plan = _plan(model) | {"entrypoint": str(helper), "sif_runtime": runtime}
     report = launcher.run_public_child(ROOT, plan, state, tmp_path)
+    assert report["mounted_sif_execution_verified"] is (runtime == "mounted")
     assert calls == [{"backend": "apptainer", "device": "cpu", "config": {"num_samples": 2}}]
     assert affinity == [[0, 1]]
     assert report["passed"] and report["actual_processes_stopped"] and report["sif_unchanged"]
@@ -410,8 +417,8 @@ def test_child_refuses_changed_source_plan(monkeypatch: pytest.MonkeyPatch, tmp_
                 "--execute",
                 "--expected-sha",
                 "a" * 40,
-                "--apptainer-package",
-                "official.deb",
+                "--apptainer-source",
+                "official.tar.gz",
             ]
         )
     assert caught.value.code == 2
@@ -449,8 +456,117 @@ def test_child_refuses_alternate_registry_lookup_before_wrapper_start(
                 "--execute",
                 "--expected-sha",
                 "a" * 40,
-                "--apptainer-package",
-                "official.deb",
+                "--apptainer-source",
+                "official.tar.gz",
             ]
         )
     assert caught.value.code == 2
+
+
+def test_source_installer_is_pinned_nonprivileged_and_task_local() -> None:
+    script = (ROOT / "scripts/testing/build_cpu_apptainer.sh").read_text()
+    workflow = (ROOT / ".github/workflows/integration-tests.yaml").read_text()
+    assert launcher.APPTAINER_SOURCE_URL in script
+    assert launcher.APPTAINER_SOURCE_SHA256 in script
+    assert "--without-suid --without-libsubid" in script
+    assert "GOTOOLCHAIN=local GOPROXY=off GOMAXPROCS=2" in script
+    assert "make -C builddir -j2" in script
+    assert "make -C builddir install" in script
+    assert "sudo make" not in script and "apparmor_parser" not in script
+    assert "sysctl " not in script and "chmod " not in script
+    assert '"$RUNNER_TEMP/boileroom-apptainer-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"' in script
+    assert 'find "$prefix" -type f -perm /6000' in script
+    assert 'sha256sum "$APPTAINER_SOURCE"' in script
+    assert "run: bash scripts/testing/build_cpu_apptainer.sh" in workflow
+    assert "timeout-minutes: 12" in workflow
+    assert "--apptainer-package" not in workflow
+
+
+def test_source_installer_reports_failure_before_build(tmp_path: Path) -> None:
+    # Execute the real entrypoint without a supported hosted runner; no install/download.
+    result = subprocess.run(
+        ["bash", str(ROOT / "scripts/testing/build_cpu_apptainer.sh")],
+        env={"PATH": "/usr/bin:/bin", "RUNNER_TEMP": str(tmp_path)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert not list(tmp_path.iterdir())
+
+
+def test_mounted_probe_uses_real_sif_without_model_substitution(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls = []
+    monkeypatch.setenv("APPTAINER_UNSQUASH", "true")
+    monkeypatch.setenv("SINGULARITY_UNSQUASH", "true")
+
+    def run(name: str, command: list[str], timeout: int, *, env: dict[str, str]) -> str:
+        calls.append((name, command, timeout, env))
+        if name == "mount-probe-build":
+            Path(command[2]).write_bytes(b"simulated SIF only for offline contract")
+        return ""
+
+    commands = launcher.Commands(tmp_path, launcher.time.monotonic() + 60)
+    monkeypatch.setattr(commands, "run", run)
+    report = launcher.mounted_sif_probe(commands, tmp_path)
+    assert report["passed"] is True and report["model_inference"] is False
+    assert calls[0][1][:2] == ["apptainer", "build"]
+    assert calls[1][1] == ["apptainer", "exec", "--cleanenv", str(tmp_path / "mount-probe.sif"), "/bin/true"]
+    assert all("--unsquash" not in " ".join(call[1]) for call in calls)
+    assert calls[0][3]["APPTAINER_CACHEDIR"] == str(tmp_path / "probe-cache")
+    assert calls[1][3]["APPTAINER_UNSQUASH"] == "false"
+    assert "SINGULARITY_UNSQUASH" not in calls[1][3]
+
+
+def test_mounted_probe_refusal_stops_without_alternative(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    calls = []
+
+    def run(name: str, command: list[str], timeout: int, *, env: dict[str, str]) -> str:
+        calls.append(name)
+        raise PermissionError("host denies FUSE")
+
+    commands = launcher.Commands(tmp_path, launcher.time.monotonic() + 60)
+    monkeypatch.setattr(commands, "run", run)
+    with pytest.raises(PermissionError, match="denies FUSE"):
+        launcher.mounted_sif_probe(commands, tmp_path)
+    assert calls == ["mount-probe-build"]
+
+
+def test_host_requires_the_owned_source_binary(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    for key, value in {
+        "GITHUB_ACTIONS": "true",
+        "RUNNER_ENVIRONMENT": "github-hosted",
+        "GITHUB_REPOSITORY_VISIBILITY": "public",
+        "GITHUB_RUN_ID": "123",
+        "GITHUB_RUN_ATTEMPT": "1",
+    }.items():
+        monkeypatch.setenv(key, value)
+    original = Path.read_text
+    monkeypatch.setattr(
+        Path,
+        "read_text",
+        lambda p, *a, **kw: 'ID=ubuntu\nVERSION_ID="22.04"\n' if str(p) == "/etc/os-release" else original(p, *a, **kw),
+    )
+    monkeypatch.setattr(launcher.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(launcher.os, "geteuid", lambda: 1001)
+    monkeypatch.setattr(launcher, "sha256", lambda p: launcher.APPTAINER_SOURCE_SHA256)
+    prefix = tmp_path / "boileroom-apptainer-123-1/install"
+    monkeypatch.setenv("APPTAINER_BUILD_PREFIX", str(prefix))
+    monkeypatch.setattr(launcher.shutil, "which", lambda name: "/usr/bin/apptainer")
+    with pytest.raises(ValueError, match="task-owned source build"):
+        launcher.verify_host(tmp_path / "source.tar.gz")
+    monkeypatch.setattr(launcher.shutil, "which", lambda name: str(prefix / "bin/apptainer"))
+    launcher.verify_host(tmp_path / "source.tar.gz")
+
+
+def test_automatic_sandbox_conversion_cannot_pass_mounted_gate() -> None:
+    with pytest.raises(RuntimeError, match="refused automatic sandbox"):
+        launcher.require_mounted_output("INFO: Converting SIF file to temporary sandbox...\n")
+    launcher.require_mounted_output("Mounted execution completed")
+
+
+def test_unknown_sif_runtime_is_rejected_before_import_or_execution(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="explicit supported runtime"):
+        launcher.run_public_child(tmp_path, {"sif_runtime": "automatic"}, {}, tmp_path)

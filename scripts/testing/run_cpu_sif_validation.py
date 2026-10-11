@@ -2,7 +2,7 @@
 
 The default is an offline plan. Execution is restricted to a standard public
 GitHub Ubuntu 22.04 runner and requires a clean, exact Git SHA. The workflow
-installs the official non-setuid Apptainer package after verifying the hash below;
+builds the pinned official non-setuid Apptainer source in a task-owned prefix;
 this script verifies it again. No registry image, credentials, GPU or host
 security configuration is used. Insufficient resources are an explicit unrun
 failure, never a model substitution or a claim of scientific parity.
@@ -38,10 +38,14 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
 APPTAINER_VERSION = "1.5.4"
+APPTAINER_SOURCE_URL = "https://github.com/apptainer/apptainer/releases/download/v1.5.4/apptainer-1.5.4.tar.gz"
+APPTAINER_SOURCE_SHA256 = "ec1f51e696ba384f90bc7ab2c7a438fee70da98763d001b8f3175d14a91cfcf6"
+# Separate official binary artifact used by the isolated Ubuntu 24 VM launcher.
+# The Ubuntu 22.04 free-runner route below never installs this package.
 APPTAINER_PACKAGE_URL = "https://github.com/apptainer/apptainer/releases/download/v1.5.4/apptainer_1.5.4_amd64.deb"
 APPTAINER_PACKAGE_SHA256 = "281cf9bd68f16b6f7c34a3a94d77668bc327b9c09db0412ce7890162734a97f7"
 BUILDKIT_IMAGE = "moby/buildkit:v0.33.0"
-TOTAL_TIMEOUT = 53 * 60  # Cleanup and artifact upload still fit the 60-minute workflow.
+TOTAL_TIMEOUT = 40 * 60  # The source build, cleanup and upload also fit the 60-minute workflow.
 BUILD_TIMEOUT = 25 * 60
 SIF_TIMEOUT = 10 * 60
 PUBLIC_TIMEOUT = 15 * 60
@@ -84,6 +88,7 @@ def make_plan(root: Path, model: str, model_size: str, expected_sha: str | None)
         "model": model,
         "model_size": model_size if model == "minifold" else None,
         "mode": "cpu-sif",
+        "sif_runtime": "mounted",
         "device": "cpu",
         "git_sha": head,
         "dirty": bool(git(root, "status", "--porcelain", "--untracked-files=normal")),
@@ -93,8 +98,8 @@ def make_plan(root: Path, model: str, model_size: str, expected_sha: str | None)
         "entrypoint_exists": (root / f"tests/{model}/{model}_public_validation.py").is_file(),
         "base_dockerfile": "boileroom/images/Dockerfile",
         "model_dockerfile": f"boileroom/models/{model}/Dockerfile",
-        "apptainer_package_url": APPTAINER_PACKAGE_URL,
-        "apptainer_package_sha256": APPTAINER_PACKAGE_SHA256,
+        "apptainer_source_url": APPTAINER_SOURCE_URL,
+        "apptainer_source_sha256": APPTAINER_SOURCE_SHA256,
         "buildkit_image_version_pin": BUILDKIT_IMAGE,
         "limits": LIMITS[model] | {"cpu": 2, "build_memory_gib": 6, "launcher_timeout_seconds": TOTAL_TIMEOUT},
         "scope": "CPU public wrapper, HTTP/HMAC transport and process lifecycle. GPU, compile, independent upstream parity and biological accuracy remain unrun.",
@@ -138,8 +143,18 @@ def verify_host(package: Path) -> None:
         raise ValueError("Execution requires Ubuntu 22.04")
     if platform.machine() != "x86_64" or os.geteuid() == 0:
         raise ValueError("Execution requires a non-root amd64 host client")
-    if sha256(package) != APPTAINER_PACKAGE_SHA256:
-        raise ValueError("Official non-setuid Apptainer package SHA256 mismatch")
+    if sha256(package) != APPTAINER_SOURCE_SHA256:
+        raise ValueError("Official non-setuid Apptainer source SHA256 mismatch")
+    parent = Path(os.environ["RUNNER_TEMP"]).resolve()
+    expected = (
+        parent
+        / f"boileroom-apptainer-{os.environ.get('GITHUB_RUN_ID')}-{os.environ.get('GITHUB_RUN_ATTEMPT')}"
+        / "install"
+    )
+    prefix = Path(os.environ.get("APPTAINER_BUILD_PREFIX", "/missing"))
+    binary = Path(shutil.which("apptainer") or "/missing")
+    if prefix.resolve() != expected or binary.resolve() != expected / "bin/apptainer":
+        raise ValueError("Apptainer must be the task-owned source build")
 
 
 def stop_process_group(process: subprocess.Popen[Any]) -> None:
@@ -315,6 +330,9 @@ def cleanup(state: dict[str, Any], output: Path) -> dict[str, Any]:
 
 def run_public_child(root: Path, plan: dict[str, Any], state: dict[str, Any], output: Path) -> dict[str, Any]:
     """Use the real wrapper/backend, changing only normal image/cache environment."""
+    runtime = plan.get("sif_runtime")
+    if runtime not in {"mounted", "unsquash"}:
+        raise ValueError("Public SIF validation requires an explicit supported runtime")
     sys.path[:0] = [str(root), str(root / "tests")]
     cpus = sorted(os.sched_getaffinity(0))[:2]
     os.sched_setaffinity(0, cpus)
@@ -369,10 +387,47 @@ def run_public_child(root: Path, plan: dict[str, Any], state: dict[str, Any], ou
         and row["backend_client_cleared"]
         for row in report["processes"]
     )
+    if runtime == "mounted":
+        logs = list((Path(state["scratch"]) / "models/logs").glob("*.log"))
+        if not logs:
+            raise RuntimeError("Mounted-SIF validation requires actual server logs")
+        for log in logs:
+            require_mounted_output(log.read_text())
+        report["mounted_sif_execution_verified"] = True
+    else:
+        # The VM launcher owns positive conversion and temporary-root cleanup evidence.
+        report["mounted_sif_execution_verified"] = False
+    report["sif_runtime"] = runtime
     report["sif_unchanged"] = sha256(cached) == state["sif_sha256"]
     report["passed"] = bool(report.get("passed")) and report["actual_processes_stopped"] and report["sif_unchanged"]
     write_json(output / "public-validation.json", report)
     return report
+
+
+def require_mounted_output(output: str) -> None:
+    if "converting sif file to temporary sandbox" in output.lower():
+        raise RuntimeError("Mounted-SIF validation refused automatic sandbox conversion")
+
+
+def mounted_sif_probe(commands: Commands, scratch: Path) -> dict[str, Any]:
+    """Exercise real FUSE/SIF mounting cheaply before building the model image."""
+    rootfs = scratch / "probe-rootfs"
+    # Ubuntu amd64 /bin/true uses only libc and the dynamic loader. This tiny
+    # local image tests container capability, never substitutes for model tests.
+    for name in ("/bin/true", "/lib/x86_64-linux-gnu/libc.so.6", "/lib64/ld-linux-x86-64.so.2"):
+        target = rootfs / name.lstrip("/")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(name, target)
+    sif = scratch / "mount-probe.sif"
+    env = os.environ.copy()
+    env.pop("SINGULARITY_UNSQUASH", None)
+    env["APPTAINER_UNSQUASH"] = "false"
+    env.update(APPTAINER_CACHEDIR=str(scratch / "probe-cache"), APPTAINER_TMPDIR=str(scratch))
+    commands.run("mount-probe-build", ["apptainer", "build", str(sif), str(rootfs)], 60, env=env)
+    require_mounted_output(
+        commands.run("mount-probe-exec", ["apptainer", "exec", "--cleanenv", str(sif), "/bin/true"], 30, env=env)
+    )
+    return {"passed": True, "sif_sha256": sha256(sif), "command": "/bin/true", "model_inference": False}
 
 
 def execute(root: Path, plan: dict[str, Any], output: Path, package: Path) -> bool:
@@ -402,7 +457,7 @@ def execute(root: Path, plan: dict[str, Any], output: Path, package: Path) -> bo
         write_json(output / "run.json", state)
         version = commands.run("apptainer-version", ["apptainer", "--version"]).strip()
         if version != f"apptainer version {APPTAINER_VERSION}":
-            raise ValueError("Installed Apptainer version does not match the verified package")
+            raise ValueError("Installed Apptainer version does not match the verified source")
         buildcfg = commands.run("apptainer-buildcfg", ["apptainer", "buildcfg"])
         if not re.search(r"^APPTAINER_SUID_INSTALL\s*=\s*0\s*$", buildcfg, re.MULTILINE):
             raise ValueError("Execution requires a non-setuid Apptainer installation")
@@ -410,7 +465,7 @@ def execute(root: Path, plan: dict[str, Any], output: Path, package: Path) -> bo
             "apptainer": version,
             "docker": commands.run("docker-version", ["docker", "version"]),
             "buildx": commands.run("buildx-version", ["docker", "buildx", "version"]),
-            "package_sha256": sha256(package),
+            "source_archive_sha256": sha256(package),
         }
         info = json.loads(commands.run("docker-info", ["docker", "info", "--format", "{{json .}}"]))
         docker_root = Path(info["DockerRootDir"])
@@ -424,6 +479,8 @@ def execute(root: Path, plan: dict[str, Any], output: Path, package: Path) -> bo
             raise ValueError("Non-setuid SIF execution requires the runner's existing /dev/fuse device")
         commands.run("user-namespace-probe", ["unshare", "--user", "--map-root-user", "--mount", "true"], 30)
         state["non_setuid_capabilities"]["user_mount_namespace"] = True
+        state["mounted_sif_probe"] = mounted_sif_probe(commands, scratch)
+        write_json(output / "run.json", state)
         builds = build_commands(root, state, plan)
         builders = commands.run("builder-name-preflight", ["docker", "buildx", "ls", "--format", "{{.Name}}"])
         if state["builder"] in builders.splitlines():
@@ -472,6 +529,7 @@ def execute(root: Path, plan: dict[str, Any], output: Path, package: Path) -> bo
                 "MODEL_DIR": str(scratch / "models"),
                 "BOILEROOM_DOCKER_REPOSITORY": f"docker.io/{namespace}",
                 "BOILEROOM_IMAGE_TAG": image_tag,
+                "APPTAINER_UNSQUASH": "false",
                 "APPTAINER_CACHEDIR": str(scratch / "apptainer-cache"),
                 "APPTAINER_TMPDIR": str(scratch / "apptainer-tmp"),
                 "BOILEROOM_APPTAINER_STARTUP_TIMEOUT": str(PUBLIC_TIMEOUT - 60),
@@ -479,6 +537,7 @@ def execute(root: Path, plan: dict[str, Any], output: Path, package: Path) -> bo
             }
         )
         for name in (
+            "SINGULARITY_UNSQUASH",
             "MODAL_TOKEN_ID",
             "MODAL_TOKEN_SECRET",
             "HF_TOKEN",
@@ -512,7 +571,7 @@ def execute(root: Path, plan: dict[str, Any], output: Path, package: Path) -> bo
         )
         write_json(output / "run.json", state)
         # No user namespace/AppArmor/firewall changes if this fails on the runner.
-        commands.run(
+        smoke_output = commands.run(
             "sif-smoke",
             [
                 "apptainer",
@@ -526,6 +585,7 @@ def execute(root: Path, plan: dict[str, Any], output: Path, package: Path) -> bo
             120,
             env=env,
         )
+        require_mounted_output(smoke_output)
         state["validation_status"] = "running"
         write_json(output / "run.json", state)
         commands.run(
@@ -541,7 +601,7 @@ def execute(root: Path, plan: dict[str, Any], output: Path, package: Path) -> bo
                 str(output),
                 "--expected-sha",
                 plan["git_sha"],
-                "--apptainer-package",
+                "--apptainer-source",
                 str(package.resolve()),
                 "--execute",
                 "--child",
@@ -580,7 +640,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--minifold-size", choices=["12L", "48L"], default="12L")
     parser.add_argument("--expected-sha")
     parser.add_argument("--output-dir", type=Path, required=True)
-    parser.add_argument("--apptainer-package", type=Path)
+    parser.add_argument("--apptainer-source", type=Path)
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--cleanup-only", action="store_true")
     parser.add_argument("--child", action="store_true", help=argparse.SUPPRESS)
@@ -590,9 +650,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.cleanup_only:
         return 0 if cleanup(json.loads((output / "run.json").read_text()), output)["passed"] else 1
     if args.child:
-        if not args.execute or args.expected_sha is None or args.apptainer_package is None:
-            parser.error("Internal child execution requires the exact source SHA and verified package")
-        verify_host(args.apptainer_package)
+        if not args.execute or args.expected_sha is None or args.apptainer_source is None:
+            parser.error("Internal child execution requires the exact source SHA and verified source")
+        verify_host(args.apptainer_source)
         plan = make_plan(ROOT, args.model, args.minifold_size, args.expected_sha)
         approved = json.loads((output / "plan.json").read_text())
         state = json.loads((output / "run.json").read_text())
@@ -625,11 +685,11 @@ def main(argv: list[str] | None = None) -> int:
     if not args.execute:
         print(json.dumps(plan, indent=2, sort_keys=True))
         return 0
-    if args.expected_sha is None or plan["dirty"] or not plan["entrypoint_exists"] or args.apptainer_package is None:
-        parser.error("Execution requires --expected-sha, a clean checkout, the public helper and --apptainer-package")
+    if args.expected_sha is None or plan["dirty"] or not plan["entrypoint_exists"] or args.apptainer_source is None:
+        parser.error("Execution requires --expected-sha, a clean checkout, the public helper and --apptainer-source")
     if args.model == "minifold" and args.minifold_size != "12L":
         parser.error("Standard CPU runner gate is scoped to the unchanged 12L model; 48L remains unrun")
-    return 0 if execute(ROOT, plan, output, args.apptainer_package) else 1
+    return 0 if execute(ROOT, plan, output, args.apptainer_source) else 1
 
 
 if __name__ == "__main__":

@@ -227,7 +227,7 @@ jobs:
       VALIDATION_MODEL: ${{ inputs.run-target }}
       MINIFOLD_SIZE: ${{ inputs.minifold-size || '12L' }}
       ARTIFACT_DIR: /tmp/boileroom-cpu-sif-${{ github.run_id }}-${{ github.run_attempt }}
-      APPTAINER_PACKAGE: /tmp/apptainer-1.5.4-${{ github.run_id }}-${{ github.run_attempt }}.deb
+      APPTAINER_SOURCE: /tmp/apptainer-1.5.4-${{ github.run_id }}-${{ github.run_attempt }}.tar.gz
     steps:
       - name: Checkout exact selected commit
         uses: actions/checkout@v4
@@ -245,26 +245,19 @@ jobs:
         with:
           enable-cache: false
 
-      - name: Install verified official non-setuid Apptainer
-        timeout-minutes: 5
-        run: |
-          curl --fail --location --proto '=https' --tlsv1.2 --max-time 180 \
-            https://github.com/apptainer/apptainer/releases/download/v1.5.4/apptainer_1.5.4_amd64.deb \
-            --output "$APPTAINER_PACKAGE"
-          echo "281cf9bd68f16b6f7c34a3a94d77668bc327b9c09db0412ce7890162734a97f7  $APPTAINER_PACKAGE" | sha256sum --check -
-          sudo apt-get update
-          sudo apt-get install -y "$APPTAINER_PACKAGE"
-          apptainer --version
+      - name: Build verified official non-setuid Apptainer in task scratch
+        timeout-minutes: 12
+        run: bash scripts/testing/build_cpu_apptainer.sh
 
       - name: Plan selected CPU SIF validation
         run: |
           uv run --no-project python scripts/testing/run_cpu_sif_validation.py \
             --model "$VALIDATION_MODEL" --minifold-size "$MINIFOLD_SIZE" \
             --expected-sha "$GITHUB_SHA" --output-dir "$ARTIFACT_DIR" \
-            --apptainer-package "$APPTAINER_PACKAGE"
+            --apptainer-source "$APPTAINER_SOURCE"
 
       - name: Build local canonical SIF and validate one public CPU backend
-        timeout-minutes: 55
+        timeout-minutes: 42
         shell: bash
         run: |
           set -o pipefail
@@ -273,17 +266,28 @@ jobs:
             python -u scripts/testing/run_cpu_sif_validation.py \
             --model "$VALIDATION_MODEL" --minifold-size "$MINIFOLD_SIZE" \
             --expected-sha "$GITHUB_SHA" --output-dir "$ARTIFACT_DIR" \
-            --apptainer-package "$APPTAINER_PACKAGE" --execute \
+            --apptainer-source "$APPTAINER_SOURCE" --execute \
             2>&1 | tee "$ARTIFACT_DIR/launcher.log"
 
       - name: Clean only this CPU validation's temporary resources
         if: always()
         timeout-minutes: 2
         run: |
+          status=0
           if [ -f "$ARTIFACT_DIR/run.json" ]; then
             uv run --no-project python scripts/testing/run_cpu_sif_validation.py \
-              --model "$VALIDATION_MODEL" --output-dir "$ARTIFACT_DIR" --cleanup-only
+              --model "$VALIDATION_MODEL" --output-dir "$ARTIFACT_DIR" --cleanup-only || status=$?
           fi
+          root="$RUNNER_TEMP/boileroom-apptainer-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          if [ -e "$root" ]; then
+            test ! -L "$root"
+            test "$(cat "$root/.owner")" = "$GITHUB_RUN_ID:$GITHUB_RUN_ATTEMPT"
+            rm -rf -- "$root"
+            rm -f -- "$APPTAINER_SOURCE"
+            mkdir -p "$ARTIFACT_DIR"
+            echo 'Owned source toolchain and archive removed' > "$ARTIFACT_DIR/toolchain-cleanup.txt"
+          fi
+          exit "$status"
 
       - name: Upload CPU SIF evidence and logs
         if: always()
