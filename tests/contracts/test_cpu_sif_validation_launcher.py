@@ -15,6 +15,7 @@ from scripts.testing import run_cpu_sif_validation as launcher
 
 pytestmark = pytest.mark.contract
 ROOT = Path(__file__).resolve().parents[2]
+AVAILABLE_MODELS = [model for model in launcher.LIMITS if (ROOT / f"boileroom/models/{model}/Dockerfile").is_file()]
 
 
 @pytest.fixture(autouse=True)
@@ -86,12 +87,13 @@ def test_sha_mismatch_fails_before_source_hash(monkeypatch: pytest.MonkeyPatch) 
         launcher.make_plan(ROOT, "profam", "12L", "b" * 40)
 
 
-def test_plan_records_canonical_sources_and_honest_scope() -> None:
-    plan = launcher.make_plan(ROOT, "profam", "12L", None)
-    assert plan["source_files_sha256"]["boileroom/models/profam/Dockerfile"] == launcher.sha256(
-        ROOT / "boileroom/models/profam/Dockerfile"
+@pytest.mark.parametrize("model", AVAILABLE_MODELS)
+def test_plan_records_canonical_sources_and_honest_scope(model: str) -> None:
+    plan = launcher.make_plan(ROOT, model, "12L", None)
+    assert plan["source_files_sha256"][f"boileroom/models/{model}/Dockerfile"] == launcher.sha256(
+        ROOT / f"boileroom/models/{model}/Dockerfile"
     )
-    assert plan["entrypoint"] == "tests/profam/profam_public_validation.py"
+    assert plan["entrypoint"] == f"tests/{model}/{model}_public_validation.py"
     assert plan["paid_compute"] is plan["image_publication"] is plan["hermetic_build"] is False
     assert "GPU" in plan["scope"] and "parity" in plan["scope"]
     assert launcher.TOTAL_TIMEOUT + 60 < 55 * 60
@@ -131,9 +133,9 @@ def test_host_rejects_unverified_public_host_and_package(monkeypatch: pytest.Mon
     monkeypatch.setattr(
         Path,
         "read_text",
-        lambda path, *a, **k: 'ID=ubuntu\nVERSION_ID="22.04"\n'
-        if str(path) == "/etc/os-release"
-        else original(path, *a, **k),
+        lambda path, *a, **k: (
+            'ID=ubuntu\nVERSION_ID="22.04"\n' if str(path) == "/etc/os-release" else original(path, *a, **k)
+        ),
     )
     monkeypatch.setattr(launcher.platform, "machine", lambda: "x86_64")
     monkeypatch.setattr(launcher.os, "geteuid", lambda: 1001)
@@ -323,8 +325,9 @@ def test_missing_failed_build_image_is_cleanable(monkeypatch: pytest.MonkeyPatch
     assert calls == ["cleanup-image-list"]
 
 
+@pytest.mark.parametrize("model,wrapper_name", [("profam", "ProFam"), ("minifold", "MiniFold")])
 def test_child_uses_selected_public_wrapper_cpu_and_checks_retained_process_and_client(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, model: str, wrapper_name: str
 ) -> None:
     import boileroom
     from boileroom.backend import apptainer
@@ -332,14 +335,15 @@ def test_child_uses_selected_public_wrapper_cpu_and_checks_retained_process_and_
     state = _state(tmp_path)
     cache = Path(state["scratch"]) / "models"
     monkeypatch.setenv("MODEL_DIR", str(cache))
-    state["image_uri"] = "docker://docker.io/task/boileroom-profam:local"
+    state["image_uri"] = f"docker://docker.io/task/boileroom-{model}:local"
     sif = apptainer._get_cached_sif_path(state["image_uri"], cache)
     sif.parent.mkdir(parents=True)
     sif.write_bytes(b"exact local sif bytes")
     state |= {"sif_path": str(sif), "sif_sha256": launcher.sha256(sif)}
     helper = tmp_path / "public_helper.py"
     helper.write_text(
-        "def run_public_validation(factory, *, backend, device):\n"
+        "def run_public_validation(factory, *, backend, device, model_size=None):\n"
+        f"    assert model_size == {repr('12L' if model == 'minifold' else None)}\n"
         "    assert backend == 'apptainer' and device == 'cpu'\n"
         "    with factory(backend=backend, device=device, config={'num_samples': 2}):\n"
         "        pass\n"
@@ -369,11 +373,11 @@ def test_child_uses_selected_public_wrapper_cpu_and_checks_retained_process_and_
         def __exit__(self, *_args: Any) -> None:
             stop()
 
-    monkeypatch.setattr(boileroom, "ProFam", Wrapper)
+    monkeypatch.setattr(boileroom, wrapper_name, Wrapper, raising=False)
     monkeypatch.setattr(launcher.os, "sched_getaffinity", lambda pid: {0, 1, 2, 3})
     affinity = []
     monkeypatch.setattr(launcher.os, "sched_setaffinity", lambda pid, cpus: affinity.append(cpus))
-    plan = _plan() | {"entrypoint": str(helper)}
+    plan = _plan(model) | {"entrypoint": str(helper)}
     report = launcher.run_public_child(ROOT, plan, state, tmp_path)
     assert calls == [{"backend": "apptainer", "device": "cpu", "config": {"num_samples": 2}}]
     assert affinity == [[0, 1]]
