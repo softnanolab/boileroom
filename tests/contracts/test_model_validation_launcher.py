@@ -216,3 +216,45 @@ def test_cleanup_rejects_untrusted_app_identifier(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(launcher.subprocess, "run", lambda *args, **kwargs: pytest.fail("Must not stop"))
     with pytest.raises(ValueError, match="invalid/unbounded"):
         launcher.cleanup(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "model", [model for model in launcher.MODEL_LIMITS if (ROOT / f"boileroom/models/{model}/Dockerfile").exists()]
+)
+def test_source_build_sdk_context_contains_canonical_copy_inputs(monkeypatch: pytest.MonkeyPatch, model: str) -> None:
+    """Reproduce Modal's real COPY discovery, without building or contacting its API."""
+    import modal
+    from modal.image import AUTO_DOCKERIGNORE, _create_context_mount_function
+    from modal.mount import _select_files
+
+    original = modal.Image.dockerfile_commands
+    received: list[str] = []
+
+    def commands(image: Any, lines: list[str], **kwargs: Any) -> Any:
+        assert isinstance(lines, list), "Modal context discovery requires individual Dockerfile lines"
+        received.extend(lines)
+        return original(image, lines, **kwargs)
+
+    monkeypatch.setattr(modal.Image, "dockerfile_commands", commands)
+    plan = launcher.make_plan(ROOT, model, "12L", None)
+    launcher.build_image(modal, ROOT, plan)
+    dockerfile = ROOT / plan["model_dockerfile"]
+    body = launcher.model_dockerfile_body(dockerfile.read_text())
+    assert "\n".join(received) + "\n" == body
+    mount = _create_context_mount_function(
+        ignore=AUTO_DOCKERIGNORE, dockerfile_cmds=received, context_dir=dockerfile.parent
+    )()
+    assert mount is not None
+    selected = {str(remote): local for local, remote in _select_files(mount._entries)}
+    assert selected["/requirements.txt"] == dockerfile.parent / "requirements.txt"
+    if model == "minifold":
+        assert selected["/patch_upstream.py"] == dockerfile.parent / "patch_upstream.py"
+    assert all(path.is_file() for path in selected.values())
+    # The old one-string body failed to discover any COPY files, despite a
+    # correctly constructed Image descriptor, and failed only during paid build.
+    assert (
+        _create_context_mount_function(
+            ignore=AUTO_DOCKERIGNORE, dockerfile_cmds=[body], context_dir=dockerfile.parent
+        )()
+        is None
+    )
