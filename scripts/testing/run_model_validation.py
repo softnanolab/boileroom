@@ -135,7 +135,7 @@ def build_image(modal: Any, root: Path, plan: dict[str, Any]) -> Any:
     model_file = root / plan["model_dockerfile"]
     body = model_dockerfile_body(model_file.read_text())
     image = modal.Image.from_dockerfile(base, context_dir=base.parent, gpu=None)
-    image = image.dockerfile_commands(body, context_dir=model_file.parent, gpu=None)
+    image = image.dockerfile_commands(body.splitlines(), context_dir=model_file.parent, gpu=None)
     image = image.env(
         {
             "PYTHONPATH": "/validation",
