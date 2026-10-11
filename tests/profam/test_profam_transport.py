@@ -74,3 +74,28 @@ def test_generation_route_and_error_statuses(monkeypatch: pytest.MonkeyPatch) ->
     response = asyncio.run(server.generate(request))
     assert response.status_code == 500
     assert json.loads(response.body)["error_type"] == "RuntimeError"
+
+
+@pytest.mark.parametrize(
+    ("device", "config", "expected"),
+    [("cpu", {}, "cpu"), ("cuda:3", {}, "cuda:0"), ("cuda:3", {"device": "cpu"}, "cpu")],
+)
+def test_profam_device_routing_through_actual_server(
+    device: str, config: dict, expected: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("fastapi")
+    from boileroom.backend import server
+
+    loaded = []
+    monkeypatch.setenv("MODEL_CLASS", "boileroom.models.profam.core.ProFamCore")
+    monkeypatch.setenv("MODEL_CONFIG", json.dumps(config))
+    monkeypatch.setenv("DEVICE", device)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "inherited")
+    monkeypatch.setattr(server, "initialize_core", lambda core: loaded.append(core))
+    monkeypatch.setattr(server, "_model_instance", None)
+    server._load_model()
+    assert loaded[0].config["device"] == expected
+    if device == "cuda:3":
+        import os
+
+        assert os.environ["CUDA_VISIBLE_DEVICES"] == "3"

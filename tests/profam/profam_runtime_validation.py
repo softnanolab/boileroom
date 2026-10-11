@@ -18,6 +18,7 @@ import socket
 import threading
 import time
 import traceback
+import warnings
 import weakref
 from contextlib import contextmanager
 from dataclasses import asdict
@@ -160,6 +161,33 @@ def _plateau(trace: list[list[dict[str, int]]]) -> None:
     for metric in ("allocated", "reserved", "device_used"):
         peaks = [max(point[metric] for point in cycle) for cycle in trace[1:]]
         assert max(peaks) - peaks[0] < 256, f"{metric} grew after warm-up: {peaks}"
+
+
+def _allocation_diagnostics() -> dict[str, Any]:
+    """Report allocator-owned blocks separately from live Python CUDA tensors."""
+    import torch
+
+    blocks = [
+        {"size": block["size"], "requested_size": block.get("requested_size", 0), "state": block["state"]}
+        for segment in torch.cuda.memory_snapshot()
+        for block in segment["blocks"]
+        if block["state"].startswith("active")
+    ]
+    tensors = []
+    # gc's object list is released before the next memory measurement; the
+    # report contains only scalar metadata, never tensors or their contents.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", FutureWarning)
+        for value in gc.get_objects():
+            if isinstance(value, torch.Tensor) and value.is_cuda:
+                tensors.append(
+                    {
+                        "shape": list(value.shape),
+                        "dtype": str(value.dtype),
+                        "bytes": value.numel() * value.element_size(),
+                    }
+                )
+    return {"active_blocks": blocks, "live_cuda_tensor_count": len(tensors), "live_cuda_tensor_examples": tensors[:32]}
 
 
 def run_validation() -> dict[str, Any]:
@@ -327,6 +355,7 @@ def run_validation() -> dict[str, Any]:
         core.close()
         gc.collect()
         if torch.cuda.is_available():
+            torch.cuda.synchronize()
             torch.cuda.empty_cache()
         released = resident_ref is None or resident_ref() is None
         report["cleanup"] = {"core_closed": not core.ready and core.model is None, "resident_object_released": released}
@@ -334,11 +363,76 @@ def run_validation() -> dict[str, Any]:
             after_close_allocated = torch.cuda.memory_allocated()
             report["cleanup"]["allocated_before_load_mib"] = before_load_allocated / 2**20
             report["cleanup"]["allocated_after_close_mib"] = after_close_allocated / 2**20
-            if after_close_allocated - before_load_allocated > 16 * 2**20:
+            report["cleanup"]["after_close_diagnostics"] = _allocation_diagnostics()
+            # Torch 2.6 retains allocator-backed cuBLAS workspaces globally per
+            # handle/stream (T4 default8.125 MiB each). Main + HTTP threads can
+            # leave16.25 MiB even after every model tensor is released. This is
+            # a test-only diagnostic of that precise hypothesis, not a relaxed
+            # memory gate or a production global-cache purge.
+            # https://github.com/pytorch/pytorch/blob/v2.6.0/aten/src/ATen/cuda/CublasHandlePool.cpp
+            clear_workspaces = getattr(torch._C, "_cuda_clearCublasWorkspaces", None)
+            if not callable(clear_workspaces):
+                raise RuntimeError("Pinned torch lacks the cuBLAS workspace diagnostic binding")
+            clear_workspaces()
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+            after_workspace_clear = torch.cuda.memory_allocated()
+            report["cleanup"]["test_only_cublas_workspace_bytes_released"] = (
+                after_close_allocated - after_workspace_clear
+            )
+            report["cleanup"]["allocated_after_workspace_clear_mib"] = after_workspace_clear / 2**20
+            report["cleanup"]["after_workspace_clear_diagnostics"] = _allocation_diagnostics()
+            if report["cleanup"]["after_workspace_clear_diagnostics"]["live_cuda_tensor_count"]:
                 report["passed"] = False
-                report["cleanup"]["allocation_error"] = "more than 16 MiB torch allocations remained after close"
+                report["cleanup"]["tensor_error"] = "live CUDA tensors remained after model cleanup"
+            if after_workspace_clear - before_load_allocated > 16 * 2**20:
+                report["passed"] = False
+                report["cleanup"]["allocation_error"] = (
+                    "more than16 MiB allocations remained after model and test-only workspace cleanup"
+                )
         if not released:
             report["passed"] = False
             report["cleanup"]["error"] = "resident model remained referenced after close"
         report["seconds"] = time.monotonic() - started
+    if report["passed"]:
+        # A fresh load/call/release distinguishes a fixed process-global
+        # workspace from growth across model lifetimes. Reuse only verified
+        # cached checkpoint bytes, never a retained native model object.
+        fresh_ref = None
+        try:
+            core._load()
+            fresh_ref = weakref.ref(core.model)
+            output = core.generate(
+                UBIQUITIN, {"seed": 42, "max_generated_length": 16, "minimum_sequence_length_proportion": 0.05}
+            )
+            report["phases"]["fresh_lifetime"] = {"passed": True, **_canonical_result(output)}
+            del output
+        except Exception as error:
+            report["passed"] = False
+            report["phases"]["fresh_lifetime"] = {"passed": False, "error": f"{type(error).__name__}: {error}"}
+        finally:
+            core.close()
+            gc.collect()
+            torch.cuda.synchronize()
+            before_clear = torch.cuda.memory_allocated()
+            torch._C._cuda_clearCublasWorkspaces()
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+            after_clear = torch.cuda.memory_allocated()
+            cleanup = {
+                "resident_object_released": fresh_ref is None or fresh_ref() is None,
+                "allocated_before_workspace_clear_mib": before_clear / 2**20,
+                "allocated_after_workspace_clear_mib": after_clear / 2**20,
+                "after_workspace_clear_diagnostics": _allocation_diagnostics(),
+            }
+            report["phases"]["fresh_lifetime"]["cleanup"] = cleanup
+            if (
+                not cleanup["resident_object_released"]
+                or after_clear - before_load_allocated > 16 * 2**20
+                or cleanup["after_workspace_clear_diagnostics"]["live_cuda_tensor_count"]
+            ):
+                report["passed"] = False
+                report["phases"]["fresh_lifetime"]["passed"] = False
+                cleanup["error"] = "fresh model lifetime failed the unchanged release gate"
+    report["seconds"] = time.monotonic() - started
     return report

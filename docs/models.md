@@ -452,7 +452,11 @@ Runtime image: `boileroom-profam`, CUDA 12.6, Linux AMD64, default Modal T4.
 `dtype="auto"` resolves to float32 on CPU, float16 on CUDA capability <8.0 and
 bfloat16 on >=8.0; attention defaults to SDPA (explicit `eager` is supported).
 FlashAttention is not installed or silently selected. Device, dtype, attention
-and cache location are initialization-only. Reuse one model context across calls;
+and cache location are initialization-only. Apptainer CPU selection remains CPU
+even on a CUDA-capable host; selected physical CUDA devices are mapped to the
+container-local device zero. Conflicting top-level and config device selectors
+are refused. Failed loading releases partial models held in exception frames
+before a guarded retry; original exception types and chains are retained. Reuse one model context across calls;
 weights are loaded once and released when the backend shuts down. Runtime
 metadata records installed package versions, source/checkpoint identity,
 resolved dtype/attention/device, sampler and seed. GPU-backed outputs also include
@@ -488,7 +492,7 @@ uv run --extra dev pytest tests/test_memory_stability.py -m integration -k profa
 ```
 
 For a source-only branch, the manual **Integration Tests** workflow accepts
-`run-target=profam` and builds the canonical base + family Dockerfiles in a temporary
+`run-target=profam` with `validation-mode=core` (default) and builds the canonical base + family Dockerfiles in a temporary
 Modal app, without publishing an image. Its bounded harness records stock-API
 adapter parity for both samplers and ensemble reductions, multi-sample ordering,
 seed repeatability on one stack, real signed loopback HTTP, context responsiveness,
@@ -498,6 +502,24 @@ RCSB 1UBQ/1CRN sequences plus explicitly synthetic point variants are controlled
 inputs, not biological validation. The teacher-forced context-response check is
 separate from generation-score parity and makes no fitness claim. Loopback HTTP
 does not establish that the Apptainer launcher or its SIF worked.
+
+Two separately selected follow-ons use the real public wrapper: `public-modal`
+uses the actual Modal class/backend, a test-scoped source image and ephemeral
+weights volume, while `cpu-sif` builds the canonical Docker image into a local
+Apptainer SIF on a standard public Ubuntu 22.04 runner and calls the real CPU
+backend. Neither publishes an image or changes production image lookup. Their
+short completions verify transport/lifecycle, not full-length quality. CPU SIF
+requires enough available RAM/disk and working unprivileged namespaces; a missing
+capability is reported as unrun rather than bypassing host security. The launcher
+records image/SIF identity and verifies its own processes/apps are stopped;
+Modal cleanup additionally waits for zero running tasks. ProFam GPU selection is
+allowlisted to T4 (default) or a separate L4 follow-on for the bfloat16 path. The
+core harness reports live CUDA tensors and allocator blocks after close, then
+uses the documented Torch 2.6 cuBLAS workspace-clear hook only in the test
+process to distinguish framework workspaces from retained model tensors. It
+keeps the 16 MiB unexplained-allocation gate, requires zero remaining live CUDA
+tensors, and repeats loading/generation/release with a fresh model. App time/resource
+bounds are not an enforced dollar spending cap.
 
 The public registry backends need an image published under a validation tag; use `--image-tag` / `BOILEROOM_IMAGE_TAG` for that exact image.
 Passing mocked tests establishes API/lifecycle/transport behavior, not scientific

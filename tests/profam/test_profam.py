@@ -346,3 +346,104 @@ def test_effective_temperature_and_sampler_provenance(sampler: str, monkeypatch:
     assert result.metadata.runtime["profam.num_prompts_in_ensemble"] == "4"
     assert result.metadata.runtime["profam.num_conditioning_prompts"] == "1"
     assert result.metadata.runtime["profam.score_semantics"] == "mean_post_warper_token_log_probability"
+
+
+def test_failed_load_releases_completed_frames_while_guard_retains_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import gc
+    import weakref
+
+    from boileroom.optimization import GuardedCore
+
+    core, _, _ = _install_runtime(monkeypatch, tmp_path)
+    references = []
+
+    class PartialModel:
+        pass
+
+    def failed_load(**kwargs):
+        partial_model = PartialModel()
+        references.append(weakref.ref(partial_model))
+        try:
+            raise OSError("nested upstream error")
+        except OSError as cause:
+            raise RuntimeError("upstream constructor failed") from cause
+
+    monkeypatch.setitem(sys.modules, "profam", SimpleNamespace(ProFam=failed_load))
+    guard = GuardedCore(lambda: core)
+    gc.collect()
+    assert isinstance(guard.failure, RuntimeError)
+    assert isinstance(guard.failure.__cause__, OSError)
+    assert str(guard.failure) == "upstream constructor failed"
+    assert references[0]() is None
+    assert not core.ready and core.model is None
+    with pytest.raises(RuntimeError, match="constructor failed"):
+        guard.get()
+    gc.collect()
+    assert len(references) == 2 and all(reference() is None for reference in references)
+    guard.close()
+    assert not core.ready and core.model is None
+
+
+def test_post_load_failure_releases_successfully_constructed_model(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import gc
+    import weakref
+
+    import boileroom.models.profam.core as module
+    from boileroom.optimization import GuardedCore
+
+    core, _, _ = _install_runtime(monkeypatch, tmp_path)
+    references = []
+
+    class LoadedModel:
+        pass
+
+    def loaded(**kwargs):
+        model = LoadedModel()
+        references.append(weakref.ref(model))
+        return model
+
+    def failed_provenance(**kwargs):
+        raise ValueError("injected post-load failure")
+
+    monkeypatch.setitem(sys.modules, "profam", SimpleNamespace(ProFam=loaded))
+    monkeypatch.setattr(module, "runtime_provenance", failed_provenance)
+    guard = GuardedCore(lambda: core)
+    gc.collect()
+    assert isinstance(guard.failure, ValueError)
+    assert references[0]() is None
+    assert not core.ready and core.model is None
+    with pytest.raises(ValueError, match="post-load failure"):
+        guard.get()
+    assert len(references) == 1  # ValueError is a standing refusal, not retried.
+
+
+@pytest.mark.parametrize(
+    ("device", "configured", "expected"), [("cpu", None, "cpu"), ("cuda:3", None, "cuda:0"), ("cuda:3", "cpu", "cpu")]
+)
+def test_core_uses_image_server_device_and_local_cuda_index(
+    device: str, configured: str | None, expected: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DEVICE", device)
+    config = {"device": configured}
+    assert _core(config).config["device"] == expected
+    assert config == {"device": configured}
+
+
+def test_wrapper_routes_explicit_apptainer_device_without_mutating_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    from boileroom import ProFam
+    from boileroom.base import ModelWrapper
+
+    calls = []
+    monkeypatch.setattr(ModelWrapper, "_initialize_backend_from_spec", lambda *args, **kwargs: calls.append(kwargs))
+    config = {"device": "cuda:3"}
+    ProFam(backend="apptainer", config=config)
+    assert calls[-1]["device"] == "cuda:3" and calls[-1]["config"]["device"] == "cuda:0"
+    assert config == {"device": "cuda:3"}
+    ProFam(backend="apptainer", device="cpu")
+    assert calls[-1]["device"] == "cpu" and calls[-1]["config"] == {}
+    with pytest.raises(ValueError, match="same Apptainer device"):
+        ProFam(backend="apptainer", device="cpu", config={"device": "cuda:3"})

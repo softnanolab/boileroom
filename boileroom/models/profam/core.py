@@ -7,6 +7,7 @@ import importlib
 import math
 import os
 import time
+import traceback
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from types import MappingProxyType
@@ -61,6 +62,12 @@ class ProFamCore(GenerationAlgorithm):
     STATIC_CONFIG_KEYS = frozenset({"device", "cache_dir", "dtype", "attn_implementation"})
 
     def __init__(self, config: dict | None = None) -> None:
+        config = dict(config or {})
+        # The image-backed server masks a selected physical GPU before loading
+        # the core. Its DEVICE therefore maps to local cuda:0, or explicit CPU.
+        if config.get("device") is None and "DEVICE" in os.environ:
+            selected = os.environ["DEVICE"]
+            config["device"] = "cuda:0" if selected.startswith("cuda") else selected
         super().__init__(config)
         self.name = "ProFam"
         self.version = "ProFam-1"
@@ -161,6 +168,27 @@ class ProFamCore(GenerationAlgorithm):
     def _load(self) -> None:
         if self.ready:
             return
+        try:
+            self._load_impl()
+        except BaseException as error:
+            # GuardedCore retains failures between calls. Completed upstream
+            # constructor frames can hold a partial model/checkpoint, including
+            # CUDA tensors; clear their locals without changing exception type,
+            # message, traceback locations or chained cause/context.
+            self.close()
+            pending = [error]
+            seen: set[int] = set()
+            while pending:
+                failure = pending.pop()
+                if id(failure) in seen:
+                    continue
+                seen.add(id(failure))
+                traceback.clear_frames(failure.__traceback__)
+                pending.extend(item for item in (failure.__cause__, failure.__context__) if item is not None)
+            raise
+
+    def _load_impl(self) -> None:
+        """Keep partial-load tensors in a completed frame if construction fails."""
         import torch
 
         upstream_profam = importlib.import_module("profam").ProFam

@@ -51,6 +51,14 @@ class ProFam(ModelWrapper):
     def __init__(self, backend: str = "modal", device: str | None = None, config: dict | None = None) -> None:
         from .core import ProFamCore
 
+        config = dict(config or {})
+        if self.parse_backend(backend)[0] == "apptainer":
+            configured = config.get("device")
+            if device is not None and configured is not None and device != configured:
+                raise ValueError("ProFam device and config['device'] must select the same Apptainer device")
+            device = device or configured
+            if configured is not None:
+                config["device"] = "cuda:0" if str(device).startswith("cuda") else device
         # Reject bad config before starting any paid runtime. Heavy dependencies
         # are lazy inside _load(), so importing the core here is lightweight.
         ProFamCore(config)
