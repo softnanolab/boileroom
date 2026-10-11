@@ -52,6 +52,9 @@ TOTAL_TIMEOUT = 53 * 60
 IMAGE_TIMEOUT = 15 * 60
 PROBE_TIMEOUT = 5 * 60
 FULL_TIMEOUT = 55 * 60
+# Independent of the free GitHub source-installer's shorter launcher budget.
+FULL_COMMAND_TIMEOUT = 53 * 60
+VM_BASE_IMAGE = "python:3.12-slim-bookworm"
 REMOTE_OUTPUT = Path("/tmp/cpu-sif-reports")
 REMOTE_RUNNER_TEMP = Path("/tmp/cpu-sif-runner")
 # V2 Sandbox identifiers are opaque and are not legacy sb-22-character IDs.
@@ -89,6 +92,9 @@ def make_plan(root: Path, expected_sha: str | None, run_model: bool, sif_runtime
         raise ValueError("SIF runtime must be mounted or unsquash")
     cpu = cpu_helpers()
     plan = cpu.make_plan(root, "minifold", "12L", expected_sha)
+    # Shared source provenance describes the free Jammy installer, not this VM.
+    for field in ("apptainer_source_url", "apptainer_source_sha256"):
+        plan.pop(field, None)
     plan.update(
         {
             "mode": "cpu-vm-extracted-sif" if sif_runtime == "unsquash" else "cpu-vm-sif",
@@ -97,6 +103,12 @@ def make_plan(root: Path, expected_sha: str | None, run_model: bool, sif_runtime
             "prior_mounted_probe_observation": MOUNTED_PROBE_OBSERVATION,
             "control_modal_sdk": MODAL_VERSION,
             "client_modal_sdk": CLIENT_MODAL_VERSION,
+            "vm_base_image": VM_BASE_IMAGE,
+            "vm_guest_distribution": "Debian 12 (bookworm)",
+            "apptainer_install_method": "official-vendor-deb",
+            "apptainer_version": cpu.APPTAINER_VERSION,
+            "apptainer_package_url": cpu.APPTAINER_PACKAGE_URL,
+            "apptainer_package_sha256": cpu.APPTAINER_PACKAGE_SHA256,
             "buildx_version": BUILDX_VERSION,
             "buildx_sha256": BUILDX_SHA256,
             "run_model_after_probe": run_model,
@@ -109,11 +121,19 @@ def make_plan(root: Path, expected_sha: str | None, run_model: bool, sif_runtime
                 "timeout_seconds": PROBE_TIMEOUT,
                 "model_weights": False,
             },
-            "full": {"cpu": [4, 4], "memory_mib": [32768, 32768], "timeout_seconds": FULL_TIMEOUT, "model_size": "12L"},
+            "full": {
+                "cpu": [4, 4],
+                "memory_mib": [32768, 32768],
+                "timeout_seconds": FULL_TIMEOUT,
+                "command_timeout_seconds": FULL_COMMAND_TIMEOUT,
+                "timeout_policy": "Sandbox timeout is clipped by the remaining controller deadline; commands reserve 60 seconds for remote cleanup.",
+                "model_size": "12L",
+            },
             "launcher_timeout_seconds": TOTAL_TIMEOUT,
             "scope": "Real CPU non-setuid SIF/public wrapper/transport/lifecycle. Independent FP32 CPU stock parity, GPU and compile remain unrun.",
         }
     )
+    plan["limits"] = plan["limits"] | {"launcher_timeout_seconds": TOTAL_TIMEOUT}
     if sif_runtime == "unsquash":
         plan["limits"] = plan["limits"] | {"free_disk_gib": 64}
         plan["extraction_disk_note"] = (
@@ -164,6 +184,26 @@ def extraction_cleanup_evidence(state: dict[str, Any], plan: dict[str, Any], tem
             raise RuntimeError("Apptainer retained its task-owned temporary extracted rootfs")
 
 
+def verify_probe_output(output: str, sif_runtime: str) -> None:
+    """Inspect output only after Commands.run has verified a zero exit status."""
+    if sif_runtime not in SIF_RUNTIMES:
+        raise ValueError("Unknown source-bound SIF runtime")
+    if sum(line.strip() == "cpu-sif-probe-passed" for line in output.splitlines()) != 1:
+        raise ValueError("Real non-root SIF smoke did not return exactly one standalone success sentinel")
+    converted = "converting sif file to temporary sandbox" in output.lower()
+    if sif_runtime == "mounted" and converted:
+        raise ValueError("Mounted-SIF probe refused automatic temporary conversion")
+    if sif_runtime == "unsquash" and not converted:
+        raise ValueError("Extracted-SIF execution did not report the expected temporary conversion")
+
+
+def full_command_timeout(remote_timeout: int) -> int:
+    duration = min(FULL_COMMAND_TIMEOUT, remote_timeout - 60)
+    if duration <= 0:
+        raise TimeoutError("Not enough VM time remains for commands and remote cleanup")
+    return duration
+
+
 def source_pack(root: Path, destination: Path, head: str) -> str:
     """Pack only the exact HEAD commit/current tree, never Git config or credentials."""
     if not re.fullmatch(r"[0-9a-f]{40}", head):
@@ -188,7 +228,7 @@ def source_pack(root: Path, destination: Path, head: str) -> str:
 
 def build_image(modal: Any, pack: Path, plan_file: Path, plan: dict[str, Any]) -> Any:
     cpu = cpu_helpers()
-    image = modal.Image.from_registry("python:3.12-slim-bookworm").apt_install(
+    image = modal.Image.from_registry(VM_BASE_IMAGE).apt_install(
         "docker.io", "ca-certificates", "curl", "git", "fuse3", "util-linux", "busybox-static"
     )
     image = image.run_commands(
@@ -389,10 +429,7 @@ def probe_remote(expected_sha: str, output: Path) -> dict[str, Any]:
             30,
             env=env,
         )
-        if not value.splitlines() or value.splitlines()[-1].strip() != "cpu-sif-probe-passed":
-            raise ValueError("Real non-root SIF smoke did not return the expected output")
-        if state["sif_runtime"] == "unsquash" and "Converting SIF file to temporary sandbox" not in value:
-            raise ValueError("Extracted-SIF execution did not report the expected temporary conversion")
+        verify_probe_output(value, state["sif_runtime"])
         extraction_cleanup_evidence(state, plan, Path(env["APPTAINER_TMPDIR"]))
         state["passed"] = True
         state["validation_status"] = "passed"
@@ -448,7 +485,9 @@ def full_remote(expected_sha: str, output: Path) -> dict[str, Any]:
     state["sif_runtime"] = plan.get("sif_runtime", "mounted")
     state["prior_mounted_probe_observation"] = plan.get("prior_mounted_probe_observation")
     scratch = Path(state["scratch"])
-    duration = min(cpu.TOTAL_TIMEOUT, int(os.environ["BOILEROOM_VALIDATION_REMOTE_TIMEOUT"]) - 60)
+    duration = full_command_timeout(int(os.environ["BOILEROOM_VALIDATION_REMOTE_TIMEOUT"]))
+    state["command_timeout_seconds"] = duration
+    state["command_timeout_ceiling_seconds"] = FULL_COMMAND_TIMEOUT
     commands = cpu.Commands(output, time.monotonic() + duration)
     previous = signal.getsignal(signal.SIGTERM)
 

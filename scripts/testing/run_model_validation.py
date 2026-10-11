@@ -221,9 +221,10 @@ def remote_validation(model: str, model_size: str | None, compiled: bool = False
     if not isinstance(report, dict):
         raise TypeError("run_validation must return a JSON-serializable dict")
     report["launcher_remote_seconds"] = time.monotonic() - started
-    # Reject tensors/NaNs and other unserializable results before returning.
-    json.dumps(report, allow_nan=False)
-    return report
+    # Normalize JSON-compatible subclasses too: e.g. TorchVersion is a str
+    # subclass whose pickle otherwise imports Torch on the lightweight host.
+    # Keep rejecting tensors/NaNs instead of coercing or silently dropping them.
+    return json.loads(json.dumps(report, allow_nan=False))
 
 
 def remember_app(state: dict[str, Any], app: Any, phase: str, output: Path, filename: str = "run.json") -> None:
@@ -441,6 +442,7 @@ def public_worker(root: Path, plan: dict[str, Any], output: Path) -> int:
             report = harness.run_public_modal_validation(getattr(wrapper_module, wrapper_name), **kwargs)
             if not isinstance(report, dict):
                 raise TypeError("Public validation must return a JSON-serializable dict")
+            check_public_source_reference(report, plan["source_reference"])
             report["launcher"] = {
                 key: state[key]
                 for key in (
@@ -465,6 +467,15 @@ def public_worker(root: Path, plan: dict[str, Any], output: Path) -> int:
         volumes_module.model_weights = original_weights
         signal.signal(signal.SIGTERM, old_handler)
     return 0 if state["passed"] else 1
+
+
+def check_public_source_reference(report: dict[str, Any], expected: str) -> None:
+    """Refuse a passing public result whose remote provenance drifted from the built image."""
+    actual = report.get("reported_image_reference", report.get("provenance", {}).get("image_ref"))
+    report["source_reference_verified"] = actual == expected
+    if report.get("passed") is True and actual != expected:
+        report["passed"] = False
+        report["source_reference_error"] = {"expected": expected, "actual": actual}
 
 
 async def execute(root: Path, plan: dict[str, Any], output: Path, state: dict[str, Any]) -> None:

@@ -5,6 +5,7 @@ import hashlib
 import io
 import json
 import os
+import pickle
 import subprocess
 import sys
 from pathlib import Path
@@ -16,6 +17,19 @@ import numpy as np
 import pytest
 
 pytestmark = pytest.mark.contract
+
+
+def _assert_native_json_tree(value: Any) -> None:
+    """Reject subclasses too: JSON accepts TorchVersion, but pickle needs Torch."""
+    if type(value) is dict:
+        for key, item in value.items():
+            assert type(key) is str
+            _assert_native_json_tree(item)
+    elif type(value) is list:
+        for item in value:
+            _assert_native_json_tree(item)
+    else:
+        assert type(value) in (str, int, float, bool, type(None)), type(value)
 
 
 @pytest.mark.parametrize("model_size", ["12L", "48L"])
@@ -48,6 +62,7 @@ def test_preimported_torch_refuses_compiled_probe_without_launch(monkeypatch):
     assert result["passed"] is False and result["compiled"] is True
     assert "fresh process" in result["phases"]["compiler_preflight"]["message"]
     implementation.assert_not_called()
+    _assert_native_json_tree(result)
     json.dumps(result, allow_nan=False)
 
 
@@ -103,8 +118,54 @@ with _compiler_environment() as environment:
     )
     assert process.returncode == 0, process.stderr
     configured = json.loads(process.stdout)
+    _assert_native_json_tree(configured)
     assert configured["TORCHINDUCTOR_COMPILE_THREADS"] == "1"
     assert Path(configured["TORCHINDUCTOR_CACHE_DIR"]).parent == Path(configured["TRITON_CACHE_DIR"]).parent
+
+
+def test_real_compiler_evidence_unpickles_without_torch(monkeypatch):
+    """Audit actual pinned Torch values, not just JSON encoding or mocked settings."""
+    import minifold_runtime_validation as validation
+    import torch
+    from torch.torch_version import TorchVersion
+
+    monkeypatch.setattr(torch, "__version__", TorchVersion("2.6.0+cu124"))
+    monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda: False)
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda: None)
+    monkeypatch.setattr(torch.cuda, "max_memory_allocated", lambda: 2**20)
+    monkeypatch.setattr(torch.cuda, "max_memory_reserved", lambda: 2**21)
+    monkeypatch.setattr(torch.cuda, "memory_allocated", lambda: 2**20)
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda: 2**21)
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda: (2**28, 2**29))
+    report = {
+        "compiled_runtime": {
+            "settings": validation._compiler_settings(),
+            "counters": validation._compiler_counters(),
+            "peak_memory": validation._peak_memory(),
+            "memory": validation._memory(),
+            "numeric_deltas": validation._numeric_deltas([1, 3], [1, 2]),
+        }
+    }
+    _assert_native_json_tree(report)
+    assert report["compiled_runtime"]["settings"]["torch"] == str(torch.__version__)
+    script = """
+import importlib.util
+import json
+import pickle
+import sys
+assert importlib.util.find_spec('torch') is None
+value = pickle.loads(sys.stdin.buffer.read())
+assert type(value['compiled_runtime']['settings']['torch']) is str
+print(json.dumps(value, allow_nan=False))
+"""
+    process = subprocess.run(
+        [sys.executable, "-I", "-S", "-c", script],
+        input=pickle.dumps(report),
+        capture_output=True,
+        timeout=30,
+    )
+    assert process.returncode == 0, process.stderr.decode()
+    assert json.loads(process.stdout) == report
 
 
 def test_numeric_deltas_are_raw_and_json_safe():
@@ -119,6 +180,8 @@ def test_numeric_deltas_are_raw_and_json_safe():
     assert _numeric_deltas([1], [1, 2])["comparable"] is False
     nonfinite = _numeric_deltas([np.nan], [1])
     assert nonfinite["nonfinite_count"] == 1
+    _assert_native_json_tree(result)
+    _assert_native_json_tree(nonfinite)
     json.dumps(nonfinite, allow_nan=False)
 
 
@@ -172,6 +235,7 @@ def test_raw_deltas_survive_strict_parity_failure(monkeypatch, parity_input):
         np.testing.assert_array_equal(artifact["atom_names"], ["N", "N"])
         np.testing.assert_array_equal(artifact["residue_ids"], [1, 2])
         np.testing.assert_array_equal(artifact["residue_plddt_unit"], [0.5, 0.5])
+    _assert_native_json_tree(report)
     json.dumps(report, allow_nan=False)
 
 
@@ -235,6 +299,7 @@ def test_cold_shape_specializations_then_two_warm_repeats(compiled_probe):
     assert [(call["length"], call["num_recycling"]) for call in calls[::3]] == [(3, 3), (5, 3), (7, 3), (3, 0)]
     assert all(call["counter_delta"]["unique_graphs"] == (call["repeat"] == 0) for call in calls)
     assert report["compiled_runtime"]["cold_call_seconds"] >= 0
+    _assert_native_json_tree(report)
     json.dumps(report, allow_nan=False)
 
 
@@ -310,6 +375,7 @@ def test_normal_release_verdict_precedes_dynamo_reset(monkeypatch, model_retaine
     assert report["compiled_runtime"]["memory_after_dynamo_reset_mib"]["allocated"] == 0
     if not expected:
         assert report["phases"]["cleanup"]["passed"] is False
+    _assert_native_json_tree(report)
 
 
 def test_dynamo_cleanup_error_preserves_prior_failure_evidence(monkeypatch):
@@ -327,3 +393,4 @@ def test_dynamo_cleanup_error_preserves_prior_failure_evidence(monkeypatch):
     assert report["compiled_runtime"]["calls"] == ["retained"]
     assert report["phases"]["parity"]["passed"] is False
     assert report["phases"]["post_verdict_dynamo_cleanup"]["message"] == "reset failed"
+    _assert_native_json_tree(report)

@@ -412,10 +412,11 @@ def test_cpu_sif_is_an_isolated_manual_non_setuid_job() -> None:
     assert job["timeout-minutes"] <= 60
     assert "runner." not in json.dumps(job.get("env", {}))
     assert "secrets." not in json.dumps(job)
-    install = next(step["run"] for step in job["steps"] if "sha256sum" in step.get("run", ""))
-    assert "https://github.com/apptainer/apptainer/releases/download/v1.5.4/apptainer_1.5.4_amd64.deb" in install
-    assert "281cf9bd68f16b6f7c34a3a94d77668bc327b9c09db0412ce7890162734a97f7" in install
-    assert install.index("sha256sum") < install.index("sudo apt-get install")
+    install = next(step["run"] for step in job["steps"] if "build_cpu_apptainer.sh" in step.get("run", ""))
+    assert install == "bash scripts/testing/build_cpu_apptainer.sh"
+    source = (ROOT / "scripts/testing/build_cpu_apptainer.sh").read_text()
+    assert "ec1f51e696ba384f90bc7ab2c7a438fee70da98763d001b8f3175d14a91cfcf6" in source
+    assert "--without-suid --without-libsubid" in source
     cleanup = next(step for step in job["steps"] if "--cleanup-only" in step.get("run", ""))
     assert cleanup["if"] == "always()"
     assert '[ -f "$ARTIFACT_DIR/run.json" ]' in cleanup["run"]
@@ -774,3 +775,71 @@ def test_extracted_sif_routes_are_distinct_and_explicit() -> None:
         assert "mode_args+=(--sif-runtime unsquash)" in script
         assert 'if [[ "$VALIDATION_MODE" = cpu-vm-extract-probe || "$VALIDATION_MODE" = cpu-vm-extract-sif ]]' in script
         assert 'if [[ "$VALIDATION_MODE" = cpu-vm-sif || "$VALIDATION_MODE" = cpu-vm-extract-sif ]]' in script
+
+
+@pytest.mark.parametrize("field", ["reported_image_reference", "provenance"])
+def test_public_image_provenance_must_match_exact_built_source(field: str) -> None:
+    expected = "source:reviewed-exact-build"
+    report = {"passed": True, field: expected if field == "reported_image_reference" else {"image_ref": expected}}
+    launcher.check_public_source_reference(report, expected)
+    assert report["passed"] and report["source_reference_verified"]
+    launcher.check_public_source_reference(report, "source:different")
+    assert not report["passed"] and not report["source_reference_verified"]
+    missing = {"passed": True}
+    launcher.check_public_source_reference(missing, expected)
+    assert not missing["passed"]
+    failed = {"passed": False, "error": "original model failure"}
+    launcher.check_public_source_reference(failed, expected)
+    assert failed["error"] == "original model failure"
+
+
+def test_remote_report_is_native_json_before_modal_pickle(monkeypatch: pytest.MonkeyPatch) -> None:
+    import base64
+    import importlib.util
+    import pickle
+    import sys
+
+    torch = pytest.importorskip("torch")
+    version = torch.__version__
+    assert isinstance(version, str) and type(version) is not str
+    original: dict[str, Any] = {
+        "passed": False,
+        "diagnostic": {"torch": version},
+        "numeric": [1.25],
+        "error": "retained",
+    }
+    module = SimpleNamespace(run_validation=lambda **kwargs: original)
+    spec = SimpleNamespace(name="minifold_runtime_validation", loader=SimpleNamespace(exec_module=lambda module: None))
+    monkeypatch.setattr(importlib.util, "spec_from_file_location", lambda *args: spec)
+    monkeypatch.setattr(importlib.util, "module_from_spec", lambda spec: module)
+    monkeypatch.setattr(launcher.os, "chdir", lambda path: None)
+    monkeypatch.setattr(sys, "path", sys.path.copy())
+    monkeypatch.setitem(sys.modules, "minifold_runtime_validation", module)
+    report = launcher.remote_validation("minifold", "12L")
+    assert type(report["diagnostic"]["torch"]) is str
+    assert report["diagnostic"]["torch"] == str(version)
+    assert report["passed"] is False and report["error"] == "retained"
+    assert type(original["diagnostic"]["torch"]) is type(version)
+    encoded = base64.b64encode(pickle.dumps(report)).decode()
+    command = (
+        "import base64,pickle,sys;sys.modules['torch']=None;"
+        f"r=pickle.loads(base64.b64decode({encoded!r}));"
+        "assert type(r['diagnostic']['torch']) is str and r['error']=='retained'"
+    )
+    subprocess.run([sys.executable, "-I", "-c", command], check=True, timeout=15, capture_output=True)
+
+
+@pytest.mark.parametrize("invalid", [float("nan"), object()])
+def test_remote_report_still_rejects_non_json_values(monkeypatch: pytest.MonkeyPatch, invalid: Any) -> None:
+    import importlib.util
+    import sys
+
+    module = SimpleNamespace(run_validation=lambda **kwargs: {"passed": True, "invalid": invalid})
+    spec = SimpleNamespace(name="minifold_runtime_validation", loader=SimpleNamespace(exec_module=lambda module: None))
+    monkeypatch.setattr(importlib.util, "spec_from_file_location", lambda *args: spec)
+    monkeypatch.setattr(importlib.util, "module_from_spec", lambda spec: module)
+    monkeypatch.setattr(launcher.os, "chdir", lambda path: None)
+    monkeypatch.setattr(sys, "path", sys.path.copy())
+    monkeypatch.setitem(sys.modules, "minifold_runtime_validation", module)
+    with pytest.raises((TypeError, ValueError)):
+        launcher.remote_validation("minifold", "12L")

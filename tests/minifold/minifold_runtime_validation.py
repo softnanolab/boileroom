@@ -141,7 +141,8 @@ def _compiler_settings() -> dict[str, Any]:
     from torch._inductor import config as inductor_config
 
     return {
-        "torch": torch.__version__,
+        # TorchVersion passes JSON encoding but makes pickle import Torch on the host.
+        "torch": str(torch.__version__),
         "backend": "inductor",
         "compiled_component": "model.fold.miniformer",
         "dynamic": True,

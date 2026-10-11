@@ -97,6 +97,139 @@ def test_direct_isolated_cli_writes_offline_plan_without_pythonpath(tmp_path: Pa
     assert plan["sif_runtime"] == sif_runtime
     assert plan["limits"]["free_disk_gib"] == (64 if sif_runtime == "unsquash" else 40)
     assert plan["prior_mounted_probe_observation"]["status"] == "failed"
+    assert "apptainer_source_url" not in plan and "apptainer_source_sha256" not in plan
+    assert plan["apptainer_install_method"] == "official-vendor-deb"
+    assert plan["apptainer_package_sha256"] == vm.cpu_helpers().APPTAINER_PACKAGE_SHA256
+    assert plan["vm_base_image"] == "python:3.12-slim-bookworm"
+    assert plan["vm_guest_distribution"] == "Debian 12 (bookworm)"
+    assert plan["limits"]["launcher_timeout_seconds"] == plan["launcher_timeout_seconds"] == 53 * 60
+    assert plan["full"]["command_timeout_seconds"] == vm.FULL_COMMAND_TIMEOUT == 53 * 60
+
+
+def test_vm_provenance_and_timeout_are_independent_of_free_source_installer(helpers: Any, tmp_path: Path) -> None:
+    helpers.make_plan = lambda *args: _plan() | {
+        "apptainer_source_url": "free-runner-source.tar.gz",
+        "apptainer_source_sha256": "d" * 64,
+        "limits": {"free_disk_gib": 40, "launcher_timeout_seconds": 40 * 60},
+    }
+    helpers.TOTAL_TIMEOUT = 40 * 60
+    plan = vm.make_plan(tmp_path, "a" * 40, True)
+    assert not any(field.startswith("apptainer_source_") for field in plan)
+    assert plan["apptainer_package_url"] == helpers.APPTAINER_PACKAGE_URL
+    assert plan["apptainer_package_sha256"] == helpers.APPTAINER_PACKAGE_SHA256
+    assert plan["apptainer_version"] == "1.5.4"
+    assert plan["full"]["timeout_seconds"] == 55 * 60
+    assert plan["full"]["command_timeout_seconds"] == 53 * 60
+    assert plan["limits"]["launcher_timeout_seconds"] == 53 * 60
+
+
+def test_vm_full_command_bound_preserves_remote_cleanup_and_controller_remainder() -> None:
+    assert vm.full_command_timeout(55 * 60) == 53 * 60
+    assert vm.full_command_timeout(47 * 60) == 46 * 60
+    assert vm.full_command_timeout(90) == 30
+    with pytest.raises(TimeoutError, match="remote cleanup"):
+        vm.full_command_timeout(60)
+
+
+# Exact successful command output from the real extracted capability probe:
+# https://github.com/softnanolab/boileroom/actions/runs/38134571057
+# Log SHA256: 281adf4e004c2a6fbc6aa85ef94ff2a8a6f8c7d9d531477d0a32981197e928b2
+EXTRACTED_PROBE_OUTPUT = (
+    "INFO:    Converting SIF file to temporary sandbox...\n"
+    "WARNING: passwd file doesn't exist in container, not updating\n"
+    "WARNING: group file doesn't exist in container, not updating\n"
+    "cpu-sif-probe-passed\n"
+    "INFO:    Cleaning up image...\n"
+)
+
+
+def test_real_extracted_output_allows_cleanup_after_exact_single_sentinel() -> None:
+    assert hashlib.sha256(EXTRACTED_PROBE_OUTPUT.encode()).hexdigest() == (
+        "281adf4e004c2a6fbc6aa85ef94ff2a8a6f8c7d9d531477d0a32981197e928b2"
+    )
+    vm.verify_probe_output(EXTRACTED_PROBE_OUTPUT, "unsquash")
+    vm.verify_probe_output("cpu-sif-probe-passed\n", "mounted")
+    with pytest.raises(ValueError, match="temporary conversion"):
+        vm.verify_probe_output("cpu-sif-probe-passed\n", "unsquash")
+    with pytest.raises(ValueError, match="Mounted-SIF probe refused"):
+        vm.verify_probe_output(EXTRACTED_PROBE_OUTPUT, "mounted")
+    with pytest.raises(ValueError, match="Unknown"):
+        vm.verify_probe_output(EXTRACTED_PROBE_OUTPUT, "automatic-fallback")
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        "",
+        "INFO: cpu-sif-probe-passed\n",
+        "prefix-cpu-sif-probe-passed\n",
+        "cpu-sif-probe-passed-suffix\n",
+        EXTRACTED_PROBE_OUTPUT + "cpu-sif-probe-passed\n",
+    ],
+)
+def test_probe_sentinel_rejects_missing_partial_and_duplicate_output(output: str) -> None:
+    with pytest.raises(ValueError, match="exactly one standalone"):
+        vm.verify_probe_output(output, "unsquash")
+
+
+@pytest.mark.parametrize("command_failed,leftover", [(False, False), (True, False), (False, True)])
+def test_real_probe_path_requires_exit_success_conversion_and_observed_rootfs_cleanup(
+    helpers: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, command_failed: bool, leftover: bool
+) -> None:
+    plan = _plan() | {"sif_runtime": "unsquash"}
+    scratch, output = tmp_path / "scratch", tmp_path / "reports"
+    scratch.mkdir()
+    output.mkdir()
+    state = {
+        "scratch": str(scratch),
+        "image_tag": "task-owned:local",
+        "nonce": "a" * 32,
+        "passed": False,
+    }
+    monkeypatch.setattr(vm, "verify_remote_source", lambda sha: plan)
+    monkeypatch.setattr(vm, "own_scratch", lambda: state)
+    monkeypatch.setattr(vm, "verify_toolchain", lambda *args: {"non_root_user_mount_namespace": True})
+    monkeypatch.setattr(vm, "give_own_artifacts_to_client", lambda *args: None)
+    monkeypatch.setattr(vm.shutil, "copyfile", lambda source, target: target.write_bytes(b"static test binary"))
+    helpers.resource_snapshot = lambda paths: {"free_disk_bytes": {str(paths[0]): 4 * 2**30}}
+    helpers.OWNER_LABEL = "org.boileroom.cpu-sif-validation"
+    cleanup_called: list[bool] = []
+
+    def cleanup(*args: Any) -> dict[str, bool]:
+        cleanup_called.append(True)
+        return {"passed": True}
+
+    helpers.cleanup = cleanup
+
+    class Commands:
+        def __init__(self, *args: Any) -> None:
+            pass
+
+        def run(self, name: str, command: list[str], *args: Any, **kwargs: Any) -> str:
+            if name == "probe-image-inspect":
+                return json.dumps([{"Id": "sha256:verified-image", "Size": 2**20}])
+            if name == "probe-sif-build":
+                Path(command[4]).write_bytes(b"built local SIF")
+            if name == "probe-real-nonroot-sif":
+                assert kwargs["env"]["APPTAINER_UNSQUASH"] == "true"
+                if command_failed:
+                    raise subprocess.CalledProcessError(1, command, output=EXTRACTED_PROBE_OUTPUT)
+                if leftover:
+                    (Path(kwargs["env"]["APPTAINER_TMPDIR"]) / "rootfs-leftover").mkdir()
+                return EXTRACTED_PROBE_OUTPUT
+            return ""
+
+    helpers.Commands = Commands
+    report = vm.probe_remote("a" * 40, output)
+    assert cleanup_called == [True]
+    assert report["passed"] is (not command_failed and not leftover)
+    assert report["sif_sha256"] == helpers.sha256(scratch / "probe.sif")
+    if not command_failed:
+        assert report["temporary_extracted_rootfs"]["cleaned"] is (not leftover)
+    if command_failed:
+        assert "CalledProcessError" in report["error"]
+    elif leftover:
+        assert "retained" in report["error"] and (scratch / "apptainer-tmp/rootfs-leftover").exists()
 
 
 @pytest.mark.parametrize("selected", ["mounted", "unsquash"])
