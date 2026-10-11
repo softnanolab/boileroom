@@ -112,11 +112,13 @@ def _assert_serialized_structure(result, index):
 
 def _validate_reference_manifest(manifest, model_size):
     """Refuse missing, stale, optimized or untraceable references before parity is claimed."""
-    from _minifold_reference import PREDICT_SHA256
+    from _minifold_reference import MINIFORMER_SHA256, PREDICT_SHA256
 
     assert model_size in ("12L", "48L") and manifest["model_size"] == model_size
     assert manifest["upstream_commit"] == UPSTREAM_COMMIT
     assert manifest["predict_sha256"] == PREDICT_SHA256
+    assert manifest["miniformer_sha256"] == MINIFORMER_SHA256
+    assert manifest["triangular_implementation"] == "original-pinned-upstream"
     assert manifest["checkpoint_revision"] == CHECKPOINT_REVISION
     assert manifest["checkpoint_sha256"] == CHECKPOINT_SHA256[model_size]
     assert manifest["esm_artifacts"] == ESM_ARTIFACTS

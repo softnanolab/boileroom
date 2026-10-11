@@ -431,7 +431,7 @@ Reproducibility and upstream review (2026-10-11):
 - Weights: [revision f861257](https://huggingface.co/jwohlwend/minifold/tree/f8612572818292ecef1c7fef580c0b17646ae0b1), public/ungated, model-card license MIT. Both checkpoint LFS SHA256 values are checked before deserialization with `weights_only=True`; there is no unsafe fallback.
 - Downloads use explicit connect/read timeouts and atomic writes. Cache files are verified when loading a runtime. Downloads require roughly 2.7–2.8 GB per MiniFold checkpoint, plus the 5.68 GB upstream ESM2-3B backbone cache; weights are not baked into the published image.
 - The separate Meta ESM2-3B backbone and contact-regression files are restricted to exact official URLs and SHA256 hashes in `loading.py`, computed from the complete official artifacts on 2026-10-11. Their loading uses `weights_only=True` plus a scoped allowlist for the inert `argparse.Namespace` configuration type. Only missing frozen backbone parameters are permitted when applying the MiniFold fine-tuned state.
-- `patch_upstream.py` checks the pinned source before fixing upstream wheel subpackage discovery, replacing the legacy ESM downloader with the verified safe loader, and moving Triton imports into their kernel functions. The latter permits CPU image smoke without creating a CUDA driver; no model mathematics are changed.
+- `patch_upstream.py` checks the pinned source before fixing upstream wheel subpackage discovery, replacing the legacy ESM downloader with the verified safe loader, and moving Triton imports into their kernel functions. It also hash-checks the complete non-kernel `triangular()` function before selecting its disabled-autocast device from the input tensor. This removes a global MPS-availability query that Torch 2.6 cannot trace in a full graph, while preserving the tensor operations and disabled-autocast scope. The custom-kernel function remains unchanged.
 - `metadata.runtime` records installed versions, image reference, actual `MINIFOLD_COMMIT` from the built image (`unknown` outside it), expected code pin, checkpoint revision, device, recycling, compilation and sequential batching.
 
 Offline checks: `uv run pytest tests/minifold -m 'not integration'`.
@@ -453,13 +453,15 @@ example FASTA, not proven held-out training examples. Experimental CA metrics ar
 reported descriptively; they do not establish general predictive accuracy.
 
 `tests/minifold/minifold_runtime_validation.py` independently loads pinned upstream
-weights, runs the original checked `predict.py` preprocessing, releases that
+weights, runs the original checked `predict.py` preprocessing and original
+`triangular()` recovered from the SHA256-checked pinned Git source, releases that
 model, then loads the adapter. It checks unrounded atom-mask/coordinate/pLDDT
 parity through a real signed loopback HTTP service, parsed PDB/CIF agreement,
 reversed mixed-length lists, recycling overrides, output filtering, refusal
 recovery, retained-output immutability, four memory cycles and cleanup. One
 selected checkpoint runs at a time. The optional MiniFold-only `compiled` mode
-uses a fresh uncompiled stock reference and then actually executes the compiled
+uses a fresh uncompiled stock reference, separately checks the patched eager
+adapter against it and releases those weights, then actually executes the compiled
 MiniFormer. It records cold/warm timing, raw numeric differences and diagnostic
 arrays, Dynamo/Inductor graph and kernel counts, warm-shape reuse, and memory
 release before resetting Dynamo. It keeps the same strict parity tolerances and
@@ -489,6 +491,13 @@ An extracted-SIF pass is separate evidence from mounted-SIF execution.
 These test-only routes do not change the production Modal SDK. CPU/SIF results do
 not establish GPU or independent FP32 stock parity; those need matching runs.
 Every paid route requires an approved budget and records exact source and cleanup.
+
+Recorded validation on 2026-10-11:
+- Uncompiled 12L and 48L passed independent stock/raw-output parity, real signed HTTP, repeated-call memory and cleanup on L4: [12L](https://github.com/softnanolab/boileroom/actions/runs/38120306454) and [48L](https://github.com/softnanolab/boileroom/actions/runs/38120907494), source `34d1a488`.
+- The actual public Modal wrapper passed its separate lifecycle/output/refusal gates for [12L](https://github.com/softnanolab/boileroom/actions/runs/38133562051) and [48L](https://github.com/softnanolab/boileroom/actions/runs/38133923392), source `8d2984c7`. These public runs did not independently repeat the stock-reference gate.
+- The corrected [temporary-extraction capability probe](https://github.com/softnanolab/boileroom/actions/runs/38135827022) passed on source `55b25bc8`, with real non-root SIF execution and temporary-rootfs cleanup. It loaded no model weights. Mounted-SIF access in that VM remained unavailable because `/dev/fuse` was inaccessible.
+- The subsequent [12L CPU extracted-SIF run](https://github.com/softnanolab/boileroom/actions/runs/38136054196) on `55b25bc8` passed all five actual public Apptainer lifecycle/output/refusal gates in FP32, with a canonical Docker image and local SIF. It verified process termination, unchanged SIF, temporary-rootfs removal, sandbox termination and stopped/zero-task app cleanup. It did not establish independent FP32 stock parity, 48L CPU or GPU Apptainer coverage.
+- The [12L compiled attempt](https://github.com/softnanolab/boileroom/actions/runs/38135920106) on `55b25bc8` failed before its first output on the upstream MPS-availability query; model/GPU release and app cleanup passed. The checked device-selection patch requires a fresh real compiled gate. A successful reference load or CPU graph trace does not establish compiled inference/parity.
 
 Public-wrapper parity tests are separately in
 `tests/minifold/test_minifold_integration.py`. They require independently generated

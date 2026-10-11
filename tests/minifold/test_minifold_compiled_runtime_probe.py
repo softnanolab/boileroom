@@ -253,6 +253,127 @@ def test_compile_metadata_must_match_requested_mode(monkeypatch, parity_input, c
     assertion.assert_not_called()
 
 
+def test_eager_preflight_deltas_do_not_claim_a_compiled_artifact(monkeypatch, parity_input):
+    import _minifold_cases
+    from minifold_runtime_validation import _check_parity
+
+    output, reference = parity_input
+    output.metadata.runtime["minifold.compile"] = "False"
+    report: dict[str, Any] = {}
+    monkeypatch.setattr(_minifold_cases, "_assert_stock_parity", Mock())
+    _check_parity(
+        output,
+        0,
+        {"id": "fixture"},
+        reference,
+        {"compile": False},
+        report,
+        False,
+        "eager-adapter-r3",
+        record_deltas=True,
+    )
+    assert report["raw_parity_deltas"][0]["coordinates_angstrom"]["max_absolute"] == 1
+    assert "compiled_output_artifacts_base64" not in report
+    _assert_native_json_tree(report)
+
+
+@pytest.mark.parametrize("failure", [None, "parity", "model", "gpu"])
+def test_eager_adapter_preflight_is_sequential_and_blocks_failed_compiled_load(monkeypatch, failure):
+    import _minifold_cases
+    import _minifold_reference
+    import minifold_runtime_validation as validation
+    import torch
+
+    from boileroom import optimization
+    from boileroom.models.minifold import core as core_module
+
+    events = []
+    state = {"gpu_leaked": False}
+
+    class Resident:
+        pass
+
+    class Core:
+        def __init__(self, config):
+            self.config = config
+            self.model: Any = Resident()
+            events.append(("load", config["compile"]))
+            if config["compile"]:
+                assert ("close", False) in events
+
+        def fold(self, sequence, options):
+            assert self.config["compile"] is False
+            events.append(("fold", options["num_recycling"]))
+            return SimpleNamespace(
+                metadata=SimpleNamespace(runtime={"minifold.num_recycling": str(options["num_recycling"])})
+            )
+
+        def close(self):
+            events.append(("close", self.config["compile"]))
+            if failure != "model":
+                self.model = None
+            if failure == "gpu":
+                state["gpu_leaked"] = True
+
+    class Guard:
+        def __init__(self, factory):
+            self.core = factory()
+
+        def get(self):
+            return self.core
+
+        def close(self):
+            self.core.close()
+
+    def stock(model_size, cases):
+        assert model_size == "12L" and not events
+        events.extend([("stock", "load"), ("stock", "close")])
+        stream = io.BytesIO()
+        np.savez_compressed(stream, placeholder=np.array([1]))
+        files = {f"{case['id']}-r3.npz": stream.getvalue() for case in cases}
+        files[f"{cases[0]['id']}-r0.npz"] = stream.getvalue()
+        return {"manifest": {"compile": False}, "files": files}
+
+    def parity(output, index, case, reference, manifest, report, compiled, label, record_deltas=False):
+        assert compiled is False and record_deltas is True
+        events.append(("parity", case["id"]))
+        if failure == "parity":
+            raise AssertionError("eager parity failed")
+
+    def compiled_warmup(*args):
+        events.append(("compiled", "forward"))
+        raise RuntimeError("stop before real compiled work")
+
+    monkeypatch.setattr(core_module, "MiniFoldCore", Core)
+    monkeypatch.setattr(optimization, "GuardedCore", Guard)
+    monkeypatch.setattr(_minifold_reference, "run_stock", stock)
+    monkeypatch.setattr(validation, "_check_parity", parity)
+    monkeypatch.setattr(validation, "_compiled_warmup", compiled_warmup)
+    monkeypatch.setattr(validation, "_compiled_cleanup", lambda *args: None)
+    monkeypatch.setattr(validation, "_peak_memory", lambda: {})
+    monkeypatch.setattr(validation, "_memory", lambda: {"allocated": 17 if state["gpu_leaked"] else 0})
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda: None)
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: None)
+    monkeypatch.setattr(torch.cuda, "reset_peak_memory_stats", lambda: None)
+    report = validation._run_validation("12L", compiled=True)
+    evidence = report["eager_adapter_preflight"]
+    assert events[:3] == [("stock", "load"), ("stock", "close"), ("load", False)]
+    assert ("close", False) in events
+    if failure is None:
+        assert evidence["passed"] is True
+        assert [(call["entry"], call["num_recycling"]) for call in evidence["calls"]] == [
+            (case["id"], 3) for case in _minifold_cases.CASES
+        ] + [(_minifold_cases.CASES[0]["id"], 0)]
+        assert events.index(("close", False)) < events.index(("load", True)) < events.index(("compiled", "forward"))
+        assert report["phases"]["eager_adapter_original_stock_parity"]["passed"] is True
+    else:
+        assert evidence["passed"] is False
+        assert ("load", True) not in events and ("compiled", "forward") not in events
+        assert report["phases"]["eager_adapter_original_stock_parity"]["passed"] is False
+    _assert_native_json_tree(report)
+
+
 @pytest.fixture
 def compiled_probe(monkeypatch):
     import minifold_runtime_validation as validation

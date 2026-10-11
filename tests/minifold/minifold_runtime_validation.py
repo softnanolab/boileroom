@@ -211,15 +211,16 @@ def _check_parity(
     report: dict,
     compiled: bool,
     label: str,
+    record_deltas: bool = False,
 ) -> None:
-    """Record compiled numeric evidence before applying the unchanged stock gates."""
+    """Record opt-in numeric evidence before applying the unchanged stock gates."""
     import numpy as np
     from _minifold_cases import _assert_stock_parity
 
-    if compiled:
+    if compiled or record_deltas:
         residues, names = np.where(reference["final_atom_mask"].astype(bool))
         atoms = output.atom_array[index]
-        if "compiled_output_artifacts_base64" not in report:
+        if compiled and "compiled_output_artifacts_base64" not in report:
             # Retain the cold output even if the first tight parity assertion fails.
             # Sparse atom identities preserve the observed mask without rounding,
             # alignment, or another paid reproduction; stock atom37 data is above.
@@ -263,6 +264,71 @@ def _check_parity(
     assert output.metadata.runtime["minifold.compile"] == str(compiled)
     assert manifest["compile"] is False, "The independent reference must remain uncompiled"
     _assert_stock_parity(output, index, case, reference, manifest)
+
+
+def _eager_adapter_preflight(
+    model_size: str, cases: list[dict], references: dict, manifest: dict, report: dict
+) -> None:
+    """Gate the patched default path against original stock, then release it fully."""
+    import torch
+
+    from boileroom.models.minifold.core import MiniFoldCore
+    from boileroom.optimization import GuardedCore
+
+    evidence: dict[str, Any] = {"passed": False, "calls": []}
+    report["eager_adapter_preflight"] = evidence
+    before = _memory()
+    started = time.monotonic()
+    guard = resident_ref = None
+    try:
+        config = {"model_size": model_size, "max_sequence_length": 128, "compile": False}
+        guard = GuardedCore(lambda: MiniFoldCore(config))
+        core = guard.get()
+        resident_ref = weakref.ref(core.model)
+        resident_id = id(core.model)
+        evidence["load_seconds"] = time.monotonic() - started
+        for case, recycling in [(case, 3) for case in cases] + [(cases[0], 0)]:
+            torch.cuda.synchronize()
+            call_started = time.monotonic()
+            call = {"entry": case["id"], "length": len(case["sequence"]), "num_recycling": recycling}
+            evidence["calls"].append(call)
+            try:
+                output = core.fold(case["sequence"], {"include_fields": ["*"], "num_recycling": recycling})
+            finally:
+                torch.cuda.synchronize()
+                call["seconds"] = time.monotonic() - call_started
+            _check_parity(
+                output,
+                0,
+                case,
+                references[f"{case['id']}-r{recycling}.npz"],
+                manifest,
+                report,
+                False,
+                f"eager-adapter-r{recycling}",
+                record_deltas=True,
+            )
+            assert id(core.model) == resident_id
+            assert output.metadata.runtime is not None
+            assert output.metadata.runtime["minifold.num_recycling"] == str(recycling)
+        evidence["passed"] = True
+    except Exception as error:
+        evidence["failure"] = {"error_type": type(error).__name__, "message": str(error)}
+        raise
+    finally:
+        if guard is not None:
+            guard.close()
+        gc.collect()
+        torch.cuda.empty_cache()
+        memory = _memory()
+        released = resident_ref is None or resident_ref() is None
+        gpu_released = memory["allocated"] <= before["allocated"] + 16
+        evidence["normal_close"] = {"model_released": released, "gpu_released": gpu_released, "memory_mib": memory}
+        evidence["peak_memory"] = _peak_memory()
+        evidence["seconds"] = time.monotonic() - started
+        evidence["passed"] = evidence["passed"] and released and gpu_released
+        assert released, "Eager preflight close retained the model"
+        assert gpu_released, "Eager preflight close retained GPU tensors"
 
 
 def _compiled_warmup(core: Any, cases: list[dict], references: dict, manifest: dict, report: dict) -> None:
@@ -464,6 +530,10 @@ def _run_validation(
         assert _memory()["allocated"] <= before["allocated"] + 16, "Independent reference retained GPU tensors"
         if compiled:
             report["compiled_runtime"]["independent_reference_peak_memory"] = _peak_memory()
+            torch.cuda.reset_peak_memory_stats()
+            phase = "eager_adapter_original_stock_parity"
+            _eager_adapter_preflight(model_size, CASES, references, manifest, report)
+            report["phases"][phase] = {"passed": True, "cases": [case["id"] for case in CASES], "recycling": [3, 0]}
             torch.cuda.reset_peak_memory_stats()
         phase = "fresh_adapter_load"
         config = {"model_size": model_size, "max_sequence_length": 128}

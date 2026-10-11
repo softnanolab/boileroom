@@ -843,3 +843,18 @@ def test_remote_report_still_rejects_non_json_values(monkeypatch: pytest.MonkeyP
     monkeypatch.setitem(sys.modules, "minifold_runtime_validation", module)
     with pytest.raises((TypeError, ValueError)):
         launcher.remote_validation("minifold", "12L")
+
+
+@pytest.mark.parametrize("bad_index", [0, 1, 2])
+def test_each_public_result_must_identify_the_built_source(bad_index: int) -> None:
+    expected = "source:reviewed-exact-build"
+    report: dict[str, Any] = {
+        "passed": True,
+        "reported_image_reference": expected,
+        "results": [{"metadata": {"runtime": {"image_ref": expected}}} for _ in range(3)],
+    }
+    launcher.check_public_source_reference(report, expected)
+    assert report["passed"]
+    report["results"][bad_index]["metadata"]["runtime"]["image_ref"] = "source:wrong"
+    launcher.check_public_source_reference(report, expected)
+    assert not report["passed"] and not report["source_reference_verified"]

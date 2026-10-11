@@ -52,7 +52,7 @@ def test_memory_inputs_vary_identity_at_fixed_length_and_composition(case):
 
 @pytest.fixture
 def reference_manifest():
-    from _minifold_reference import PREDICT_SHA256
+    from _minifold_reference import MINIFORMER_SHA256, PREDICT_SHA256
 
     from boileroom.models.minifold.loading import CHECKPOINT_REVISION, CHECKPOINT_SHA256, ESM_ARTIFACTS, UPSTREAM_COMMIT
 
@@ -61,6 +61,8 @@ def reference_manifest():
         "model_size": "12L",
         "upstream_commit": UPSTREAM_COMMIT,
         "predict_sha256": PREDICT_SHA256,
+        "miniformer_sha256": MINIFORMER_SHA256,
+        "triangular_implementation": "original-pinned-upstream",
         "checkpoint_revision": CHECKPOINT_REVISION,
         "checkpoint_sha256": CHECKPOINT_SHA256["12L"],
         "esm_artifacts": ESM_ARTIFACTS.copy(),
@@ -90,6 +92,8 @@ def test_known_manifest_contract(reference_manifest):
         ("kernels", True),
         ("checkpoint_sha256", "wrong"),
         ("upstream_commit", "wrong"),
+        ("miniformer_sha256", "wrong"),
+        ("triangular_implementation", "adapter-patched"),
         ("esm_artifacts", {}),
         ("cases", []),
         ("files", {}),

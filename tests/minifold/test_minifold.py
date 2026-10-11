@@ -354,7 +354,9 @@ def test_upstream_patch_is_checked_and_preserves_non_kernel_math(tmp_path):
         "from minifold.model.kernels.gating import gating_kernel\n"
         "from minifold.model.kernels.mlp import mlp_kernel\n"
         "def ordinary(x):\n    return x + 1\n"
-        "def mlp_kernel_func(x, w1, w2, b1, b2, wn, bn):\n"
+        + _pinned_triangular_source()
+        + "\n\n"
+        + "def mlp_kernel_func(x, w1, w2, b1, b2, wn, bn):\n"
         "    return mlp_kernel(x, w1, w2, b1, b2, wn, bn)\n"
         "def triangular_kernel_func(x, gi_w, pi_w, gi_b, pi_b, ni_w, ni_b):\n"
         "    x = gating_kernel(x, gi_w, pi_w, gi_b, pi_b, ni_w, ni_b)\n"
@@ -367,11 +369,143 @@ def test_upstream_patch_is_checked_and_preserves_non_kernel_math(tmp_path):
     assert "def ordinary(x):\n    return x + 1" in model.read_text()
     assert "\nfrom minifold.model.kernels" not in model.read_text()
     assert "    from minifold.model.kernels.mlp" in model.read_text()
+    assert "    device = x.device\n    with torch.autocast(device.type, enabled=False):" in model.read_text()
     assert "torch.load" not in esm.read_text()
     assert "return load_esm_artifact(url)" in esm.read_text()
     assert 'find = {include = ["minifold*"]}' in (tmp_path / "pyproject.toml").read_text()
     with pytest.raises(ValueError, match="packaging"):
         patch(tmp_path)
+
+
+def _pinned_triangular_source() -> str:
+    """Exact source segment from upstream miniformer.py at 63db8b91, without final newline."""
+    return '''def triangular(
+    x,
+    mask,
+    pi_w,
+    gi_w,
+    pi_b,
+    gi_b,
+    po_w,
+    go_w,
+    po_b,
+    go_b,
+    ni_w,
+    ni_b,
+    no_w,
+    no_b,
+):
+    """Perform a triangular update"""
+    # Input gating: D -> D
+    x = F.layer_norm(x, [x.shape[-1]], ni_w, ni_b, eps=1e-5)
+    x = F.linear(x, pi_w, pi_b) * F.linear(x, gi_w, gi_b).sigmoid()
+
+    # Apply mask
+    x = x * mask.unsqueeze(-1)
+
+    # Split input and cast to float
+    device = torch.device("mps" if torch.backends.mps.is_available() else "cuda")
+    with torch.autocast(device.type, enabled=False):
+        a1, b1, a2, b2 = torch.chunk(x.float(), 4, dim=-1)
+
+        # Triangular projection
+        x1 = torch.einsum("bikd,bjkd->bijd", a1, b1)
+        x2 = torch.einsum("bkid,bkjd->bijd", a2, b2)
+
+        # Merge outputs
+        x = torch.cat([x1, x2], dim=-1).to(x.dtype)
+
+    # Output gating: D / 2 -> D
+    x = F.layer_norm(x, [x.shape[-1]], no_w, no_b, eps=1e-5)
+    x = F.linear(x, po_w, po_b) * F.linear(x, go_w, go_b).sigmoid()
+
+    return x'''
+
+
+def test_triangular_patch_is_exact_and_leaves_kernel_variant_untouched():
+    from boileroom.models.minifold.patch_upstream import _patch_triangular_device
+
+    original = _pinned_triangular_source()
+    kernel = original.replace("def triangular(", "def triangular_kernel_func(")
+    source = original + "\n\n" + kernel
+    device = '    device = torch.device("mps" if torch.backends.mps.is_available() else "cuda")'
+    patched = _patch_triangular_device(source)
+    assert patched == original.replace(device, "    device = x.device") + "\n\n" + kernel
+    assert patched.count(device) == 1
+    assert patched.count("with torch.autocast(device.type, enabled=False):") == 2
+
+
+@pytest.mark.parametrize(
+    "mutation", ["missing", "duplicate", "device", "autocast", "math", "already_patched", "syntax"]
+)
+def test_triangular_patch_refuses_changed_or_ambiguous_source(mutation):
+    from boileroom.models.minifold.patch_upstream import _patch_triangular_device
+
+    source = _pinned_triangular_source()
+    if mutation == "missing":
+        source = source.replace("def triangular(", "def other(")
+    elif mutation == "duplicate":
+        source += "\n\n" + source
+    elif mutation == "device":
+        source = source.replace('else "cuda"', 'else "cpu"')
+    elif mutation == "autocast":
+        source = source.replace("enabled=False", "enabled=True")
+    elif mutation == "math":
+        source = source.replace("eps=1e-5", "eps=1e-6")
+    elif mutation == "already_patched":
+        source = _patch_triangular_device(source)
+    else:
+        source += "\ninvalid = ("
+    with pytest.raises(ValueError, match="triangular"):
+        _patch_triangular_device(source)
+
+
+def test_triangular_device_patch_preserves_fp32_and_traces_fullgraph_dynamic():
+    """CPU Dynamo capture only; actual CUDA/Inductor parity remains a separate gate."""
+    torch = pytest.importorskip("torch")
+    from boileroom.models.minifold.patch_upstream import _patch_triangular_device
+
+    original_scope = {"torch": torch, "F": torch.nn.functional}
+    patched_scope = dict(original_scope)
+    source = _pinned_triangular_source()
+    exec(compile(source, "<pinned-triangular>", "exec"), original_scope)
+    exec(compile(_patch_triangular_device(source), "<patched-triangular>", "exec"), patched_scope)
+    original, patched = original_scope["triangular"], patched_scope["triangular"]
+    generator = torch.Generator().manual_seed(42)
+    dim = 32
+    shapes = [(dim, dim)] * 2 + [(dim,)] * 2 + [(dim, dim // 2)] * 2 + [(dim,)] * 4 + [(dim // 2,)] * 2
+    weights = [torch.randn(shape, generator=generator) for shape in shapes]
+    graphs = []
+
+    def capture(graph, inputs):
+        graphs.append(graph)
+        return graph.forward
+
+    previous_threads = torch.get_num_threads()
+    torch.set_num_threads(1)
+    torch._dynamo.reset()
+    try:
+        compiled_original = torch.compile(original, dynamic=True, fullgraph=True, backend=capture)
+        compiled_patched = torch.compile(patched, dynamic=True, fullgraph=True, backend=capture)
+        with torch._dynamo.config.patch(suppress_errors=False), torch.inference_mode():
+            x = torch.randn((1, 4, 4, dim), generator=generator)
+            mask = torch.ones(1, 4, 4)
+            with pytest.raises(torch._dynamo.exc.Unsupported, match="is_available"):
+                compiled_original(x, mask, *weights)
+            assert not graphs
+            for length in (4, 6, 4):
+                x = torch.randn((1, length, length, dim), generator=generator)
+                mask = torch.randint(0, 2, (1, length, length), generator=generator).float()
+                expected = original(x, mask, *weights)
+                eager = patched(x, mask, *weights)
+                actual = compiled_patched(x, mask, *weights)
+                torch.testing.assert_close(eager, expected, rtol=0, atol=0)
+                torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+                assert actual.dtype is torch.float32 and torch.isfinite(actual).all()
+                assert len(graphs) == 1
+    finally:
+        torch._dynamo.reset()
+        torch.set_num_threads(previous_threads)
 
 
 @pytest.mark.parametrize(

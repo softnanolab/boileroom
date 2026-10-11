@@ -40,7 +40,7 @@ ROOT = Path(__file__).resolve().parents[2]
 APPTAINER_VERSION = "1.5.4"
 APPTAINER_SOURCE_URL = "https://github.com/apptainer/apptainer/releases/download/v1.5.4/apptainer-1.5.4.tar.gz"
 APPTAINER_SOURCE_SHA256 = "ec1f51e696ba384f90bc7ab2c7a438fee70da98763d001b8f3175d14a91cfcf6"
-# Separate official binary artifact used by the isolated Ubuntu 24 VM launcher.
+# Separate official binary artifact used by the vendor-package VM route.
 # The Ubuntu 22.04 free-runner route below never installs this package.
 APPTAINER_PACKAGE_URL = "https://github.com/apptainer/apptainer/releases/download/v1.5.4/apptainer_1.5.4_amd64.deb"
 APPTAINER_PACKAGE_SHA256 = "281cf9bd68f16b6f7c34a3a94d77668bc327b9c09db0412ce7890162734a97f7"
