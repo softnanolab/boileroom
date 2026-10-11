@@ -697,3 +697,80 @@ def test_sigint_cleanup_recovers_unmerged_public_ledger(tmp_path: Path) -> None:
         if process.poll() is None:
             process.kill()
             process.communicate(timeout=5)
+
+
+def test_compiled_gate_is_explicit_minifold_only_and_keeps_resource_bounds() -> None:
+    with pytest.raises(ValueError, match="MiniFold only"):
+        launcher.make_plan(ROOT, "profam", "12L", None, "compiled")
+    plain = launcher.make_plan(ROOT, "minifold", "12L", None)
+    compiled = launcher.make_plan(ROOT, "minifold", "12L", None, "compiled")
+    assert plain["compiled"] is False and compiled["compiled"] is True
+    assert compiled["entrypoint"] == "tests/minifold/minifold_runtime_validation.py"
+    assert compiled["limits"] == plain["limits"]
+    assert compiled["limits"]["remote_timeout_seconds"] == 1200
+    assert compiled["limits"]["gpu"] == "L4" and compiled["limits"]["max_containers"] == 1
+
+
+def test_compiled_remote_call_forwards_true_without_affecting_core(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    modal, _events = _fake_modal(monkeypatch)
+    calls = []
+    original = modal.App.function
+
+    def function(self: Any, **kwargs: Any) -> Any:
+        decorate = original(self, **kwargs)
+
+        def wrap(fn: Any) -> Any:
+            obj = decorate(fn)
+            remote = obj.remote.aio
+
+            async def observed(*args: Any) -> Any:
+                calls.append(args)
+                return await remote(*args[:2])
+
+            obj.remote.aio = observed
+            return obj
+
+        return wrap
+
+    monkeypatch.setattr(modal.App, "function", function)
+    for mode in ("core", "compiled"):
+        plan = launcher.make_plan(ROOT, "minifold", "12L", None, mode)
+        asyncio.run(launcher.run_apps(modal, ROOT, plan, tmp_path, {"apps": [], "passed": False}))
+    assert calls == [("minifold", "12L"), ("minifold", "12L", True)]
+
+
+def test_compiled_mode_is_not_a_default_or_broad_workflow_gate() -> None:
+    workflow = yaml.safe_load((ROOT / ".github/workflows/integration-tests.yaml").read_text())
+    events = workflow.get("on", workflow.get(True))
+    inputs = events["workflow_dispatch"]["inputs"]
+    assert inputs["run-target"]["default"] == "none"
+    assert inputs["validation-mode"]["default"] == "core"
+    assert "compiled" in inputs["validation-mode"]["options"]
+    assert "inputs.validation-mode == 'compiled'" in workflow["jobs"]["model-validation"]["if"]
+    assert "compiled" not in workflow["jobs"]["integration-tests"]["if"]
+
+
+def test_extracted_sif_routes_are_distinct_and_explicit() -> None:
+    import yaml
+
+    workflow = yaml.safe_load((launcher.ROOT / ".github/workflows/integration-tests.yaml").read_text())
+    events = workflow.get("on", workflow.get(True))
+    inputs = events["workflow_dispatch"]["inputs"]
+    assert inputs["validation-mode"]["default"] == "core"
+    for mode in ("cpu-vm-extract-probe", "cpu-vm-extract-sif"):
+        assert mode in inputs["validation-mode"]["options"]
+        assert f"inputs.validation-mode == '{mode}'" in workflow["jobs"]["cpu-vm-validation"]["if"]
+    steps = workflow["jobs"]["cpu-vm-validation"]["steps"]
+    selected = [
+        step
+        for step in steps
+        if step["name"] in ("Plan bounded MiniFold CPU VM route", "Execute approved CPU VM probe or gated SIF run")
+    ]
+    assert len(selected) == 2
+    for step in selected:
+        script = step["run"]
+        assert "mode_args+=(--sif-runtime unsquash)" in script
+        assert 'if [[ "$VALIDATION_MODE" = cpu-vm-extract-probe || "$VALIDATION_MODE" = cpu-vm-extract-sif ]]' in script
+        assert 'if [[ "$VALIDATION_MODE" = cpu-vm-sif || "$VALIDATION_MODE" = cpu-vm-extract-sif ]]' in script

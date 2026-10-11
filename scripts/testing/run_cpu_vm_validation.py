@@ -9,11 +9,14 @@ $80 allocation; resource/time bounds are not a monetary cap.
 The control SDK is separately pinned to modal==1.6.1, which supports runtime="vm".
 The VM's public-wrapper client keeps production modal==1.3.0.post1. No secrets,
 volumes, external ports, security workarounds or registry publication are used.
+The explicit --sif-runtime unsquash route uses Apptainer's official temporary
+extraction option. It does not change /dev/fuse access or device permissions.
 
 https://modal.com/docs/sdk/py/releases#160-2026-09-28
 https://modal.com/docs/guide/sandboxes#runtimes
 https://modal.com/docs/guide/sandbox-resources
 https://github.com/docker/buildx/releases/tag/v0.38.0
+https://apptainer.org/docs/user/1.5/cli/apptainer_exec.html
 """
 
 from __future__ import annotations
@@ -24,6 +27,7 @@ import contextlib
 import hashlib
 import importlib.util
 import json
+import math
 import os
 import pwd
 import re
@@ -53,6 +57,14 @@ REMOTE_RUNNER_TEMP = Path("/tmp/cpu-sif-runner")
 # V2 Sandbox identifiers are opaque and are not legacy sb-22-character IDs.
 SDK_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{5,127}\Z")
 APP_ID = re.compile(r"ap-[A-Za-z0-9]{22}\Z")
+SIF_RUNTIMES = ("mounted", "unsquash")
+MOUNTED_PROBE_OBSERVATION = {
+    "workflow_run": "https://github.com/softnanolab/boileroom/actions/runs/38132960112",
+    "status": "failed",
+    "failure": "Non-root mounted-SIF squashfuse_ll could not open /dev/fuse: Permission denied",
+    "model_inference": "unrun",
+    "scope": "Previously observed on one Modal CPU VM; no device or security settings were changed.",
+}
 
 
 @cache
@@ -72,12 +84,17 @@ def cpu_helpers() -> Any:
     return helper
 
 
-def make_plan(root: Path, expected_sha: str | None, run_model: bool) -> dict[str, Any]:
+def make_plan(root: Path, expected_sha: str | None, run_model: bool, sif_runtime: str = "mounted") -> dict[str, Any]:
+    if sif_runtime not in SIF_RUNTIMES:
+        raise ValueError("SIF runtime must be mounted or unsquash")
     cpu = cpu_helpers()
     plan = cpu.make_plan(root, "minifold", "12L", expected_sha)
     plan.update(
         {
-            "mode": "cpu-vm-sif",
+            "mode": "cpu-vm-extracted-sif" if sif_runtime == "unsquash" else "cpu-vm-sif",
+            "sif_runtime": sif_runtime,
+            "apptainer_runtime_environment": {"APPTAINER_UNSQUASH": "true" if sif_runtime == "unsquash" else "false"},
+            "prior_mounted_probe_observation": MOUNTED_PROBE_OBSERVATION,
             "control_modal_sdk": MODAL_VERSION,
             "client_modal_sdk": CLIENT_MODAL_VERSION,
             "buildx_version": BUILDX_VERSION,
@@ -97,7 +114,54 @@ def make_plan(root: Path, expected_sha: str | None, run_model: bool) -> dict[str
             "scope": "Real CPU non-setuid SIF/public wrapper/transport/lifecycle. Independent FP32 CPU stock parity, GPU and compile remain unrun.",
         }
     )
+    if sif_runtime == "unsquash":
+        plan["limits"] = plan["limits"] | {"free_disk_gib": 64}
+        plan["extraction_disk_note"] = (
+            "At least 64 GiB free before model build. Before execution also retain the regular 40-GiB margin "
+            "plus 1.25 times the inspected uncompressed Docker image size and 2 GiB for temporary extraction."
+        )
     return plan
+
+
+def sif_runtime_environment(plan: dict[str, Any], environment: dict[str, str]) -> dict[str, str]:
+    """Select only the approved runtime; never silently fall back after a denial."""
+    selected = plan.get("sif_runtime", "mounted")
+    if selected not in SIF_RUNTIMES:
+        raise ValueError("Unknown source-bound SIF runtime")
+    result = dict(environment)
+    result.pop("SINGULARITY_UNSQUASH", None)
+    result["APPTAINER_UNSQUASH"] = "true" if selected == "unsquash" else "false"
+    return result
+
+
+def extraction_preflight(
+    state: dict[str, Any], plan: dict[str, Any], image: dict[str, Any], scratch: Path, *, probe: bool
+) -> None:
+    """Reserve measured extra rootfs space without changing existing host data."""
+    if plan.get("sif_runtime", "mounted") != "unsquash":
+        return
+    size = image.get("Size")
+    if type(size) is not int or size <= 0:
+        raise ValueError("Extracted-SIF preflight needs the real Docker image size")
+    margin = 2 if probe else cpu_helpers().LIMITS["minifold"]["free_disk_gib"] + 2
+    required = math.ceil(size * 1.25 + margin * 2**30)
+    resources = cpu_helpers().resource_snapshot([scratch])
+    state["extraction_disk_preflight"] = {
+        "docker_uncompressed_image_bytes": size,
+        "required_free_bytes": required,
+        "free_disk_bytes": resources["free_disk_bytes"],
+        "note": "Docker image size is a conservative layered upper estimate, not a measured extracted rootfs size.",
+    }
+    if any(free < required for free in resources["free_disk_bytes"].values()):
+        raise RuntimeError("Insufficient task-local disk for temporary extracted SIF and unchanged model margin")
+
+
+def extraction_cleanup_evidence(state: dict[str, Any], plan: dict[str, Any], temporary: Path) -> None:
+    if plan.get("sif_runtime", "mounted") == "unsquash":
+        remaining = sorted(path.name for path in temporary.glob("rootfs-*"))
+        state["temporary_extracted_rootfs"] = {"remaining": remaining, "cleaned": not remaining}
+        if remaining:
+            raise RuntimeError("Apptainer retained its task-owned temporary extracted rootfs")
 
 
 def source_pack(root: Path, destination: Path, head: str) -> str:
@@ -142,6 +206,8 @@ def build_image(modal: Any, pack: Path, plan_file: Path, plan: dict[str, Any]) -
 def verify_remote_source(expected_sha: str) -> dict[str, Any]:
     cpu = cpu_helpers()
     plan = json.loads(Path("/tmp/source-plan.json").read_text())
+    if plan.get("sif_runtime", "mounted") not in SIF_RUNTIMES:
+        raise ValueError("VM source plan has an unknown SIF runtime")
 
     # The checkout belongs to the unprivileged public client. Root build-control
     # processes ask its owner to inspect Git, preserving Git's ownership safety.
@@ -163,7 +229,7 @@ def verify_remote_source(expected_sha: str) -> dict[str, Any]:
     return plan
 
 
-def verify_toolchain(commands: Any) -> dict[str, Any]:
+def verify_toolchain(commands: Any, plan: dict[str, Any] | None = None) -> dict[str, Any]:
     cpu = cpu_helpers()
     version = commands.run("apptainer-version", ["apptainer", "--version"]).strip()
     cfg = commands.run("apptainer-buildcfg", ["apptainer", "buildcfg"])
@@ -174,8 +240,28 @@ def verify_toolchain(commands: Any) -> dict[str, Any]:
     buildx = commands.run("buildx-version", ["docker", "buildx", "version"])
     if f"v{BUILDX_VERSION}" not in buildx:
         raise ValueError("VM Docker Buildx version mismatch")
-    if not Path("/dev/fuse").is_char_device():
+    fuse_exists = Path("/dev/fuse").is_char_device()
+    if not fuse_exists and (plan or {}).get("sif_runtime", "mounted") == "mounted":
         raise ValueError("VM's existing /dev/fuse is unavailable; no security workaround is allowed")
+    diagnostics = commands.run(
+        "non-root-fuse-access",
+        [
+            "runuser",
+            "-u",
+            "validation",
+            "--",
+            sys.executable,
+            "-c",
+            "import json,os,stat\n"
+            "result={'uid':os.geteuid(),'can_open':False}\n"
+            "try:\n"
+            " s=os.stat('/dev/fuse'); result.update(mode=oct(stat.S_IMODE(s.st_mode)),owner_uid=s.st_uid,owner_gid=s.st_gid)\n"
+            " fd=os.open('/dev/fuse',os.O_RDWR);os.close(fd);result['can_open']=True\n"
+            "except OSError as error: result.update(error_type=type(error).__name__,errno=error.errno,error=str(error))\n"
+            "print(json.dumps(result))",
+        ],
+        30,
+    )
     commands.run(
         "non-root-namespace-probe",
         ["runuser", "-u", "validation", "--", "unshare", "--user", "--map-root-user", "--mount", "true"],
@@ -185,7 +271,8 @@ def verify_toolchain(commands: Any) -> dict[str, Any]:
     return {
         "apptainer": version,
         "buildx": buildx.strip(),
-        "fuse_character_device": True,
+        "fuse_character_device": fuse_exists,
+        "non_root_fuse_access": json.loads(diagnostics),
         "non_root_user_mount_namespace": True,
     }
 
@@ -222,13 +309,15 @@ def probe_remote(expected_sha: str, output: Path) -> dict[str, Any]:
     cpu = cpu_helpers()
     plan = verify_remote_source(expected_sha)
     state = own_scratch()
+    state["sif_runtime"] = plan.get("sif_runtime", "mounted")
+    state["prior_mounted_probe_observation"] = plan.get("prior_mounted_probe_observation")
     state["scope"] = (
         "Docker and real non-root static-binary SIF capability only; model weights and MiniFold inference remain unrun."
     )
     scratch = Path(state["scratch"])
     commands = cpu.Commands(output, time.monotonic() + PROBE_TIMEOUT - 45)
     try:
-        state["toolchain"] = verify_toolchain(commands)
+        state["toolchain"] = verify_toolchain(commands, plan)
         commands.run("docker-info", ["docker", "info"], 30)
         context = scratch / "probe-context"
         context.mkdir()
@@ -258,8 +347,9 @@ def probe_remote(expected_sha: str, output: Path) -> dict[str, Any]:
             0
         ]
         state["docker_image_id"] = inspected["Id"]
+        extraction_preflight(state, plan, inspected, scratch, probe=True)
         sif = scratch / "probe.sif"
-        env = os.environ.copy() | {
+        env = sif_runtime_environment(plan, os.environ.copy()) | {
             "APPTAINER_TMPDIR": str(scratch / "apptainer-tmp"),
             "APPTAINER_CACHEDIR": str(scratch / "apptainer-cache"),
         }
@@ -299,8 +389,11 @@ def probe_remote(expected_sha: str, output: Path) -> dict[str, Any]:
             30,
             env=env,
         )
-        if value.strip() != "cpu-sif-probe-passed":
+        if not value.splitlines() or value.splitlines()[-1].strip() != "cpu-sif-probe-passed":
             raise ValueError("Real non-root SIF smoke did not return the expected output")
+        if state["sif_runtime"] == "unsquash" and "Converting SIF file to temporary sandbox" not in value:
+            raise ValueError("Extracted-SIF execution did not report the expected temporary conversion")
+        extraction_cleanup_evidence(state, plan, Path(env["APPTAINER_TMPDIR"]))
         state["passed"] = True
         state["validation_status"] = "passed"
     except BaseException as error:
@@ -338,6 +431,9 @@ def public_child(expected_sha: str, output: Path) -> dict[str, Any]:
         or os.environ.get("BOILEROOM_DOCKER_REPOSITORY") != namespace
         or os.environ.get("BOILEROOM_IMAGE_TAG") != tag
         or state["image_uri"] != f"docker://{namespace}/boileroom-minifold:{tag}"
+        or state.get("sif_runtime", "mounted") != plan.get("sif_runtime", "mounted")
+        or os.environ.get("APPTAINER_UNSQUASH") != ("true" if plan.get("sif_runtime") == "unsquash" else "false")
+        or "SINGULARITY_UNSQUASH" in os.environ
     ):
         raise ValueError("VM public child cache/image/source provenance mismatch")
     return cpu.run_public_child(ROOT, plan, state, output)
@@ -349,6 +445,8 @@ def full_remote(expected_sha: str, output: Path) -> dict[str, Any]:
     if not plan["run_model_after_probe"]:
         raise ValueError("Model execution was not explicitly selected")
     state = own_scratch()
+    state["sif_runtime"] = plan.get("sif_runtime", "mounted")
+    state["prior_mounted_probe_observation"] = plan.get("prior_mounted_probe_observation")
     scratch = Path(state["scratch"])
     duration = min(cpu.TOTAL_TIMEOUT, int(os.environ["BOILEROOM_VALIDATION_REMOTE_TIMEOUT"]) - 60)
     commands = cpu.Commands(output, time.monotonic() + duration)
@@ -360,7 +458,7 @@ def full_remote(expected_sha: str, output: Path) -> dict[str, Any]:
     signal.signal(signal.SIGTERM, interrupted)
     try:
         cpu.write_json(output / "run.json", state)
-        state["toolchain"] = verify_toolchain(commands)
+        state["toolchain"] = verify_toolchain(commands, plan)
         info = json.loads(commands.run("docker-info", ["docker", "info", "--format", "{{json .}}"]))
         state["resources"] = cpu.resource_snapshot([REMOTE_RUNNER_TEMP, Path(info["DockerRootDir"])])
         blockers = cpu.resource_blockers(plan, state["resources"])
@@ -395,10 +493,11 @@ def full_remote(expected_sha: str, output: Path) -> dict[str, Any]:
         if inspected["Architecture"] != "amd64" or inspected["Config"]["Labels"].get(cpu.OWNER_LABEL) != state["nonce"]:
             raise ValueError("Canonical VM model image architecture/ownership mismatch")
         state["docker_image_id"], state["docker_rootfs"] = inspected["Id"], inspected["RootFS"]
+        extraction_preflight(state, plan, inspected, scratch, probe=False)
         namespace = f"docker.io/boileroom-cpu-validation-{state['nonce']}"
         tag = f"sha-{plan['git_sha']}"
         state["image_uri"] = f"docker://{namespace}/boileroom-minifold:{tag}"
-        env = os.environ.copy() | {
+        env = sif_runtime_environment(plan, os.environ.copy()) | {
             "MODEL_DIR": str(scratch / "models"),
             "BOILEROOM_DOCKER_REPOSITORY": namespace,
             "BOILEROOM_IMAGE_TAG": tag,
@@ -471,6 +570,19 @@ def full_remote(expected_sha: str, output: Path) -> dict[str, Any]:
             env=env,
         )
         report = json.loads((output / "public-validation.json").read_text())
+        report["sif_runtime"] = state["sif_runtime"]
+        report["apptainer_runtime_environment"] = {"APPTAINER_UNSQUASH": env["APPTAINER_UNSQUASH"]}
+        if state["sif_runtime"] == "unsquash":
+            conversion_logged = False
+            for log in (scratch / "models/logs").glob("*.log"):
+                if log.is_file() and not log.is_symlink():
+                    with log.open("rb") as handle:
+                        conversion_logged |= b"Converting SIF file to temporary sandbox" in handle.read(2**20)
+            state["public_extraction_conversion_logged"] = conversion_logged
+            if not conversion_logged:
+                raise RuntimeError("Actual public Apptainer server did not log temporary SIF extraction")
+        extraction_cleanup_evidence(state, plan, Path(env["APPTAINER_TMPDIR"]))
+        cpu.write_json(output / "public-validation.json", report)
         state["passed"] = report.get("passed") is True
         state["validation_status"] = "passed" if state["passed"] else "failed"
     except BaseException as error:
@@ -522,6 +634,8 @@ async def execute(modal: Any, root: Path, plan: dict[str, Any], output: Path) ->
         "controller_nonce": nonce,
         "app_name": app_name,
         "model_validation_status": "unrun",
+        "sif_runtime": plan.get("sif_runtime", "mounted"),
+        "prior_mounted_probe_observation": plan.get("prior_mounted_probe_observation"),
     }
     current = None
     deadline = time.monotonic() + TOTAL_TIMEOUT
@@ -731,8 +845,9 @@ async def cleanup_only(modal: Any, output: Path) -> bool:
         if app_id and not ownership_error:
             try:
                 status, raw = await modal_cli(["app", "list", "--json"], 10)
-                rows = [row for row in json.loads(raw) if row.get("App ID") == app_id]
-                if status or len(rows) != 1 or rows[0].get("Description") != state["app_name"]:
+                rows = [row for row in json.loads(raw) if row.get("app_id") == app_id]
+                result["app_ownership_verification"] = rows
+                if status or len(rows) != 1 or rows[0].get("description") != state["app_name"]:
                     raise ValueError("Recorded App ownership could not be verified before stop")
                 result["app_stop_attempted"] = True
                 status, stdout = await modal_cli(["app", "stop", "--yes", app_id], 15)
@@ -745,13 +860,14 @@ async def cleanup_only(modal: Any, output: Path) -> bool:
                     if remaining <= 0:
                         raise RuntimeError("Task App stopped/Tasks0 was not observed")
                     status, raw = await modal_cli(["app", "list", "--json"], min(10, remaining))
-                    rows = [row for row in json.loads(raw) if row.get("App ID") == app_id]
+                    rows = [row for row in json.loads(raw) if row.get("app_id") == app_id]
                     result["app_verification"] = rows  # Never persist unrelated workspace App rows.
                     if (
                         not status
                         and len(rows) == 1
-                        and rows[0].get("State") == "stopped"
-                        and str(rows[0].get("Tasks")) == "0"
+                        and rows[0].get("description") == state["app_name"]
+                        and rows[0].get("state") == "stopped"
+                        and str(rows[0].get("tasks")) == "0"
                     ):
                         result["app_stopped_tasks_zero"] = True
                         break
@@ -780,6 +896,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--run-model-after-probe", action="store_true")
+    parser.add_argument("--sif-runtime", choices=SIF_RUNTIMES, default="mounted")
     parser.add_argument("--cleanup-only", action="store_true")
     for flag in ("--remote-probe", "--remote-full", "--remote-child"):
         parser.add_argument(flag, action="store_true", help=argparse.SUPPRESS)
@@ -805,7 +922,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if report["passed"] else 1
     if (output / "vm-run.json").exists():
         parser.error("Use a fresh output directory; existing VM evidence must not be overwritten")
-    plan = make_plan(ROOT, args.expected_sha, args.run_model_after_probe)
+    plan = make_plan(ROOT, args.expected_sha, args.run_model_after_probe, args.sif_runtime)
     cpu_helpers().write_json(output / "plan.json", plan)
     if not args.execute:
         print(json.dumps(plan, indent=2, sort_keys=True))

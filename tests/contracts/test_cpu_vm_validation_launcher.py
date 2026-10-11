@@ -38,6 +38,7 @@ def helpers(monkeypatch: pytest.MonkeyPatch) -> Any:
         NONCE=re.compile(r"[0-9a-f]{32}\Z"),
         APPTAINER_PACKAGE_URL="https://github.com/apptainer/apptainer/releases/download/v1.5.4/apptainer_1.5.4_amd64.deb",
         APPTAINER_PACKAGE_SHA256="281cf9bd68f16b6f7c34a3a94d77668bc327b9c09db0412ce7890162734a97f7",
+        APPTAINER_VERSION="1.5.4",
     )
     monkeypatch.setattr(vm, "cpu_helpers", lambda: cpu)
     return cpu
@@ -65,7 +66,8 @@ def test_helpers_resolve_reviewed_sibling_without_package_path(monkeypatch: pyte
         vm.cpu_helpers.cache_clear()
 
 
-def test_direct_isolated_cli_writes_offline_plan_without_pythonpath(tmp_path: Path) -> None:
+@pytest.mark.parametrize("sif_runtime", ["mounted", "unsquash"])
+def test_direct_isolated_cli_writes_offline_plan_without_pythonpath(tmp_path: Path, sif_runtime: str) -> None:
     head = subprocess.check_output(["git", "-C", str(vm.ROOT), "rev-parse", "HEAD"], text=True).strip()
     output = tmp_path / "reports"
     completed = subprocess.run(
@@ -77,6 +79,8 @@ def test_direct_isolated_cli_writes_offline_plan_without_pythonpath(tmp_path: Pa
             head,
             "--output-dir",
             str(output),
+            "--sif-runtime",
+            sif_runtime,
         ],
         cwd=tmp_path,
         capture_output=True,
@@ -90,6 +94,78 @@ def test_direct_isolated_cli_writes_offline_plan_without_pythonpath(tmp_path: Pa
     assert plan["model"] == "minifold" and plan["device"] == "cpu"
     assert plan["run_model_after_probe"] is False and plan["probe"]["model_weights"] is False
     assert plan["entrypoint_exists"] and not (output / "vm-run.json").exists()
+    assert plan["sif_runtime"] == sif_runtime
+    assert plan["limits"]["free_disk_gib"] == (64 if sif_runtime == "unsquash" else 40)
+    assert plan["prior_mounted_probe_observation"]["status"] == "failed"
+
+
+@pytest.mark.parametrize("selected", ["mounted", "unsquash"])
+def test_runtime_environment_is_explicit_without_automatic_fallback(selected: str) -> None:
+    environment = {"APPTAINER_UNSQUASH": "inherited", "SINGULARITY_UNSQUASH": "true", "KEEP": "value"}
+    original = dict(environment)
+    actual = vm.sif_runtime_environment({"sif_runtime": selected}, environment)
+    assert actual["APPTAINER_UNSQUASH"] == ("true" if selected == "unsquash" else "false")
+    assert "SINGULARITY_UNSQUASH" not in actual and actual["KEEP"] == "value"
+    assert environment == original
+    with pytest.raises(ValueError, match="Unknown"):
+        vm.sif_runtime_environment({"sif_runtime": "automatic-fallback"}, environment)
+
+
+@pytest.mark.parametrize("probe,margin", [(True, 2), (False, 42)])
+def test_extraction_requires_measured_extra_disk_and_retains_failure_evidence(
+    helpers: Any, tmp_path: Path, probe: bool, margin: int
+) -> None:
+    helpers.LIMITS = {"minifold": {"free_disk_gib": 40}}
+    required = (margin + 10) * 2**30  # 1.25 times an 8-GiB image, plus the unchanged model margin.
+    helpers.resource_snapshot = lambda paths: {"free_disk_bytes": {str(paths[0]): required - 1}}
+    state: dict[str, Any] = {}
+    with pytest.raises(RuntimeError, match="Insufficient"):
+        vm.extraction_preflight(state, {"sif_runtime": "unsquash"}, {"Size": 8 * 2**30}, tmp_path, probe=probe)
+    assert state["extraction_disk_preflight"]["required_free_bytes"] == required
+    helpers.resource_snapshot = lambda paths: {"free_disk_bytes": {str(paths[0]): required}}
+    vm.extraction_preflight(state, {"sif_runtime": "unsquash"}, {"Size": 8 * 2**30}, tmp_path, probe=probe)
+    with pytest.raises(ValueError, match="real Docker image size"):
+        vm.extraction_preflight({}, {"sif_runtime": "unsquash"}, {}, tmp_path, probe=probe)
+    vm.extraction_preflight({}, {"sif_runtime": "mounted"}, {}, tmp_path, probe=probe)
+
+
+def test_extraction_cleanup_is_observed_before_owned_scratch_deletion(tmp_path: Path) -> None:
+    state: dict[str, Any] = {}
+    leftover = tmp_path / "rootfs-observed"
+    leftover.mkdir()
+    with pytest.raises(RuntimeError, match="retained"):
+        vm.extraction_cleanup_evidence(state, {"sif_runtime": "unsquash"}, tmp_path)
+    assert state["temporary_extracted_rootfs"] == {"remaining": [leftover.name], "cleaned": False}
+    assert leftover.exists()
+    leftover.rmdir()
+    vm.extraction_cleanup_evidence(state, {"sif_runtime": "unsquash"}, tmp_path)
+    assert state["temporary_extracted_rootfs"]["cleaned"] is True
+
+
+def test_extracted_toolchain_records_fuse_denial_without_permission_changes(
+    helpers: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(vm.Path, "is_char_device", lambda self: False)
+    calls: list[Any] = []
+
+    def run(name: str, command: list[str], *args: Any) -> str:
+        calls.append((name, command))
+        return {
+            "apptainer-version": "apptainer version 1.5.4",
+            "apptainer-buildcfg": "APPTAINER_SUID_INSTALL=0\n",
+            "buildx-version": "github.com/docker/buildx v0.38.0",
+            "non-root-fuse-access": json.dumps({"uid": 998, "can_open": False, "error_type": "PermissionError"}),
+        }.get(name, "")
+
+    commands = SimpleNamespace(run=run)
+    observed = vm.verify_toolchain(commands, {"sif_runtime": "unsquash"})
+    assert observed["non_root_fuse_access"]["can_open"] is False
+    assert observed["fuse_character_device"] is False
+    encoded = json.dumps(calls)
+    for forbidden in ("chmod", "mknod", "usermod", "setfacl", "sysctl", "--privileged"):
+        assert forbidden not in encoded
+    with pytest.raises(ValueError, match="no security workaround"):
+        vm.verify_toolchain(commands, {"sif_runtime": "mounted"})
 
 
 def test_safe_default_is_offline_probe_plan(helpers: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -408,12 +484,12 @@ def test_cleanup_confirms_only_owned_app_stopped_tasks_zero(
         return 0, json.dumps(
             [
                 {
-                    "App ID": app_id,
-                    "Description": state["app_name"],
-                    "State": "ephemeral" if count == 1 else "stopped",
-                    "Tasks": "1" if count == 1 else "0",
+                    "app_id": app_id,
+                    "description": state["app_name"],
+                    "state": "ephemeral" if count == 1 else "stopped",
+                    "tasks": "1" if count == 1 else "0",
                 },
-                {"App ID": "ap-unrelated", "Description": "private unrelated app", "State": "deployed", "Tasks": "7"},
+                {"app_id": "ap-unrelated", "description": "private unrelated app", "state": "deployed", "tasks": "7"},
             ]
         ).encode()
 
@@ -462,6 +538,8 @@ def test_vm_workflow_is_explicit_isolated_and_probe_defaults_to_no_weights() -> 
     assert "github.event_name == 'workflow_dispatch'" in job["if"]
     assert "inputs.validation-mode == 'cpu-vm-probe'" in job["if"]
     assert "inputs.validation-mode == 'cpu-vm-sif'" in job["if"]
+    assert "inputs.validation-mode == 'cpu-vm-extract-probe'" in job["if"]
+    assert "inputs.validation-mode == 'cpu-vm-extract-sif'" in job["if"]
     assert job["timeout-minutes"] == 60
     assert job["env"]["MODAL_CONFIG_PATH"] == "/dev/null"
     assert "runner." not in json.dumps(job["env"])
@@ -475,8 +553,15 @@ def test_vm_workflow_is_explicit_isolated_and_probe_defaults_to_no_weights() -> 
     execute = next(step for step in job["steps"] if step["name"].startswith("Execute approved"))
     assert execute["timeout-minutes"] == 55
     for step in (plan, execute):
-        assert 'if [ "$VALIDATION_MODE" = cpu-vm-sif ]; then' in step["run"]
+        assert (
+            'if [[ "$VALIDATION_MODE" = cpu-vm-sif || "$VALIDATION_MODE" = cpu-vm-extract-sif ]]; then' in step["run"]
+        )
         assert "mode_args=(--run-model-after-probe)" in step["run"]
+        assert (
+            'if [[ "$VALIDATION_MODE" = cpu-vm-extract-probe || "$VALIDATION_MODE" = cpu-vm-extract-sif ]]; then'
+            in step["run"]
+        )
+        assert "mode_args+=(--sif-runtime unsquash)" in step["run"]
         assert '"${mode_args[@]}"' in step["run"]
     assert "--with modal==1.6.1" in execute["run"]
     assert "--with modal==1.6.1" not in json.dumps(workflow["jobs"]["model-validation"])

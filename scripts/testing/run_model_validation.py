@@ -90,6 +90,10 @@ def make_plan(
     root: Path, model: str, model_size: str, expected_sha: str | None, mode: str = "core", profam_gpu: str = "T4"
 ) -> dict[str, Any]:
     """Describe exact source and fixed resource bounds without creating an app."""
+    if mode not in {"core", "public-modal", "compiled"}:
+        raise ValueError("Unknown validation mode")
+    if mode == "compiled" and model != "minifold":
+        raise ValueError("Compiled validation is scoped to MiniFold only")
     if profam_gpu not in PROFAM_GPUS:
         raise ValueError("ProFam validation GPU must be T4 or L4")
     sha = git(root, "rev-parse", "HEAD")
@@ -106,6 +110,7 @@ def make_plan(
     return {
         "model": model,
         "mode": mode,
+        "compiled": mode == "compiled",
         "model_size": model_size if model == "minifold" else None,
         "other_minifold_variant": "unrun" if model == "minifold" else "not_applicable",
         "git_sha": sha,
@@ -187,7 +192,7 @@ def mount_sources(image: Any, root: Path, plan: dict[str, Any]) -> Any:
     return image.add_local_file(root / "pyproject.toml", "/validation/pyproject.toml", copy=False)
 
 
-def remote_validation(model: str, model_size: str | None) -> dict[str, Any]:
+def remote_validation(model: str, model_size: str | None, compiled: bool = False) -> dict[str, Any]:
     """Load only the selected runner in the actual canonical model image."""
     import importlib.util
     import json
@@ -196,6 +201,8 @@ def remote_validation(model: str, model_size: str | None) -> dict[str, Any]:
     import time
     from pathlib import Path
 
+    if compiled and model != "minifold":
+        raise ValueError("Compiled validation is scoped to MiniFold only")
     started = time.monotonic()
     root = Path("/validation")
     os.chdir(root)
@@ -207,7 +214,10 @@ def remote_validation(model: str, model_size: str | None) -> dict[str, Any]:
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
-    report = module.run_validation(model_size=model_size) if model == "minifold" else module.run_validation()
+    if compiled:
+        report = module.run_validation(model_size=model_size, compiled=True)
+    else:
+        report = module.run_validation(model_size=model_size) if model == "minifold" else module.run_validation()
     if not isinstance(report, dict):
         raise TypeError("run_validation must return a JSON-serializable dict")
     report["launcher_remote_seconds"] = time.monotonic() - started
@@ -265,7 +275,10 @@ async def run_apps(modal: Any, root: Path, plan: dict[str, Any], output: Path, s
         # Includes scheduling/startup and any platform retry; not just a per-attempt timeout.
         async with asyncio.timeout(limits["remote_timeout_seconds"]), app.run(detach=False):
             remember_app(state, app, "gpu_validation", output)
-            report = await function.remote.aio(plan["model"], plan["model_size"])
+            if plan["mode"] == "compiled":
+                report = await function.remote.aio(plan["model"], plan["model_size"], True)
+            else:
+                report = await function.remote.aio(plan["model"], plan["model_size"])
             report["launcher_requested_gpu"] = limits["gpu"]
             write_json(output / "validation.json", report)
             state["passed"] = report.get("passed") is True
@@ -539,7 +552,7 @@ def cleanup(output: Path) -> bool:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", choices=tuple(MODEL_LIMITS))
-    parser.add_argument("--mode", choices=("core", "public-modal"), default="core")
+    parser.add_argument("--mode", choices=("core", "public-modal", "compiled"), default="core")
     parser.add_argument("--profam-gpu", choices=PROFAM_GPUS, default="T4", help="ProFam only; MiniFold remains on L4")
     parser.add_argument("--public-worker", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--minifold-size", choices=("12L", "48L"), default="12L")

@@ -458,7 +458,13 @@ model, then loads the adapter. It checks unrounded atom-mask/coordinate/pLDDT
 parity through a real signed loopback HTTP service, parsed PDB/CIF agreement,
 reversed mixed-length lists, recycling overrides, output filtering, refusal
 recovery, retained-output immutability, four memory cycles and cleanup. One
-selected checkpoint runs at a time. The bounded manual launcher records exactly
+selected checkpoint runs at a time. The optional MiniFold-only `compiled` mode
+uses a fresh uncompiled stock reference and then actually executes the compiled
+MiniFormer. It records cold/warm timing, raw numeric differences and diagnostic
+arrays, Dynamo/Inductor graph and kernel counts, warm-shape reuse, and memory
+release before resetting Dynamo. It keeps the same strict parity tolerances and
+one-L4/32-GiB/20-minute bounds; a failed compiled gate leaves compile experimental.
+The bounded manual launcher records exactly
 which variant, image, device and gates ran; a 12L pass does not cover 48L.
 
 This scoped service test does not start an Apptainer SIF or exercise the public
@@ -475,6 +481,11 @@ public Apptainer wrapper on CPU. Standard 16-GiB GitHub runners fail MiniFold's
 MiniFold-only `cpu-vm-probe` route tests unmodified non-setuid Apptainer support in
 a small five-minute CPU VM without weights. A separately selected `cpu-vm-sif`
 route repeats that probe and proceeds only on success to a bounded 32-GiB VM.
+The initial mounted-SIF probe failed on non-root `/dev/fuse` access without loading
+weights. Explicit `cpu-vm-extract-probe`/`cpu-vm-extract-sif` modes select official
+Apptainer temporary extraction (`APPTAINER_UNSQUASH`), with extra disk preflights;
+they do not change device permissions or silently fall back after a mount failure.
+An extracted-SIF pass is separate evidence from mounted-SIF execution.
 These test-only routes do not change the production Modal SDK. CPU/SIF results do
 not establish GPU or independent FP32 stock parity; those need matching runs.
 Every paid route requires an approved budget and records exact source and cleanup.
