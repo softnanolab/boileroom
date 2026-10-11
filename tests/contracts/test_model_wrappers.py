@@ -32,6 +32,7 @@ from boileroom.models.sae.types import SAEFeaturesOutput
 pytestmark = pytest.mark.contract
 
 SAMPLE_INPUTS: dict[str, Any] = {
+    "minifold": "ACDE",
     "esmfold": "MLKNVHVLVLGAGDVGSVVVRLLEK",
     "esm2": ["MALWMRLLPLLALLALWGPDPAAA"],
     "esmc": ["ACD:EF"],
@@ -120,6 +121,11 @@ def _make_output(spec: ModelSpec) -> object:
             sae_model="test/sae",
             features=None,
         )
+
+    if spec.key == "minifold":
+        from boileroom.models.minifold.types import MiniFoldOutput
+
+        return MiniFoldOutput(metadata=_make_metadata(spec.public_name), atom_array=[object()])
 
     if spec.key == "esmfold":
         return ESMFoldOutput(metadata=_make_metadata(spec.public_name), atom_array=[object()])

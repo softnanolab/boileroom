@@ -9,6 +9,7 @@ from ..images.metadata import get_model_image_spec
 TaskMethod = Literal["fold", "embed"]
 TaskKind = Literal["structure", "embedding"]
 
+MINIFOLD_IMAGE_NAME = get_model_image_spec("minifold").image_name
 ESM_IMAGE_NAME = get_model_image_spec("esm").image_name
 ESMFOLD2_IMAGE_NAME = get_model_image_spec("esmfold2").image_name
 CHAI_IMAGE_NAME = get_model_image_spec("chai").image_name
@@ -66,6 +67,25 @@ def resolve_object(dotted_path: str) -> Any:
     module = import_module(module_path)
     return getattr(module, attr_name)
 
+
+MINIFOLD_SPEC = ModelSpec(
+    key="minifold",
+    public_name="MiniFold",
+    family="minifold",
+    wrapper_class_path="boileroom.models.minifold.minifold.MiniFold",
+    modal_class_path="boileroom.models.minifold.minifold.ModalMiniFold",
+    apptainer_core_class_path="boileroom.models.minifold.core.MiniFoldCore",
+    apptainer_image_name=MINIFOLD_IMAGE_NAME,
+    supported_backends=("modal", "apptainer"),
+    contract=ModelContract(
+        task_method="fold",
+        task_kind="structure",
+        static_config_keys=frozenset({"device", "model_size", "cache_dir", "compile", "max_sequence_length"}),
+        minimal_output_fields=("metadata", "atom_array"),
+        optional_output_fields=("plddt", "residue_index", "chain_index", "pdb", "cif"),
+        supports_multimer=False,
+    ),
+)
 
 ESMFOLD_SPEC = ModelSpec(
     key="esmfold",
@@ -437,6 +457,7 @@ ALPHAFOLD2_MULTIMER_SPEC = ModelSpec(
 )
 
 MODEL_SPECS = (
+    MINIFOLD_SPEC,
     ESMFOLD_SPEC,
     ESM2_SPEC,
     ESMFOLD2_SPEC,
@@ -465,6 +486,7 @@ def get_model_spec(identifier: str) -> ModelSpec:
 
 
 __all__ = [
+    "MINIFOLD_SPEC",
     "ALPHAFOLD2_MULTIMER_SPEC",
     "BOLTZ2_SPEC",
     "CHAI1_SPEC",

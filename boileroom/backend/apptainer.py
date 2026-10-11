@@ -757,7 +757,7 @@ class ApptainerBackend(Backend):
                 f"/usr/local/bin/python{self._python_version}",
                 container_server_path,
                 "--host",
-                "0.0.0.0",
+                "127.0.0.1",
                 "--port",
                 str(self._port),
             ]

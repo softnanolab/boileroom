@@ -26,6 +26,8 @@ _CUDA_TAG_PATTERN = re.compile(r"^cuda\d+\.\d+(?:-.+)?$")
 
 IMPORT_NAME_OVERRIDES: Final[dict[str, str | None]] = {
     "absl-py": "absl",
+    "fair-esm": "esm",
+    "dm-tree": "tree",
     "biopython": "Bio",
     "dm-haiku": "haiku",
     "ml-collections": "ml_collections",

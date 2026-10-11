@@ -390,3 +390,127 @@ complex_input = StructurePredictionInput(
 )
 complex_result = full_model.fold(complex_input, options={"include_fields": ["cif", "iptm"]})
 ```
+
+### MiniFold
+
+`MiniFold` implements the upstream **single-chain** predictor (12L or 48L folding
+trunk, with ESM2 embeddings). `:` multimers, MSA, templates, custom Triton kernels,
+and non-vanilla optimization modes are rejected. The old draft PR's concatenated
+multimer heuristic is intentionally removed: it was not a trained multimer model.
+
+```python
+from boileroom import MiniFold
+
+with MiniFold(backend="modal", config={"model_size": "12L"}) as model:
+    result = model.fold(["MLKNVHVLVLGAGDVGSVVVRLLEK", "ACDEFGHIKLMNPQRSTVWY"],
+                        options={"include_fields": ["plddt", "pdb", "cif"]})
+```
+
+Lists are evaluated sequentially with resident weights, preserving caller order
+without upstream padded-attention artifacts. The configurable initialization
+limit `max_sequence_length` defaults to 2048 residues per sequence, not a promise
+that every GPU can fit that length. `num_recycling` is a nonnegative integer
+(default 3) and can change per call. `device`, `model_size`, `cache_dir`, `compile`
+and `max_sequence_length` are initialization-only. Only `compile=False` is supported;
+`compile=True` is rejected before backend startup or loading weights because actual CUDA Inductor
+execution failed the strict upstream numerical-parity gate. No silent eager
+fallback is used. Modal defaults to L4 with 32 GiB host memory for the 3B backbone cold load.
+BF16 autocast is used only on CUDA devices that support it; other devices use FP32.
+
+`include_fields=None`/`[]` returns metadata and atom arrays. `['*']` includes every
+available field. Public `plddt` arrays use 0–1; atom-array and PDB/mmCIF B-factors
+retain 0–100. Structural residue IDs are one-based, while `residue_index` is
+zero-based and padded with -1 (as is `chain_index`). PAE/pTM/iPTM are not produced.
+Returns are CPU materialized; metadata and output arrays belong to each call.
+
+The canonical image is `boileroom-minifold` on CUDA 12.6/linux-amd64. Modal and
+Apptainer use the shared image/version selection; no `latest` tag is used. Backend
+coverage is scoped to the actual variant/device/runtime runs recorded below.
+Merely adding this model does not publish an image.
+
+Reproducibility and upstream review (2026-10-11):
+- Code: [jwohlwend/minifold 63db8b9](https://github.com/jwohlwend/minifold/commit/63db8b91f5bb64535f20810f014e69df66b0faad), the latest upstream main commit (2025-07-10); no GitHub releases exist. Its code license is MIT.
+- Weights: [revision f861257](https://huggingface.co/jwohlwend/minifold/tree/f8612572818292ecef1c7fef580c0b17646ae0b1), public/ungated, model-card license MIT. Both checkpoint LFS SHA256 values are checked before deserialization with `weights_only=True`; there is no unsafe fallback.
+- Downloads use explicit connect/read timeouts and atomic writes. Cache files are verified when loading a runtime. Downloads require roughly 2.7–2.8 GB per MiniFold checkpoint, plus the 5.68 GB upstream ESM2-3B backbone cache; weights are not baked into the published image.
+- The separate Meta ESM2-3B backbone and contact-regression files are restricted to exact official URLs and SHA256 hashes in `loading.py`, computed from the complete official artifacts on 2026-10-11. Their loading uses `weights_only=True` plus a scoped allowlist for the inert `argparse.Namespace` configuration type. Only missing frozen backbone parameters are permitted when applying the MiniFold fine-tuned state.
+- `patch_upstream.py` checks the pinned source before fixing upstream wheel subpackage discovery, replacing the legacy ESM downloader with the verified safe loader, and moving Triton imports into their kernel functions. The latter permits CPU image smoke without creating a CUDA driver; no model mathematics are changed. The temporary compile-enabling device-selector patch was reverted after the compiled numerical gate failed.
+- `metadata.runtime` records installed versions, image reference, actual `MINIFOLD_COMMIT` from the built image (`unknown` outside it), expected code pin, checkpoint revision, device, recycling, compilation and sequential batching.
+
+Offline checks: `uv run pytest tests/minifold -m 'not integration'`.
+After approval for GPU costs and candidate image setup, run
+`uv run pytest tests/minifold/test_minifold_integration.py --image-tag <candidate>`.
+Both variants exercise repeated and mixed-length calls. Memory validation is a
+separate test: `uv run pytest tests/test_memory_stability.py -k minifold --image-tag <candidate>`.
+Upstream-reference parity and actual Docker/Modal/Apptainer inference must be
+reported separately from mocked CPU contracts and import/preprocessing smoke.
+
+### MiniFold validation scope
+
+The explicit runtime suite uses independently sourced experimental monomers
+[1VII](https://www.rcsb.org/structure/1VII),
+[1CRN](https://www.rcsb.org/structure/1CRN), and
+[1UBQ](https://www.rcsb.org/structure/1UBQ), with checked mmCIF snapshots and exact
+sequence/residue mappings in `tests/data/minifold`. These are outside upstream's
+example FASTA, not proven held-out training examples. Experimental CA metrics are
+reported descriptively; they do not establish general predictive accuracy.
+
+`tests/minifold/minifold_runtime_validation.py` independently loads pinned upstream
+weights, runs the original checked `predict.py` preprocessing and original
+`triangular()` recovered from the SHA256-checked pinned Git source, releases that
+model, then loads the adapter. It checks unrounded atom-mask/coordinate/pLDDT
+parity through a real signed loopback HTTP service, parsed PDB/CIF agreement,
+reversed mixed-length lists, recycling overrides, output filtering, refusal
+recovery, retained-output immutability, four memory cycles and cleanup. One
+selected checkpoint runs at a time. The historical compiled probe recorded
+original-stock versus patched-eager parity, actual Inductor kernels, raw numerical
+differences, cold timing and model/GPU release before compiler reset. Its strict
+numerical gate failed; the paid workflow selection and validation entrypoint now
+refuse compiled execution. Diagnostic helper tests and raw evidence are retained;
+tolerances were not loosened and no 48L compilation run was attempted.
+The bounded manual launcher records exactly
+which variant, image, device and gates ran; a 12L pass does not cover 48L.
+
+This scoped service test does not start an Apptainer SIF or exercise the public
+Modal class lifecycle. The manual workflow's `public-modal` mode separately runs
+`tests/minifold/minifold_public_validation.py` through the actual public wrapper,
+with one bounded L4 and an ephemeral weights volume. It checks lifecycle,
+serialization, output independence and the same external cases. Its report marks
+upstream parity unrun unless matching raw-reference artifacts are supplied;
+passing core parity and passing public-backend behavior are separate evidence.
+
+The `cpu-sif` mode builds a canonical local Docker archive/SIF and invokes the
+public Apptainer wrapper on CPU. Standard 16-GiB GitHub runners fail MiniFold's
+24-GiB available-memory preflight rather than attempting an unsafe load. The
+MiniFold-only `cpu-vm-probe` route tests unmodified non-setuid Apptainer support in
+a small five-minute CPU VM without weights. A separately selected `cpu-vm-sif`
+route repeats that probe and proceeds only on success to a bounded 32-GiB VM.
+The initial mounted-SIF probe failed on non-root `/dev/fuse` access without loading
+weights. Explicit `cpu-vm-extract-probe`/`cpu-vm-extract-sif` modes select official
+Apptainer temporary extraction (`APPTAINER_UNSQUASH`), with extra disk preflights;
+they do not change device permissions or silently fall back after a mount failure.
+An extracted-SIF pass is separate evidence from mounted-SIF execution.
+These test-only routes do not change the production Modal SDK. CPU/SIF results do
+not establish GPU or independent FP32 stock parity; those need matching runs.
+Every paid route requires an approved budget and records exact source and cleanup.
+
+Recorded validation on 2026-10-11:
+- Uncompiled 12L and 48L passed independent stock/raw-output parity, real signed HTTP, repeated-call memory and cleanup on L4: [12L](https://github.com/softnanolab/boileroom/actions/runs/38120306454) and [48L](https://github.com/softnanolab/boileroom/actions/runs/38120907494), source `34d1a488`.
+- The actual public Modal wrapper passed its separate lifecycle/output/refusal gates for [12L](https://github.com/softnanolab/boileroom/actions/runs/38133562051) and [48L](https://github.com/softnanolab/boileroom/actions/runs/38133923392), source `8d2984c7`. These public runs did not independently repeat the stock-reference gate.
+- The corrected [temporary-extraction capability probe](https://github.com/softnanolab/boileroom/actions/runs/38135827022) passed on source `55b25bc8`, with real non-root SIF execution and temporary-rootfs cleanup. It loaded no model weights. Mounted-SIF access in that VM remained unavailable because `/dev/fuse` was inaccessible.
+- The subsequent [12L CPU extracted-SIF run](https://github.com/softnanolab/boileroom/actions/runs/38136054196) on `55b25bc8` passed all five actual public Apptainer lifecycle/output/refusal gates in FP32, with a canonical Docker image and local SIF. It verified process termination, unchanged SIF, temporary-rootfs removal, sandbox termination and stopped/zero-task app cleanup. It did not establish independent FP32 stock parity, 48L CPU or GPU Apptainer coverage.
+- The [12L compiled attempt](https://github.com/softnanolab/boileroom/actions/runs/38135920106) on `55b25bc8` failed before its first output on the upstream MPS-availability query. A subsequent checked compatibility patch enabled [real CUDA Inductor execution](https://github.com/softnanolab/boileroom/actions/runs/38137473354) on `4e58da2a`: one graph and 169 kernels, with a 70.97-second cold first call. The separate eager adapter matched original stock exactly in all four comparisons, but the first compiled output exceeded the unchanged strict tolerance (maximum coordinate difference 0.162858 Å; coordinate-component RMS difference 0.031188 Å; maximum pLDDT difference 0.054489 percentage points). This is a compiler numerical-fidelity result, not evidence of worse biological accuracy. Normal model/GPU cleanup passed before compiler reset, and both apps stopped with zero tasks. Compilation is now refused, and the compile-only source patch was reverted to the previously validated eager image definition.
+
+Public-wrapper parity tests are separately in
+`tests/minifold/test_minifold_integration.py`. They require independently generated
+reference artifacts via `BOILEROOM_MINIFOLD_REFERENCE_DIR`; missing artifacts fail.
+The supplied stock-reference script generates L4 Modal references. Strict image,
+GPU, Torch/CUDA and precision matching intentionally prevents reusing those as
+proof for a different backend/device: an Apptainer parity run additionally needs
+references generated inside the same pinned SIF/image identity. Compilation is
+unsupported. Long sequences near the configured limit and other GPUs remain
+separate unverified gates.
+
+Apptainer `device` selects the physical GPU (or CPU); MiniFold resolves GPU indices
+to device zero after visibility remapping. Conflicting `device` and
+`config['device']` selectors are rejected. Effective precision and matmul settings
+are recorded without silently changing global production Torch settings.

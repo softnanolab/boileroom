@@ -99,6 +99,7 @@ _PROTENIX_OPTIONS = {"include_fields": ["plddt", "pae"]}
 _MODES = ("vanilla", "exact")
 
 CASES: tuple[MemoryCase, ...] = (
+    MemoryCase("minifold", SHORT, options={"include_fields": ["plddt"]}),
     MemoryCase("esmfold", SHORT),
     MemoryCase("esm2", SHORT),
     MemoryCase("esmc", SHORT),
