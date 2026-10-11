@@ -220,6 +220,30 @@ def test_input_json_stages_supplied_alignments(module: ModuleType, tmp_path: Pat
     assert "msa_path" not in second
 
 
+def test_homotrimer_target_msa_leaves_binder_sequence_only(module: ModuleType, tmp_path: Path) -> None:
+    """Repeated target chains retain their own IDs and alignment files; binder D gets no target MSA."""
+    target = ">query\nMKTA\n>hit TaxID=9606\nMKcTA\n"
+    path = module.RF3Core()._write_input_json("MKTA:MKTA:MKTA:GSHM", tmp_path, [target] * 3 + [None])
+
+    components = json.loads(path.read_text())[0]["components"]
+    assert [component["chain_id"] for component in components] == ["A", "B", "C", "D"]
+    assert [component["seq"] for component in components] == ["MKTA"] * 3 + ["GSHM"]
+    paths = [Path(component["msa_path"]) for component in components[:3]]
+    assert len(set(paths)) == 3
+    assert all(alignment.parent == tmp_path and alignment.read_text() == target for alignment in paths)
+    assert components[3] == {"seq": "GSHM", "chain_id": "D"}
+
+
+@pytest.mark.parametrize("chain_index", [0, 1, 2])
+def test_homotrimer_validates_every_target_alignment(module: ModuleType, tmp_path: Path, chain_index: int) -> None:
+    """A mismatched query on any repeated target protomer must fail, not reuse another chain's MSA."""
+    alignments = [">query\nMKTA\n"] * 3 + [None]
+    alignments[chain_index] = ">query\nGSHM\n"
+
+    with pytest.raises(ValueError, match="first A3M row must match"):
+        module.RF3Core()._write_input_json("MKTA:MKTA:MKTA:GSHM", tmp_path, alignments)
+
+
 @pytest.mark.parametrize(
     "sequence,msa,message",
     [
@@ -451,6 +475,32 @@ def test_fold_applies_per_call_seed_and_alignments(module: ModuleType, fake_work
     assert output.seeds == [7]
     assert fake_worker.predict.call_args.args[2]["seed"] == 7 and fake_worker.predict.call_args.args[2]["msa"] is None
     assert staged["msa_text"] == a3m and "msa_path" not in staged["components"][1]
+
+
+def test_homotrimer_msa_files_survive_until_worker_finishes(
+    module: ModuleType, fake_worker: Mock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The worker can read all three target alignments during inference; temporary files close afterward."""
+    target = ">query\nMKTA\n>hit\nMKcTA\n"
+    staged: list[Path] = []
+    core = module.RF3Core({"diffusion_batch_size": 1})
+    output = Mock()
+    monkeypatch.setattr(core, "_collect_outputs", Mock(return_value=output))
+
+    def predict(input_json: str, output_dir: str, config: dict[str, Any]) -> None:
+        components = json.loads(Path(input_json).read_text())[0]["components"]
+        assert [component["chain_id"] for component in components] == ["A", "B", "C", "D"]
+        assert components[3] == {"seq": "GSHM", "chain_id": "D"}
+        staged.extend(Path(component["msa_path"]) for component in components[:3])
+        assert len(set(staged)) == 3
+        assert all(path.read_text() == target for path in staged)
+        assert Path(output_dir).is_dir()
+        assert config["msa"] is None  # The worker reads the staged paths, not a second alignment channel.
+
+    fake_worker.predict.side_effect = predict
+    assert core.fold("MKTA:MKTA:MKTA:GSHM", options={"msa": [target] * 3 + [None]}) is output
+    fake_worker.predict.assert_called_once()
+    assert len(staged) == 3 and all(not path.exists() for path in staged)
 
 
 def test_invalid_per_call_option_fails_before_the_worker(
