@@ -211,9 +211,10 @@ def remote_validation(model: str, model_size: str | None) -> dict[str, Any]:
     if not isinstance(report, dict):
         raise TypeError("run_validation must return a JSON-serializable dict")
     report["launcher_remote_seconds"] = time.monotonic() - started
-    # Reject tensors/NaNs and other unserializable results before returning.
-    json.dumps(report, allow_nan=False)
-    return report
+    # Normalize JSON-compatible subclasses too: e.g. TorchVersion is a str
+    # subclass whose pickle otherwise imports Torch on the lightweight host.
+    # Keep rejecting tensors/NaNs instead of coercing or silently dropping them.
+    return json.loads(json.dumps(report, allow_nan=False))
 
 
 def remember_app(state: dict[str, Any], app: Any, phase: str, output: Path, filename: str = "run.json") -> None:

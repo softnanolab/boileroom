@@ -729,3 +729,55 @@ def test_each_public_result_must_identify_the_built_source(bad_index: int) -> No
     report["results"][bad_index]["metadata"]["runtime"]["image_ref"] = "source:wrong"
     launcher.check_public_source_reference(report, expected)
     assert not report["passed"] and not report["source_reference_verified"]
+
+
+def test_remote_report_is_native_json_before_modal_pickle(monkeypatch: pytest.MonkeyPatch) -> None:
+    import base64
+    import importlib.util
+    import pickle
+    import sys
+
+    torch = pytest.importorskip("torch")
+    version = torch.__version__
+    assert isinstance(version, str) and type(version) is not str
+    original: dict[str, Any] = {
+        "passed": False,
+        "diagnostic": {"torch": version},
+        "numeric": [1.25],
+        "error": "retained",
+    }
+    module = SimpleNamespace(run_validation=lambda **kwargs: original)
+    spec = SimpleNamespace(name="minifold_runtime_validation", loader=SimpleNamespace(exec_module=lambda module: None))
+    monkeypatch.setattr(importlib.util, "spec_from_file_location", lambda *args: spec)
+    monkeypatch.setattr(importlib.util, "module_from_spec", lambda spec: module)
+    monkeypatch.setattr(launcher.os, "chdir", lambda path: None)
+    monkeypatch.setattr(sys, "path", sys.path.copy())
+    monkeypatch.setitem(sys.modules, "minifold_runtime_validation", module)
+    report = launcher.remote_validation("minifold", "12L")
+    assert type(report["diagnostic"]["torch"]) is str
+    assert report["diagnostic"]["torch"] == str(version)
+    assert report["passed"] is False and report["error"] == "retained"
+    assert type(original["diagnostic"]["torch"]) is type(version)
+    encoded = base64.b64encode(pickle.dumps(report)).decode()
+    command = (
+        "import base64,pickle,sys;sys.modules['torch']=None;"
+        f"r=pickle.loads(base64.b64decode({encoded!r}));"
+        "assert type(r['diagnostic']['torch']) is str and r['error']=='retained'"
+    )
+    subprocess.run([sys.executable, "-I", "-c", command], check=True, timeout=15, capture_output=True)
+
+
+@pytest.mark.parametrize("invalid", [float("nan"), object()])
+def test_remote_report_still_rejects_non_json_values(monkeypatch: pytest.MonkeyPatch, invalid: Any) -> None:
+    import importlib.util
+    import sys
+
+    module = SimpleNamespace(run_validation=lambda **kwargs: {"passed": True, "invalid": invalid})
+    spec = SimpleNamespace(name="minifold_runtime_validation", loader=SimpleNamespace(exec_module=lambda module: None))
+    monkeypatch.setattr(importlib.util, "spec_from_file_location", lambda *args: spec)
+    monkeypatch.setattr(importlib.util, "module_from_spec", lambda spec: module)
+    monkeypatch.setattr(launcher.os, "chdir", lambda path: None)
+    monkeypatch.setattr(sys, "path", sys.path.copy())
+    monkeypatch.setitem(sys.modules, "minifold_runtime_validation", module)
+    with pytest.raises((TypeError, ValueError)):
+        launcher.remote_validation("minifold", "12L")
