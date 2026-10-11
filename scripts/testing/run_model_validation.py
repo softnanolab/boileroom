@@ -146,18 +146,29 @@ def build_image(modal: Any, root: Path, plan: dict[str, Any]) -> Any:
     body = model_dockerfile_body(model_file.read_text())
     image = modal.Image.from_dockerfile(base, context_dir=base.parent, gpu=None)
     image = image.dockerfile_commands(body.splitlines(), context_dir=model_file.parent, gpu=None)
-    image = image.env(
-        {
-            "PYTHONPATH": "/validation",
-            "MODEL_DIR": "/mnt/models" if plan["mode"] == "public-modal" else "/tmp/validation-models",
-            "BOILEROOM_IMAGE_REF": plan["source_reference"],
-            "BOILEROOM_VALIDATION_GIT_SHA": plan["git_sha"],
-            "PYTHONUNBUFFERED": "1",
-            "HF_HUB_DISABLE_TELEMETRY": "1",
-            "DO_NOT_TRACK": "1",
-        }
-    )
+    image = image.env(source_runtime_env(plan))
     return mount_sources(image, root, plan)
+
+
+def source_runtime_env(plan: dict[str, Any]) -> dict[str, str]:
+    """Match stock remote-import requirements while retaining honest source provenance.
+
+    Modal imports the unmodified family module inside the provisioned container.
+    Its registry image and named-volume descriptors are hydrated positionally from
+    the existing source image/ephemeral volume, not resolved by their lazy loaders.
+    This explicit tag permits that inert decorator construction without installed
+    package metadata. It is neither published nor used as execution provenance.
+    """
+    return {
+        "PYTHONPATH": "/validation",
+        "MODEL_DIR": "/mnt/models" if plan["mode"] == "public-modal" else "/tmp/validation-models",
+        "BOILEROOM_IMAGE_TAG": f"sha-{plan['git_sha']}",
+        "BOILEROOM_IMAGE_REF": plan["source_reference"],
+        "BOILEROOM_VALIDATION_GIT_SHA": plan["git_sha"],
+        "PYTHONUNBUFFERED": "1",
+        "HF_HUB_DISABLE_TELEMETRY": "1",
+        "DO_NOT_TRACK": "1",
+    }
 
 
 def mount_sources(image: Any, root: Path, plan: dict[str, Any]) -> Any:
@@ -358,7 +369,13 @@ def public_worker(root: Path, plan: dict[str, Any], output: Path) -> int:
         "source_reference": plan["source_reference"],
         "passed": False,
         "scope": "Actual public wrapper, ModalBackend, Modal class, remote transport and guarded lifecycle",
-        "test_overrides": ["selected-family source image", "ephemeral weights volume", "bounded class resources"],
+        "test_overrides": [
+            "selected-family source image",
+            "ephemeral weights volume",
+            "bounded class resources",
+            "inert remote-import image tag",
+        ],
+        "remote_import_image_tag": source_runtime_env(plan)["BOILEROOM_IMAGE_TAG"],
         "persistent_volume_created": False,
         "buffer_containers": "inherited platform default; SDK 1.3 does not apply a zero-valued class override",
     }
@@ -412,7 +429,15 @@ def public_worker(root: Path, plan: dict[str, Any], output: Path) -> int:
             if not isinstance(report, dict):
                 raise TypeError("Public validation must return a JSON-serializable dict")
             report["launcher"] = {
-                key: state[key] for key in ("scope", "image_id", "source_reference", "test_overrides", "requested_gpu")
+                key: state[key]
+                for key in (
+                    "scope",
+                    "image_id",
+                    "source_reference",
+                    "test_overrides",
+                    "requested_gpu",
+                    "remote_import_image_tag",
+                )
             }
             write_json(output / "validation.json", report)
             state["passed"] = report.get("passed") is True
@@ -452,15 +477,24 @@ async def execute(root: Path, plan: dict[str, Any], output: Path, state: dict[st
 
 def cleanup(output: Path) -> bool:
     """Stop only this invocation's recorded apps and retain scoped lifecycle evidence."""
-    path = output / "run.json"
-    if not path.exists():
-        return True
-    state = json.loads(path.read_text())
-    records = state.get("apps", [])
-    ids = [record["app_id"] for record in records]
+    # A forcefully cancelled parent may never merge the child ledger. Read both
+    # task-owned files directly so always() cleanup still sees the public app.
+    records: list[dict[str, Any]] = []
+    record_files = []
+    for name in ("run.json", "public-run.json"):
+        path = output / name
+        if path.exists():
+            records.extend(json.loads(path.read_text()).get("apps", []))
+            record_files.append(name)
+    ids = list(dict.fromkeys(record["app_id"] for record in records))
     if any(not APP_ID.fullmatch(app_id) for app_id in ids) or len(ids) > 3:
         raise ValueError("Refusing cleanup of invalid/unbounded app IDs")
-    evidence: dict[str, Any] = {"at": utc_now(), "stop_results": [], "verified_stopped": not ids}
+    evidence: dict[str, Any] = {
+        "at": utc_now(),
+        "record_files": record_files,
+        "stop_results": [],
+        "verified_stopped": not ids,
+    }
     env = {**os.environ, "MODAL_CONFIG_PATH": "/dev/null"}
     for app_id in ids:
         try:
