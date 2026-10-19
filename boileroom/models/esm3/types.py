@@ -56,7 +56,37 @@ class ESM3InverseFoldingOutput:
     amino_acids: str
 
 
+@dataclass
+class ESM3InverseGenerationOutput:
+    """Structure-conditioned sequence decoded at masked residue positions (ESM3 only).
+
+    Attributes
+    ----------
+    metadata : PredictionMetadata
+        Timing and model metadata.
+    positions : np.ndarray
+        ``(n_positions,)`` residue indices that were masked and decoded, counted over the residues
+        of the whole (possibly multichain) input, excluding chain breaks.
+    sequence : str
+        The full decoded sequence, chains separated by ``:``. Residues outside ``positions`` are
+        unchanged from the input.
+    residues : str
+        The decoded amino acids at ``positions``, in the order given by ``positions``.
+    """
+
+    metadata: PredictionMetadata
+    positions: np.ndarray
+    sequence: str
+    residues: str
+
+
 ESMCOutput = ESMEmbeddingOutput
 ESM3Output = ESMEmbeddingOutput
 
-__all__ = ["ESM3InverseFoldingOutput", "ESM3Output", "ESMCOutput", "ESMEmbeddingOutput"]
+__all__ = [
+    "ESM3InverseFoldingOutput",
+    "ESM3InverseGenerationOutput",
+    "ESM3Output",
+    "ESMCOutput",
+    "ESMEmbeddingOutput",
+]

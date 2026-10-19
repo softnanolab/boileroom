@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     import numpy as np
 
     from .core import ESM3Core
-    from .types import ESM3InverseFoldingOutput, ESM3Output
+    from .types import ESM3InverseFoldingOutput, ESM3InverseGenerationOutput, ESM3Output
 
 logger = logging.getLogger(__name__)
 app = get_modal_app("esm3")
@@ -50,6 +50,34 @@ class ModalESM3(ModalEmbedServer):
         :func:`~boileroom.provenance.record_gpu_memory`).
         """
         output = self._loaded_core().inverse_fold(sequence, backbone_coordinates, positions)
+        record_gpu_memory(output)
+        return output
+
+    @modal.method()
+    def inverse_generate(
+        self,
+        sequence: str,
+        backbone_coordinates: "np.ndarray",
+        positions: Sequence[int],
+        num_steps: int | None = None,
+        temperature: float = 0.1,
+        seed: int | None = None,
+        excluded_amino_acids: str = "",
+    ) -> "ESM3InverseGenerationOutput":
+        """Run :meth:`ESM3Core.inverse_generate` on the Modal worker (see that method for parameters).
+
+        Like ``embed``, the output records the GPU memory in use after the call (see
+        :func:`~boileroom.provenance.record_gpu_memory`).
+        """
+        output = self._loaded_core().inverse_generate(
+            sequence,
+            backbone_coordinates,
+            positions,
+            num_steps=num_steps,
+            temperature=temperature,
+            seed=seed,
+            excluded_amino_acids=excluded_amino_acids,
+        )
         record_gpu_memory(output)
         return output
 
@@ -95,3 +123,52 @@ class ESM3(ModelWrapper):
             ``(n_positions, 20)`` logits over the standard amino acids at the masked positions.
         """
         return self._call_backend_method("inverse_fold", sequence, backbone_coordinates, positions)
+
+    def inverse_generate(
+        self,
+        sequence: str,
+        backbone_coordinates: "np.ndarray",
+        positions: Sequence[int],
+        num_steps: int | None = None,
+        temperature: float = 0.1,
+        seed: int | None = None,
+        excluded_amino_acids: str = "",
+    ) -> "ESM3InverseGenerationOutput":
+        """Jointly decode masked residues on a fixed backbone (multi-residue inverse folding).
+
+        Where :meth:`inverse_fold` returns per-position logits from a single forward pass, this
+        unmasks ``positions`` over several iterative rounds, so each residue is sampled in the
+        context of those already decoded.
+
+        Parameters
+        ----------
+        sequence : str
+            Amino-acid sequence; chains separated by ``:``.
+        backbone_coordinates : np.ndarray
+            ``(n_residues, 3, 3)`` N, CA, C coordinates (Angstrom), chain breaks excluded.
+        positions : Sequence[int]
+            Residue indices to mask and decode; all other residues are kept as given.
+        num_steps : int | None
+            Decoding rounds, clamped to at most ``len(positions)``. ``None`` uses one per position.
+        temperature : float
+            Sampling temperature; ESM3 advises staying at or below 0.1 for sequence design.
+        seed : int | None
+            Seed for the global ``torch`` RNG, making the call reproducible.
+        excluded_amino_acids : str
+            One-letter codes the model may not sample. Empty (the default) allows all 20.
+
+        Returns
+        -------
+        ESM3InverseGenerationOutput
+            The decoded sequence and the residues sampled at ``positions``.
+        """
+        return self._call_backend_method(
+            "inverse_generate",
+            sequence,
+            backbone_coordinates,
+            positions,
+            num_steps=num_steps,
+            temperature=temperature,
+            seed=seed,
+            excluded_amino_acids=excluded_amino_acids,
+        )

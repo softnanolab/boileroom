@@ -15,7 +15,13 @@ import torch
 
 from ...base import EmbeddingAlgorithm
 from ...utils import Timer, get_model_cache_dir, validate_sequence
-from .types import ESM3InverseFoldingOutput, ESM3Output, ESMCOutput, ESMEmbeddingOutput
+from .types import (
+    ESM3InverseFoldingOutput,
+    ESM3InverseGenerationOutput,
+    ESM3Output,
+    ESMCOutput,
+    ESMEmbeddingOutput,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -444,6 +450,72 @@ class ESM3Core(_BaseESM3EmbeddingCore):
     def embed(self, sequences: str | Sequence[str], options: dict | None = None) -> ESM3Output:
         return cast(ESM3Output, super().embed(sequences, options=options))
 
+    def _prepare_masked_protein(
+        self,
+        sequence: str,
+        backbone_coordinates: np.ndarray,
+        positions: Sequence[int],
+    ) -> tuple[ESM3ParsedSequence, np.ndarray, np.ndarray, str, np.ndarray]:
+        """Validate the inputs and build the masked, structure-conditioned inputs for the SDK.
+
+        Shared by :meth:`inverse_fold` and :meth:`inverse_generate`. Both mask the residues at
+        ``positions`` and condition on ``backbone_coordinates``; they differ only in how the
+        sequence track is read back out. Loads the model if it is not loaded yet.
+
+        Parameters
+        ----------
+        sequence : str
+            Amino-acid sequence; chains separated by ``:``.
+        backbone_coordinates : np.ndarray
+            ``(n_residues, 3, 3)`` N, CA, C coordinates in Angstrom, one row per residue (chain
+            breaks excluded). Residues with missing coordinates may be NaN.
+        positions : Sequence[int]
+            Residue indices to mask, counted over all residues (chain breaks excluded).
+
+        Returns
+        -------
+        tuple
+            ``(parsed, position_array, keep_indices, masked_sdk_sequence, atom37)``, where
+            ``keep_indices`` maps each residue index to its offset within ``parsed.sdk_sequence``
+            and ``atom37`` holds the coordinates in the atom37 layout the SDK expects.
+
+        Raises
+        ------
+        ValueError
+            If the coordinate shape does not match the sequence, or ``positions`` is empty, out of
+            range, or contains duplicates.
+        """
+        parsed = parse_esm3_sequences(sequence)[0]
+        n_residues = parsed.residue_count
+        coordinates = np.asarray(backbone_coordinates, dtype=np.float32)
+        if coordinates.shape != (n_residues, 3, 3):
+            raise ValueError(
+                f"backbone_coordinates must have shape ({n_residues}, 3, 3) matching the sequence; "
+                f"got {coordinates.shape}."
+            )
+        position_array = np.asarray(list(positions), dtype=np.int64)
+        if position_array.ndim != 1 or position_array.size == 0:
+            raise ValueError("positions must be a non-empty 1D sequence of residue indices.")
+        if position_array.min() < 0 or position_array.max() >= n_residues:
+            raise ValueError(f"positions must lie in [0, {n_residues}); got {position_array.tolist()}.")
+        if len(set(position_array.tolist())) != position_array.size:
+            raise ValueError("positions must not contain duplicates.")
+
+        if self.model is None:
+            logger.warning("Model not loaded. Forcing the model to load... Next time call _load() first.")
+            self._load()
+        assert self.model is not None, "Model not loaded"
+
+        keep_indices = self._residue_token_indices(parsed.sdk_sequence) - 1  # positions within sdk_sequence
+        masked_sdk = list(parsed.sdk_sequence)
+        for position in position_array:
+            masked_sdk[int(keep_indices[position])] = "_"
+
+        # SDK expects atom37 coordinates aligned to sdk_sequence (NaN rows at chain breaks / unused atoms).
+        atom37 = np.full((len(parsed.sdk_sequence), 37, 3), np.nan, dtype=np.float32)
+        atom37[keep_indices, :3] = coordinates
+        return parsed, position_array, keep_indices, "".join(masked_sdk), atom37
+
     def inverse_fold(
         self,
         sequence: str,
@@ -473,40 +545,15 @@ class ESM3Core(_BaseESM3EmbeddingCore):
             Logits over the 20 standard amino acids at each masked position.
         """
 
-        parsed = parse_esm3_sequences(sequence)[0]
-        n_residues = parsed.residue_count
-        coordinates = np.asarray(backbone_coordinates, dtype=np.float32)
-        if coordinates.shape != (n_residues, 3, 3):
-            raise ValueError(
-                f"backbone_coordinates must have shape ({n_residues}, 3, 3) matching the sequence; "
-                f"got {coordinates.shape}."
-            )
-        position_array = np.asarray(list(positions), dtype=np.int64)
-        if position_array.ndim != 1 or position_array.size == 0:
-            raise ValueError("positions must be a non-empty 1D sequence of residue indices.")
-        if position_array.min() < 0 or position_array.max() >= n_residues:
-            raise ValueError(f"positions must lie in [0, {n_residues}); got {position_array.tolist()}.")
-        if len(set(position_array.tolist())) != position_array.size:
-            raise ValueError("positions must not contain duplicates.")
-
-        if self.model is None:
-            logger.warning("Model not loaded. Forcing the model to load... Next time call _load() first.")
-            self._load()
+        parsed, position_array, keep_indices, masked_sdk_sequence, atom37 = self._prepare_masked_protein(
+            sequence, backbone_coordinates, positions
+        )
         assert self.model is not None, "Model not loaded"
         from esm.sdk.api import ESMProtein, LogitsConfig
 
-        keep_indices = self._residue_token_indices(parsed.sdk_sequence) - 1  # positions within sdk_sequence
-        masked_sdk = list(parsed.sdk_sequence)
-        for position in position_array:
-            masked_sdk[int(keep_indices[position])] = "_"
-
-        # SDK expects atom37 coordinates aligned to sdk_sequence (NaN rows at chain breaks / unused atoms).
-        atom37 = np.full((len(parsed.sdk_sequence), 37, 3), np.nan, dtype=np.float32)
-        atom37[keep_indices, :3] = coordinates
-
-        metadata = dataclasses.replace(self._metadata_template, sequence_lengths=[n_residues])
+        metadata = dataclasses.replace(self._metadata_template, sequence_lengths=[parsed.residue_count])
         with Timer("ESM3 preprocessing") as preprocess_timer:
-            protein = ESMProtein(sequence="".join(masked_sdk), coordinates=torch.from_numpy(atom37))
+            protein = ESMProtein(sequence=masked_sdk_sequence, coordinates=torch.from_numpy(atom37))
             encoded = self.model.encode(protein)
         with Timer("Model Inference") as inference_timer, torch.inference_mode():
             raw_output = self.model.logits(encoded, LogitsConfig(sequence=True))
@@ -526,6 +573,136 @@ class ESM3Core(_BaseESM3EmbeddingCore):
             positions=position_array.astype(np.int32),
             logits=selected,
             amino_acids=INVERSE_FOLDING_AMINO_ACIDS,
+        )
+
+    def inverse_generate(
+        self,
+        sequence: str,
+        backbone_coordinates: np.ndarray,
+        positions: Sequence[int],
+        num_steps: int | None = None,
+        temperature: float = 0.1,
+        seed: int | None = None,
+        excluded_amino_acids: str = "",
+    ) -> ESM3InverseGenerationOutput:
+        """Jointly decode the residues at ``positions``, given the rest of the sequence and a backbone.
+
+        Where :meth:`inverse_fold` scores every masked position in one forward pass, with the other
+        masked positions still masked, this unmasks them over ``num_steps`` iterative rounds on a
+        cosine schedule, so each residue is sampled in the context of those already decoded. Use it
+        to redesign a whole stretch at once; use ``inverse_fold`` for per-position probabilities.
+
+        Residues outside ``positions`` are held fixed, and the structure is conditioning input
+        throughout, so the result is a redesign of the masked residues on the given backbone.
+
+        Parameters
+        ----------
+        sequence : str
+            Amino-acid sequence; chains separated by ``:``.
+        backbone_coordinates : np.ndarray
+            ``(n_residues, 3, 3)`` N, CA, C coordinates in Angstrom, one row per residue (chain
+            breaks excluded). Residues with missing coordinates may be NaN.
+        positions : Sequence[int]
+            Residue indices to mask and decode, counted over all residues (chain breaks excluded).
+        num_steps : int | None
+            Number of decoding rounds, clamped to at most ``len(positions)`` because the SDK cannot
+            take more steps than there are masked tokens. ``None`` uses one step per masked
+            position. There is little gain beyond about 20 steps.
+        temperature : float
+            Sampling temperature. ESM3 advises staying at or below 0.1 for sequence design: above
+            that the distribution flattens and the residues are close to randomly chosen.
+        seed : int | None
+            Seeds the global ``torch`` RNG before decoding, making the call reproducible. ``None``
+            leaves the RNG untouched.
+        excluded_amino_acids : str
+            One-letter codes the model may not sample, passed to the SDK as invalid token ids.
+            Empty (the default) allows all 20.
+
+        Returns
+        -------
+        ESM3InverseGenerationOutput
+            The full decoded sequence and the residues sampled at ``positions``.
+
+        Raises
+        ------
+        ValueError
+            If ``temperature`` is not positive, ``num_steps`` is below 1, ``excluded_amino_acids``
+            holds an unknown or every amino acid, or the inputs fail the checks in
+            :meth:`_prepare_masked_protein`.
+        RuntimeError
+            If the SDK reports an error, leaves a masked residue undecoded, or changes a residue
+            that was meant to stay fixed.
+        """
+        if temperature <= 0.0:
+            raise ValueError(f"temperature must be positive, got {temperature}.")
+        if num_steps is not None and num_steps < 1:
+            raise ValueError(f"num_steps must be at least 1, got {num_steps}.")
+        excluded = sorted(set(excluded_amino_acids))
+        unknown = [code for code in excluded if code not in INVERSE_FOLDING_AMINO_ACIDS]
+        if unknown:
+            raise ValueError(f"excluded_amino_acids holds codes outside the standard 20: {unknown}.")
+        if len(excluded) == len(INVERSE_FOLDING_AMINO_ACIDS):
+            raise ValueError("excluded_amino_acids cannot exclude every amino acid.")
+
+        parsed, position_array, keep_indices, masked_sdk_sequence, atom37 = self._prepare_masked_protein(
+            sequence, backbone_coordinates, positions
+        )
+        assert self.model is not None, "Model not loaded"
+        from esm.sdk.api import ESMProtein, ESMProteinError, GenerationConfig
+
+        # The SDK requires no more decoding steps than there are masked tokens.
+        effective_steps = (
+            int(position_array.size) if num_steps is None else min(int(num_steps), int(position_array.size))
+        )
+        invalid_ids = list(self.model.tokenizers.sequence.convert_tokens_to_ids(excluded)) if excluded else []
+
+        metadata = dataclasses.replace(self._metadata_template, sequence_lengths=[parsed.residue_count])
+        with Timer("ESM3 preprocessing") as preprocess_timer:
+            protein = ESMProtein(sequence=masked_sdk_sequence, coordinates=torch.from_numpy(atom37))
+            if seed is not None:
+                torch.manual_seed(int(seed))
+        # no_grad, not inference_mode: generate() tokenizes the structure internally, and the VQ-VAE encoder
+        # feeds inference-mode tensors into autograd-tracked ops, which inference_mode forbids.
+        with Timer("Model Inference") as inference_timer, torch.no_grad():
+            generated = self.model.generate(
+                protein,
+                GenerationConfig(
+                    track="sequence",
+                    schedule="cosine",
+                    num_steps=effective_steps,
+                    temperature=float(temperature),
+                    invalid_ids=invalid_ids,
+                ),
+            )
+        with Timer("ESM3 postprocessing") as postprocess_timer:
+            if isinstance(generated, ESMProteinError):
+                raise RuntimeError(f"ESM3 sequence generation failed ({generated.error_code}): {generated.error_msg}")
+            generated_sdk = str(generated.sequence)
+            if len(generated_sdk) != len(masked_sdk_sequence):
+                raise RuntimeError(
+                    f"ESM3 returned {len(generated_sdk)} tokens for a {len(masked_sdk_sequence)}-token prompt."
+                )
+            residues = "".join(generated_sdk[int(keep_indices[position])] for position in position_array)
+            if "_" in residues:
+                raise RuntimeError("ESM3 left one or more masked residues undecoded.")
+            # Every residue that was not masked must have survived generation unchanged.
+            fixed = set(range(parsed.residue_count)) - set(position_array.tolist())
+            changed = [
+                index
+                for index in sorted(fixed)
+                if generated_sdk[int(keep_indices[index])] != parsed.sdk_sequence[int(keep_indices[index])]
+            ]
+            if changed:
+                raise RuntimeError(f"ESM3 changed residues that were meant to stay fixed: {changed}.")
+            decoded = generated_sdk.replace("|", ":")  # back to the chain separator boileroom uses
+        metadata.preprocessing_time = preprocess_timer.duration
+        metadata.inference_time = inference_timer.duration
+        metadata.postprocessing_time = postprocess_timer.duration
+        return ESM3InverseGenerationOutput(
+            metadata=metadata,
+            positions=position_array.astype(np.int32),
+            sequence=decoded,
+            residues=residues,
         )
 
 

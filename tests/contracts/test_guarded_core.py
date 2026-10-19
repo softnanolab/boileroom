@@ -43,6 +43,18 @@ class _FakeCore(Algorithm):
     def inverse_fold(self, sequence: str, backbone_coordinates: Any, positions: list[int]) -> tuple[str, Any]:
         return ("inverse-folded", sequence)
 
+    def inverse_generate(
+        self,
+        sequence: str,
+        backbone_coordinates: Any,
+        positions: list[int],
+        num_steps: int | None = None,
+        temperature: float = 0.1,
+        seed: int | None = None,
+        excluded_amino_acids: str = "",
+    ) -> tuple[str, Any]:
+        return ("inverse-generated", sequence)
+
     def close(self) -> None:
         self.closed = True
 
@@ -108,7 +120,7 @@ _MODAL_CLASSES = [
     (spec, path) for spec in MODEL_SPECS for path in (spec.modal_class_path, spec.kit_modal_class_path) if path
 ]
 #: Modal methods a class serves beside its family's task method; each must raise the standing failure too.
-_EXTRA_MODAL_METHODS: dict[str, set[str]] = {"esm3": {"inverse_fold"}}
+_EXTRA_MODAL_METHODS: dict[str, set[str]] = {"esm3": {"inverse_fold", "inverse_generate"}}
 
 
 def _modal_hooks(user_cls: type, flags: int) -> dict[str, Callable[..., Any]]:
@@ -245,7 +257,8 @@ def test_modal_server_records_gpu_memory_on_every_output(
     _install_fake_core(spec, monkeypatch)
     user_cls = resolve_object(modal_class_path)._get_user_cls()
     recorded: list[Any] = []
-    # The shared body records fold / embed; a family's own extra method (ESM3's inverse_fold) records in its module.
+    # The shared body records fold / embed; a family's own extra methods (ESM3's inverse_fold /
+    # inverse_generate) record in its module.
     for module in {modal_server, sys.modules[user_cls.__module__]}:
         monkeypatch.setattr(module, "record_gpu_memory", recorded.append, raising=module is modal_server)
     server = object.__new__(user_cls)
