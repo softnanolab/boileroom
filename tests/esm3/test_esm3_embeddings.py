@@ -352,8 +352,11 @@ def test_esm3_package_types_import_has_no_modal_wrapper_side_effects(monkeypatch
 class _FakeSequenceTokenizer:
     """Maps amino acids to non-contiguous ids so tests catch id/column mix-ups."""
 
+    requested_tokens: ClassVar[list[list[str]]] = []
+
     def convert_tokens_to_ids(self, tokens: list[str]) -> list[int]:
-        """Return a distinct, non-contiguous id for each token."""
+        """Return a distinct, non-contiguous id for each token, recording what was asked for."""
+        self.requested_tokens.append(list(tokens))
         return [5 + 2 * index for index, _ in enumerate(tokens)]
 
 
@@ -399,6 +402,7 @@ class _FakeIFModel(_FakeSDKModel):
 def fake_if_sdk(fake_esm_sdk: type[_FakeSDKModel], monkeypatch: pytest.MonkeyPatch) -> type[_FakeIFModel]:
     """Install the fake inverse-folding SDK model and a protein type that records coordinates."""
     _FakeIFModel.proteins = []
+    _FakeSequenceTokenizer.requested_tokens = []
     _FakeIFModel.generation_configs = []
     _FakeIFModel.generated_override = None
     cast(Any, sys.modules["esm.models.esm3"]).ESM3 = _FakeIFModel
@@ -495,13 +499,15 @@ def test_esm3_inverse_generate_decodes_masked_positions_and_keeps_the_rest(
     assert result.positions.tolist() == [3, 1]
 
     config = fake_if_sdk.generation_configs[-1].kwargs
-    assert config == {
-        "track": "sequence",
-        "schedule": "cosine",
-        "num_steps": 2,
-        "temperature": 0.05,
-        "invalid_ids": [],
-    }
+    assert config["track"] == "sequence"
+    assert config["schedule"] == "cosine"
+    assert config["num_steps"] == 2
+    assert config["temperature"] == 0.05
+    # Nothing was excluded by the caller, but the non-standard tokens are forbidden regardless.
+    from boileroom.models.esm3.core import NON_STANDARD_SEQUENCE_TOKENS
+
+    assert _FakeSequenceTokenizer.requested_tokens[-1] == sorted(NON_STANDARD_SEQUENCE_TOKENS)
+    assert len(config["invalid_ids"]) == len(NON_STANDARD_SEQUENCE_TOKENS)
 
 
 def test_esm3_inverse_generate_forbids_excluded_amino_acids(fake_if_sdk: type[_FakeIFModel]) -> None:
@@ -511,8 +517,12 @@ def test_esm3_inverse_generate_forbids_excluded_amino_acids(fake_if_sdk: type[_F
     core = ESM3Core(config={"device": "cpu"})
     core.inverse_generate("ACD", np.zeros((3, 3, 3), dtype=np.float32), positions=[1], excluded_amino_acids="CW")
 
-    # The fake tokenizer maps the nth requested token to 5 + 2n; codes are de-duplicated and sorted.
-    assert fake_if_sdk.generation_configs[-1].kwargs["invalid_ids"] == [5, 7]
+    from boileroom.models.esm3.core import NON_STANDARD_SEQUENCE_TOKENS
+
+    # The caller's codes are forbidden on top of the always-forbidden ones, de-duplicated and sorted.
+    expected = sorted({*NON_STANDARD_SEQUENCE_TOKENS, "C", "W"})
+    assert _FakeSequenceTokenizer.requested_tokens[-1] == expected
+    assert fake_if_sdk.generation_configs[-1].kwargs["invalid_ids"] == [5 + 2 * i for i in range(len(expected))]
 
 
 @pytest.mark.parametrize(
@@ -604,6 +614,7 @@ def test_esm3_inverse_generate_shares_the_input_checks_with_inverse_fold(
         (types.SimpleNamespace(sequence="A_D"), "undecoded"),
         (types.SimpleNamespace(sequence="WWD"), "meant to stay fixed"),
         (types.SimpleNamespace(sequence="AWDE"), "4 tokens for a 3-token prompt"),
+        (types.SimpleNamespace(sequence="AXD"), "non-standard residues"),
     ],
 )
 def test_esm3_inverse_generate_raises_on_a_bad_sdk_result(

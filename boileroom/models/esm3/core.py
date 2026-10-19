@@ -120,6 +120,10 @@ ESM3_TRACK_LOGIT_FIELDS: dict[str, tuple[str, tuple[str, ...]]] = {
 
 # Standard amino acids, in the label order of ``ESM3Core.inverse_fold`` logits.
 INVERSE_FOLDING_AMINO_ACIDS = "ACDEFGHIKLMNPQRSTVWY"
+# Sequence-vocabulary tokens that are not one of the 20 standard amino acids but can still be sampled at a
+# residue position: the ambiguity codes (X, B, Z), the two non-canonical residues (U, O) and the structural
+# tokens (".", "-", "|"). Generation must never put one of these in a redesigned position.
+NON_STANDARD_SEQUENCE_TOKENS = ("X", "B", "U", "Z", "O", ".", "-", "|")
 
 
 class _BaseESM3EmbeddingCore(EmbeddingAlgorithm):
@@ -615,8 +619,9 @@ class ESM3Core(_BaseESM3EmbeddingCore):
             Seeds the global ``torch`` RNG before decoding, making the call reproducible. ``None``
             leaves the RNG untouched.
         excluded_amino_acids : str
-            One-letter codes the model may not sample, passed to the SDK as invalid token ids.
-            Empty (the default) allows all 20.
+            One-letter codes the model may not sample, passed to the SDK as invalid token ids alongside
+            :data:`NON_STANDARD_SEQUENCE_TOKENS`, which are always forbidden. Empty (the default) allows
+            all 20 standard amino acids.
 
         Returns
         -------
@@ -630,8 +635,8 @@ class ESM3Core(_BaseESM3EmbeddingCore):
             holds an unknown or every amino acid, or the inputs fail the checks in
             :meth:`_prepare_masked_protein`.
         RuntimeError
-            If the SDK reports an error, leaves a masked residue undecoded, or changes a residue
-            that was meant to stay fixed.
+            If the SDK reports an error, leaves a masked residue undecoded, decodes a non-standard
+            residue, or changes a residue that was meant to stay fixed.
         """
         if temperature <= 0.0:
             raise ValueError(f"temperature must be positive, got {temperature}.")
@@ -654,7 +659,10 @@ class ESM3Core(_BaseESM3EmbeddingCore):
         effective_steps = (
             int(position_array.size) if num_steps is None else min(int(num_steps), int(position_array.size))
         )
-        invalid_ids = list(self.model.tokenizers.sequence.convert_tokens_to_ids(excluded)) if excluded else []
+        # The caller's exclusions are not enough on their own: the sequence track can also emit ambiguity
+        # codes and structural tokens, which are never a valid redesign of a residue.
+        forbidden = sorted(set(NON_STANDARD_SEQUENCE_TOKENS) | set(excluded))
+        invalid_ids = list(self.model.tokenizers.sequence.convert_tokens_to_ids(forbidden))
 
         metadata = dataclasses.replace(self._metadata_template, sequence_lengths=[parsed.residue_count])
         with Timer("ESM3 preprocessing") as preprocess_timer:
@@ -685,6 +693,10 @@ class ESM3Core(_BaseESM3EmbeddingCore):
             residues = "".join(generated_sdk[int(keep_indices[position])] for position in position_array)
             if "_" in residues:
                 raise RuntimeError("ESM3 left one or more masked residues undecoded.")
+            # Backstop for the invalid_ids above, so a caller never receives a residue it cannot use.
+            non_standard = sorted(set(residues) - set(INVERSE_FOLDING_AMINO_ACIDS))
+            if non_standard:
+                raise RuntimeError(f"ESM3 decoded non-standard residues {non_standard}.")
             # Every residue that was not masked must have survived generation unchanged.
             fixed = set(range(parsed.residue_count)) - set(position_array.tolist())
             changed = [
@@ -707,6 +719,7 @@ class ESM3Core(_BaseESM3EmbeddingCore):
 
 
 __all__ = [
+    "NON_STANDARD_SEQUENCE_TOKENS",
     "ESM3Core",
     "ESM3ParsedSequence",
     "INVERSE_FOLDING_AMINO_ACIDS",
