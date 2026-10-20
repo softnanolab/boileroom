@@ -999,6 +999,59 @@ class _ApptainerModelProxy:
         }
         return self._post("/inverse_fold", payload)
 
+    def inverse_generate(
+        self,
+        sequence: str,
+        backbone_coordinates: Any,
+        positions: list[int],
+        num_steps: int | None = None,
+        temperature: float = 0.1,
+        seed: int | None = None,
+        excluded_amino_acids: str = "",
+    ) -> Any:
+        """Jointly decode masked residues by making a POST request to /inverse_generate.
+
+        Parameters
+        ----------
+        sequence : str
+            Amino-acid sequence; chains separated by ``:``.
+        backbone_coordinates : array-like
+            ``(n_residues, 3, 3)`` N, CA, C coordinates. NaN entries (missing atoms) are sent as JSON ``null``.
+        positions : list[int]
+            Residue indices to mask and decode.
+        num_steps : int | None
+            Decoding rounds, clamped server-side to at most ``len(positions)``.
+        temperature : float
+            Sampling temperature.
+        seed : int | None
+            Seed for the worker's ``torch`` RNG.
+        excluded_amino_acids : str
+            One-letter codes the model may not sample.
+
+        Returns
+        -------
+        Any
+            Deserialized inverse-generation output with numpy arrays reconstructed.
+
+        Raises
+        ------
+        RuntimeError
+            If the server failed the call (HTTP 500).
+        """
+        coordinates = np.asarray(backbone_coordinates, dtype=np.float64)
+        json_coordinates = coordinates.astype(object)
+        json_coordinates[np.isnan(coordinates)] = None  # JSON has no NaN
+        payload = {
+            "sequence": sequence,
+            "backbone_coordinates": json_coordinates.tolist(),
+            "positions": [int(position) for position in positions],
+            "num_steps": None if num_steps is None else int(num_steps),
+            "temperature": float(temperature),
+            "seed": None if seed is None else int(seed),
+            "excluded_amino_acids": str(excluded_amino_acids),
+        }
+        return self._post("/inverse_generate", payload)
+
     def fold(self, sequences: str | list[str], options: dict | None = None) -> Any:
         """Fold sequences by making a POST request to /fold.
 

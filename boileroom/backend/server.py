@@ -204,6 +204,18 @@ class InverseFoldRequest(BaseModel):
     positions: list[int]
 
 
+class InverseGenerateRequest(BaseModel):
+    """Request model for inverse_generate endpoint."""
+
+    sequence: str
+    backbone_coordinates: list[Any]  # (n_residues, 3, 3) nested lists; null entries mean NaN
+    positions: list[int]
+    num_steps: int | None = None
+    temperature: float = 0.1
+    seed: int | None = None
+    excluded_amino_acids: str = ""
+
+
 def _serialize_output(output: Any) -> dict[str, str]:
     """Serialize output object for signed JSON transport.
 
@@ -310,6 +322,57 @@ async def inverse_fold(request: InverseFoldRequest) -> JSONResponse:
     except Exception as e:
         logger.error(f"Inverse folding failed: {str(e)}", exc_info=True)
         return _error_response("Inverse folding failed", e)
+
+
+@app.post("/inverse_generate")
+async def inverse_generate(request: InverseGenerateRequest) -> JSONResponse:
+    """Jointly decode masked residues on a fixed backbone using the loaded model.
+
+    Parameters
+    ----------
+    request : InverseGenerateRequest
+        Request containing the sequence, backbone coordinates, positions to decode and the
+        decoding settings.
+
+    Returns
+    -------
+    JSONResponse
+        Signed inverse-generation output payload, or the 500 body of :func:`_error_response` for an
+        unexpected failure.
+
+    Raises
+    ------
+    HTTPException
+        422 for invalid inputs (``ValueError``), 501 if the model has no ``inverse_generate`` and
+        503 if no model is loaded.
+    """
+    if _model_instance is None:
+        raise HTTPException(status_code=503, detail="Model not loaded")
+    if not hasattr(_model_instance, "inverse_generate"):
+        raise HTTPException(status_code=501, detail="Loaded model does not support inverse generation")
+
+    try:
+        # ``dtype=float32`` turns JSON null entries back into NaN.
+        coordinates = np.asarray(request.backbone_coordinates, dtype=np.float32)
+        output = _model_instance.inverse_generate(
+            request.sequence,
+            coordinates,
+            request.positions,
+            num_steps=request.num_steps,
+            temperature=request.temperature,
+            seed=request.seed,
+            excluded_amino_acids=request.excluded_amino_acids,
+        )
+        record_gpu_memory(output)
+        serialized = _serialize_output(output)
+        return JSONResponse(content=serialized)
+    except ValueError as e:
+        # Invalid caller input (duplicate positions, wrong coordinate shape, ...), not a server fault.
+        logger.warning(f"Inverse generation rejected invalid input: {str(e)}")
+        raise HTTPException(status_code=422, detail=f"Invalid inverse generation input: {str(e)}") from e
+    except Exception as e:
+        logger.error(f"Inverse generation failed: {str(e)}", exc_info=True)
+        return _error_response("Inverse generation failed", e)
 
 
 @app.post("/fold")

@@ -352,8 +352,11 @@ def test_esm3_package_types_import_has_no_modal_wrapper_side_effects(monkeypatch
 class _FakeSequenceTokenizer:
     """Maps amino acids to non-contiguous ids so tests catch id/column mix-ups."""
 
+    requested_tokens: ClassVar[list[list[str]]] = []
+
     def convert_tokens_to_ids(self, tokens: list[str]) -> list[int]:
-        """Return a distinct, non-contiguous id for each token."""
+        """Return a distinct, non-contiguous id for each token, recording what was asked for."""
+        self.requested_tokens.append(list(tokens))
         return [5 + 2 * index for index, _ in enumerate(tokens)]
 
 
@@ -379,12 +382,55 @@ class _FakeIFModel(_FakeSDKModel):
         values = torch.arange(vocab, dtype=torch.float32)[None, :] + 1000 * torch.arange(n_tokens)[:, None]
         return types.SimpleNamespace(logits=types.SimpleNamespace(sequence=values[None]))
 
+    generation_configs: ClassVar[list[Any]] = []
+    # Records "encoder" when the structure encoder is forced and "seed" when the RNG is seeded, so a test
+    # can pin the order: seeding must come last or lazy module construction eats the seeded state.
+    seeding_order: ClassVar[list[str]] = []
+
+    def get_structure_encoder(self) -> Any:
+        """Stand in for the SDK's lazily built structure encoder."""
+        self.seeding_order.append("encoder")
+        return object()
+
+    # When set, generate() returns this instead of filling the masks (for the failure paths).
+    generated_override: ClassVar[Any] = None
+
+    def generate(self, protein: Any, config: Any) -> Any:
+        """Fill each mask with the next of "WY", so the decoded residue identifies its position."""
+        self.proteins.append(protein)
+        self.generation_configs.append(config)
+        if self.generated_override is not None:
+            return self.generated_override
+        filled = list(protein.sequence)
+        for n_mask, index in enumerate(i for i, token in enumerate(filled) if token == "_"):
+            filled[index] = "WY"[n_mask % 2]
+        return types.SimpleNamespace(sequence="".join(filled))
+
 
 @pytest.fixture()
 def fake_if_sdk(fake_esm_sdk: type[_FakeSDKModel], monkeypatch: pytest.MonkeyPatch) -> type[_FakeIFModel]:
     """Install the fake inverse-folding SDK model and a protein type that records coordinates."""
     _FakeIFModel.proteins = []
+    _FakeSequenceTokenizer.requested_tokens = []
+    _FakeIFModel.generation_configs = []
+    _FakeIFModel.seeding_order = []
+    _FakeIFModel.generated_override = None
     cast(Any, sys.modules["esm.models.esm3"]).ESM3 = _FakeIFModel
+
+    class _GenerationConfig:
+        def __init__(self, **kwargs: Any) -> None:
+            """Record the generation settings the core asked for."""
+            self.kwargs = kwargs
+
+    class _ProteinError(Exception):
+        def __init__(self, error_code: int, error_msg: str) -> None:
+            """Mirror the SDK's error type (an Exception that is also a returned value)."""
+            super().__init__(error_msg)
+            self.error_code = error_code
+            self.error_msg = error_msg
+
+    cast(Any, sys.modules["esm.sdk.api"]).GenerationConfig = _GenerationConfig
+    cast(Any, sys.modules["esm.sdk.api"]).ESMProteinError = _ProteinError
 
     class _Protein(_FakeProtein):
         def __init__(self, sequence: str, coordinates: Any = None) -> None:
@@ -441,3 +487,177 @@ def test_esm3_inverse_fold_rejects_invalid_inputs(
     core = ESM3Core(config={"device": "cpu"})
     with pytest.raises(ValueError, match=match):
         core.inverse_fold("ACD", np.zeros(coords_shape, dtype=np.float32), positions=positions)
+
+
+def test_esm3_inverse_generate_decodes_masked_positions_and_keeps_the_rest(
+    fake_if_sdk: type[_FakeIFModel],
+) -> None:
+    """Masked residues are decoded in ``positions`` order, the rest are untouched, and ':' comes back."""
+    from boileroom.models.esm3.core import ESM3Core
+
+    core = ESM3Core(config={"device": "cpu"})
+    coords = np.arange(5 * 3 * 3, dtype=np.float32).reshape(5, 3, 3)
+    result = core.inverse_generate("ACD:EF", coords, positions=[3, 1], num_steps=2, temperature=0.05)
+
+    protein = fake_if_sdk.proteins[-1]
+    assert protein.sequence == "A_D|_F"  # same masking and conditioning as inverse_fold
+    assert tuple(protein.coordinates.shape) == (6, 37, 3)
+
+    # The fake fills masks "W" then "Y" in sdk order, so residue 1 -> "W" and residue 3 -> "Y".
+    assert result.sequence == "AWD:YF"
+    assert result.residues == "YW"  # ordered by `positions`, not by sequence position
+    assert result.positions.tolist() == [3, 1]
+
+    config = fake_if_sdk.generation_configs[-1].kwargs
+    assert config["track"] == "sequence"
+    assert config["schedule"] == "cosine"
+    assert config["num_steps"] == 2
+    assert config["temperature"] == 0.05
+    # Nothing was excluded by the caller, but the non-standard tokens are forbidden regardless.
+    from boileroom.models.esm3.core import NON_STANDARD_SEQUENCE_TOKENS
+
+    assert _FakeSequenceTokenizer.requested_tokens[-1] == sorted(NON_STANDARD_SEQUENCE_TOKENS)
+    assert len(config["invalid_ids"]) == len(NON_STANDARD_SEQUENCE_TOKENS)
+
+
+def test_esm3_inverse_generate_forbids_excluded_amino_acids(fake_if_sdk: type[_FakeIFModel]) -> None:
+    """Excluded residues become SDK invalid token ids, so the model cannot sample them."""
+    from boileroom.models.esm3.core import ESM3Core
+
+    core = ESM3Core(config={"device": "cpu"})
+    core.inverse_generate("ACD", np.zeros((3, 3, 3), dtype=np.float32), positions=[1], excluded_amino_acids="CW")
+
+    from boileroom.models.esm3.core import NON_STANDARD_SEQUENCE_TOKENS
+
+    # The caller's codes are forbidden on top of the always-forbidden ones, de-duplicated and sorted.
+    expected = sorted({*NON_STANDARD_SEQUENCE_TOKENS, "C", "W"})
+    assert _FakeSequenceTokenizer.requested_tokens[-1] == expected
+    assert fake_if_sdk.generation_configs[-1].kwargs["invalid_ids"] == [5 + 2 * i for i in range(len(expected))]
+
+
+@pytest.mark.parametrize(
+    ("excluded", "match"),
+    [
+        ("BX", "outside the standard 20"),
+        ("ACDEFGHIKLMNPQRSTVWY", "cannot exclude every amino acid"),
+    ],
+)
+def test_esm3_inverse_generate_rejects_bad_exclusions(
+    fake_if_sdk: type[_FakeIFModel], excluded: str, match: str
+) -> None:
+    """Unknown codes, or excluding all 20, raise before the model is touched."""
+    from boileroom.models.esm3.core import ESM3Core
+
+    core = ESM3Core(config={"device": "cpu"})
+    with pytest.raises(ValueError, match=match):
+        core.inverse_generate(
+            "ACD", np.zeros((3, 3, 3), dtype=np.float32), positions=[1], excluded_amino_acids=excluded
+        )
+    assert fake_if_sdk.generation_configs == []
+
+
+def test_esm3_inverse_generate_clamps_num_steps_to_the_masked_count(fake_if_sdk: type[_FakeIFModel]) -> None:
+    """The SDK cannot take more steps than masked tokens, and None means one step per position."""
+    from boileroom.models.esm3.core import ESM3Core
+
+    core = ESM3Core(config={"device": "cpu"})
+    coords = np.zeros((5, 3, 3), dtype=np.float32)
+
+    core.inverse_generate("ACD:EF", coords, positions=[3, 1], num_steps=20)
+    assert fake_if_sdk.generation_configs[-1].kwargs["num_steps"] == 2
+
+    core.inverse_generate("ACD:EF", coords, positions=[0, 2, 4], num_steps=None)
+    assert fake_if_sdk.generation_configs[-1].kwargs["num_steps"] == 3
+
+
+def test_esm3_inverse_generate_seed_makes_the_call_reproducible(fake_if_sdk: type[_FakeIFModel]) -> None:
+    """A given seed leaves the global torch RNG in the same state, so sampling repeats."""
+    torch = pytest.importorskip("torch")
+    from boileroom.models.esm3.core import ESM3Core
+
+    core = ESM3Core(config={"device": "cpu"})
+    coords = np.zeros((3, 3, 3), dtype=np.float32)
+
+    core.inverse_generate("ACD", coords, positions=[1], seed=7)
+    first = torch.rand(4)
+    core.inverse_generate("ACD", coords, positions=[1], seed=7)
+    assert torch.equal(first, torch.rand(4))
+
+
+def test_esm3_inverse_generate_forces_the_structure_encoder_before_seeding(
+    fake_if_sdk: type[_FakeIFModel], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Lazy encoder construction draws from the global RNG, so it must happen before the seed is set."""
+    torch = pytest.importorskip("torch")
+    from boileroom.models.esm3.core import ESM3Core
+
+    monkeypatch.setattr(torch, "manual_seed", lambda value: fake_if_sdk.seeding_order.append("seed"))
+    core = ESM3Core(config={"device": "cpu"})
+    coords = np.zeros((3, 3, 3), dtype=np.float32)
+
+    core.inverse_generate("ACD", coords, positions=[1], seed=7)
+    assert fake_if_sdk.seeding_order == ["encoder", "seed"]
+
+    # Without a seed there is no RNG state to protect, so neither happens.
+    fake_if_sdk.seeding_order = []
+    core.inverse_generate("ACD", coords, positions=[1])
+    assert fake_if_sdk.seeding_order == []
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"temperature": 0.0}, "temperature must be positive"),
+        ({"temperature": -1.0}, "temperature must be positive"),
+        ({"num_steps": 0}, "num_steps must be at least 1"),
+    ],
+)
+def test_esm3_inverse_generate_rejects_invalid_decoding_settings(
+    fake_if_sdk: type[_FakeIFModel], kwargs: dict[str, Any], match: str
+) -> None:
+    """Bad decoding settings raise ValueError before the model is touched."""
+    from boileroom.models.esm3.core import ESM3Core
+
+    core = ESM3Core(config={"device": "cpu"})
+    with pytest.raises(ValueError, match=match):
+        core.inverse_generate("ACD", np.zeros((3, 3, 3), dtype=np.float32), positions=[1], **kwargs)
+    assert fake_if_sdk.generation_configs == []
+
+
+def test_esm3_inverse_generate_shares_the_input_checks_with_inverse_fold(
+    fake_if_sdk: type[_FakeIFModel],
+) -> None:
+    """Position and coordinate validation is the same for both entry points."""
+    from boileroom.models.esm3.core import ESM3Core
+
+    core = ESM3Core(config={"device": "cpu"})
+    with pytest.raises(ValueError, match="duplicates"):
+        core.inverse_generate("ACD", np.zeros((3, 3, 3), dtype=np.float32), positions=[1, 1])
+    with pytest.raises(ValueError, match="shape"):
+        core.inverse_generate("ACD", np.zeros((2, 3, 3), dtype=np.float32), positions=[1])
+
+
+@pytest.mark.parametrize(
+    ("override", "match"),
+    [
+        ("error", r"generation failed \(500\): boom"),
+        (types.SimpleNamespace(sequence="A_D"), "undecoded"),
+        (types.SimpleNamespace(sequence="WWD"), "meant to stay fixed"),
+        (types.SimpleNamespace(sequence="AWDE"), "4 tokens for a 3-token prompt"),
+        (types.SimpleNamespace(sequence="AXD"), "non-standard residues"),
+    ],
+)
+def test_esm3_inverse_generate_raises_on_a_bad_sdk_result(
+    fake_if_sdk: type[_FakeIFModel], override: Any, match: str
+) -> None:
+    """An SDK error, a leftover mask, a changed fixed residue or a length change all raise."""
+    from boileroom.models.esm3.core import ESM3Core
+
+    if override == "error":
+        error_type = cast(Any, sys.modules["esm.sdk.api"]).ESMProteinError
+        override = error_type(500, "boom")
+    fake_if_sdk.generated_override = override
+
+    core = ESM3Core(config={"device": "cpu"})
+    with pytest.raises(RuntimeError, match=match):
+        core.inverse_generate("ACD", np.zeros((3, 3, 3), dtype=np.float32), positions=[1])

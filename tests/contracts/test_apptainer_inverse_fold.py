@@ -1,4 +1,4 @@
-"""Transport tests for the ESM3 ``inverse_fold`` Apptainer proxy and server route."""
+"""Transport tests for the ESM3 ``inverse_fold`` / ``inverse_generate`` Apptainer proxies and routes."""
 
 from __future__ import annotations
 
@@ -134,5 +134,157 @@ def test_server_route_maps_value_error_to_422_and_other_errors_to_500(monkeypatc
     assert response.status_code == 500
     assert json.loads(response.body) == {
         "detail": "Inverse folding failed: CUDA out of memory",
+        "error_type": "RuntimeError",
+    }
+
+
+def test_inverse_generate_proxy_sends_the_decoding_settings() -> None:
+    """The proxy posts to /inverse_generate with coordinates, positions and the decoding settings."""
+    seen: dict[str, Any] = {}
+    expected = SimpleNamespace(sequence="AW", residues="W")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["path"] = request.url.path
+        seen["body"] = json.loads(request.content)  # strict JSON parse of what was sent
+        return httpx.Response(200, json=serialize_transport_payload(expected, SECRET))
+
+    coords = np.arange(2 * 3 * 3, dtype=np.float32).reshape(2, 3, 3)
+    coords[1, 2] = np.nan
+    result = _proxy(httpx.MockTransport(handler)).inverse_generate(
+        "AC",
+        coords,
+        [np.int64(1)],
+        num_steps=np.int64(4),
+        temperature=0.05,
+        seed=np.int64(7),
+        excluded_amino_acids="C",
+    )
+
+    assert seen["path"] == "/inverse_generate"
+    assert seen["body"]["sequence"] == "AC"
+    assert seen["body"]["positions"] == [1]
+    assert seen["body"]["backbone_coordinates"][1][2] == [None, None, None]
+    assert (seen["body"]["num_steps"], seen["body"]["temperature"], seen["body"]["seed"]) == (4, 0.05, 7)
+    assert seen["body"]["excluded_amino_acids"] == "C"
+    assert result.sequence == "AW"
+
+
+def test_inverse_generate_proxy_sends_none_defaults() -> None:
+    """``num_steps`` and ``seed`` stay null when not given, so the core picks its own."""
+    seen: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json=serialize_transport_payload(SimpleNamespace(sequence="AC"), SECRET))
+
+    _proxy(httpx.MockTransport(handler)).inverse_generate("AC", np.zeros((2, 3, 3)), [0])
+
+    assert seen["body"]["num_steps"] is None
+    assert seen["body"]["seed"] is None
+    assert seen["body"]["temperature"] == 0.1
+    assert seen["body"]["excluded_amino_acids"] == ""
+
+
+def test_inverse_generate_server_route_forwards_settings_to_the_core(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The route rebuilds a float32 array (null -> NaN) and forwards the decoding settings."""
+    pytest.importorskip("fastapi")
+    from fastapi import HTTPException
+
+    from boileroom.backend import server
+    from boileroom.backend.transport import TRANSPORT_HMAC_KEY_ENV, deserialize_transport_payload
+
+    calls: list[dict[str, Any]] = []
+
+    class _Core:
+        def inverse_generate(
+            self,
+            sequence: str,
+            coordinates: np.ndarray,
+            positions: list[int],
+            num_steps: int | None = None,
+            temperature: float = 0.1,
+            seed: int | None = None,
+            excluded_amino_acids: str = "",
+        ) -> SimpleNamespace:
+            """Record the call and return a small output."""
+            calls.append(
+                {
+                    "sequence": sequence,
+                    "coordinates": coordinates,
+                    "positions": positions,
+                    "num_steps": num_steps,
+                    "temperature": temperature,
+                    "seed": seed,
+                    "excluded_amino_acids": excluded_amino_acids,
+                }
+            )
+            return SimpleNamespace(sequence="AW", residues="W")
+
+    monkeypatch.setenv(TRANSPORT_HMAC_KEY_ENV, SECRET)
+    monkeypatch.setattr(server, "_model_instance", _Core())
+    coords = np.zeros((2, 3, 3)).astype(object)
+    coords[1, 2] = None
+    request = server.InverseGenerateRequest(
+        sequence="AC",
+        backbone_coordinates=coords.tolist(),
+        positions=[1],
+        num_steps=4,
+        temperature=0.05,
+        seed=7,
+        excluded_amino_acids="C",
+    )
+
+    response = asyncio.run(server.inverse_generate(request))
+
+    call = calls[0]
+    assert (call["sequence"], call["positions"]) == ("AC", [1])
+    assert call["coordinates"].dtype == np.float32 and call["coordinates"].shape == (2, 3, 3)
+    assert np.isnan(call["coordinates"][1, 2]).all() and not np.isnan(call["coordinates"][0]).any()
+    assert (call["num_steps"], call["temperature"], call["seed"]) == (4, 0.05, 7)
+    assert call["excluded_amino_acids"] == "C"
+    assert deserialize_transport_payload(json.loads(response.body), SECRET).sequence == "AW"
+
+    monkeypatch.setattr(server, "_model_instance", SimpleNamespace())  # e.g. ESM-C: no inverse_generate
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(server.inverse_generate(request))
+    assert excinfo.value.status_code == 501
+    monkeypatch.setattr(server, "_model_instance", None)
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(server.inverse_generate(request))
+    assert excinfo.value.status_code == 503
+
+
+def test_inverse_generate_server_route_maps_value_error_to_422(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Invalid caller input (ValueError from the core) is a 422; unexpected failures stay a 500."""
+    pytest.importorskip("fastapi")
+    from fastapi import HTTPException
+
+    from boileroom.backend import server
+    from boileroom.backend.transport import TRANSPORT_HMAC_KEY_ENV
+
+    class _Core:
+        error: Exception = ValueError("temperature must be positive, got 0.0.")
+
+        def inverse_generate(self, *args: Any, **kwargs: Any) -> SimpleNamespace:
+            """Always fail with the configured error."""
+            raise self.error
+
+    core = _Core()
+    monkeypatch.setenv(TRANSPORT_HMAC_KEY_ENV, SECRET)
+    monkeypatch.setattr(server, "_model_instance", core)
+    request = server.InverseGenerateRequest(
+        sequence="AC", backbone_coordinates=np.zeros((2, 3, 3)).tolist(), positions=[1]
+    )
+
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(server.inverse_generate(request))
+    assert excinfo.value.status_code == 422
+    assert "temperature" in str(excinfo.value.detail)
+
+    core.error = RuntimeError("CUDA out of memory")
+    response = asyncio.run(server.inverse_generate(request))
+    assert response.status_code == 500
+    assert json.loads(response.body) == {
+        "detail": "Inverse generation failed: CUDA out of memory",
         "error_type": "RuntimeError",
     }

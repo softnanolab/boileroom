@@ -301,7 +301,7 @@ top_tokens = [id_to_token[token_id] for token_id in top_token_ids]
 
 
 ### ESM-C and ESM3
-- `ESMC` and `ESM3` are embedding-only in this release. Boileroom does not expose ESM3 generation or folding APIs yet.
+- `ESMC` is embedding-only. `ESM3` additionally exposes per-residue track logits (see below) and structure-conditioned sequence design through `inverse_fold` and `inverse_generate`. Boileroom does not expose ESM3's structure track: it cannot generate or decode a backbone, so folding still goes through a folding model.
 - Both wrappers use the 2026 Chan Zuckerberg Biohub [`esm`](https://github.com/Biohub/esm) fork, whose code is MIT-licensed (the same package that backs ESMFold2), and support Modal and Apptainer through the shared `embed` contract. They run on the shared `esmfold2` Biohub runtime image rather than a separate one.
 - Supported ESM-C model names are `esmc_300m` and `esmc_600m` (weights `biohub/esmc-300m-2024-12` / `biohub/esmc-600m-2024-12`). The cheap/default config is `esmc_300m`.
 - Supported ESM3 model names are `esm3_sm_open_v1` plus aliases `esm3-open`, `esm3-sm-open-v1`, and `esm3-open-2024-03` (weights `biohub/esm3-sm-open-v1`).
@@ -336,6 +336,8 @@ Optional fields:
 - `include_fields=["*"]` means all supported optional fields for that model.
 
 **ESM3 inverse folding.** `ESM3.inverse_fold(sequence, backbone_coordinates, positions)` masks the residues at `positions` (indices over all residues, chain breaks excluded), conditions ESM3 on the given `(n_residues, 3, 3)` N/CA/C backbone coordinates, and returns an `ESM3InverseFoldingOutput` with `logits` of shape `(n_positions, 20)` over `amino_acids` (`"ACDEFGHIKLMNPQRSTVWY"`). All positions are scored in one forward pass, so pass a single position for the distribution of one residue given all others.
+
+**ESM3 multi-residue inverse folding.** `ESM3.inverse_generate(sequence, backbone_coordinates, positions, num_steps=None, temperature=0.1, seed=None, excluded_amino_acids="")` masks the same way but decodes the masked residues iteratively on a cosine schedule, so each is sampled in the context of those already decoded. It returns an `ESM3InverseGenerationOutput` with the full decoded `sequence` (chains separated by `:`, residues outside `positions` unchanged) and the `residues` sampled at `positions`, in that order. `num_steps` is clamped to at most `len(positions)` and defaults to one step per position; there is little gain beyond about 20. ESM3 advises keeping `temperature` at or below 0.1 for sequence design, since above that the residues are close to randomly chosen. `excluded_amino_acids` lists one-letter codes the model may not sample (passed to the SDK as invalid token ids), for example `"C"` to keep cysteines out of a design. Use `inverse_fold` when you want per-position probabilities, and `inverse_generate` when you want to redesign a whole stretch at once.
 
 ### ESMFold2
 - ESMFold2 uses Biohub's ESMFold2 model family through the `esm` package (`esm>=3.4.1`, torch 2.11, CUDA 12.6 only), so it has its own runtime image instead of sharing the ESMFold/ESM-2 image.
