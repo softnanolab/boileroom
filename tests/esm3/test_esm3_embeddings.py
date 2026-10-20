@@ -383,6 +383,15 @@ class _FakeIFModel(_FakeSDKModel):
         return types.SimpleNamespace(logits=types.SimpleNamespace(sequence=values[None]))
 
     generation_configs: ClassVar[list[Any]] = []
+    # Records "encoder" when the structure encoder is forced and "seed" when the RNG is seeded, so a test
+    # can pin the order: seeding must come last or lazy module construction eats the seeded state.
+    seeding_order: ClassVar[list[str]] = []
+
+    def get_structure_encoder(self) -> Any:
+        """Stand in for the SDK's lazily built structure encoder."""
+        self.seeding_order.append("encoder")
+        return object()
+
     # When set, generate() returns this instead of filling the masks (for the failure paths).
     generated_override: ClassVar[Any] = None
 
@@ -404,6 +413,7 @@ def fake_if_sdk(fake_esm_sdk: type[_FakeSDKModel], monkeypatch: pytest.MonkeyPat
     _FakeIFModel.proteins = []
     _FakeSequenceTokenizer.requested_tokens = []
     _FakeIFModel.generation_configs = []
+    _FakeIFModel.seeding_order = []
     _FakeIFModel.generated_override = None
     cast(Any, sys.modules["esm.models.esm3"]).ESM3 = _FakeIFModel
 
@@ -572,6 +582,26 @@ def test_esm3_inverse_generate_seed_makes_the_call_reproducible(fake_if_sdk: typ
     first = torch.rand(4)
     core.inverse_generate("ACD", coords, positions=[1], seed=7)
     assert torch.equal(first, torch.rand(4))
+
+
+def test_esm3_inverse_generate_forces_the_structure_encoder_before_seeding(
+    fake_if_sdk: type[_FakeIFModel], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Lazy encoder construction draws from the global RNG, so it must happen before the seed is set."""
+    torch = pytest.importorskip("torch")
+    from boileroom.models.esm3.core import ESM3Core
+
+    monkeypatch.setattr(torch, "manual_seed", lambda value: fake_if_sdk.seeding_order.append("seed"))
+    core = ESM3Core(config={"device": "cpu"})
+    coords = np.zeros((3, 3, 3), dtype=np.float32)
+
+    core.inverse_generate("ACD", coords, positions=[1], seed=7)
+    assert fake_if_sdk.seeding_order == ["encoder", "seed"]
+
+    # Without a seed there is no RNG state to protect, so neither happens.
+    fake_if_sdk.seeding_order = []
+    core.inverse_generate("ACD", coords, positions=[1])
+    assert fake_if_sdk.seeding_order == []
 
 
 @pytest.mark.parametrize(

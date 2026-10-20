@@ -668,6 +668,9 @@ class ESM3Core(_BaseESM3EmbeddingCore):
         with Timer("ESM3 preprocessing") as preprocess_timer:
             protein = ESMProtein(sequence=masked_sdk_sequence, coordinates=torch.from_numpy(atom37))
             if seed is not None:
+                # The SDK builds the structure encoder lazily, and constructing its modules draws from the
+                # global RNG. Left until generate(), that would consume the seeded state on the first call
+                # only, so the same seed would not reproduce. Force it before seeding.
                 self.model.get_structure_encoder()
                 torch.manual_seed(int(seed))
         # no_grad, not inference_mode: generate() tokenizes the structure internally, and the VQ-VAE encoder
