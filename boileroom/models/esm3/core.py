@@ -668,6 +668,7 @@ class ESM3Core(_BaseESM3EmbeddingCore):
         with Timer("ESM3 preprocessing") as preprocess_timer:
             protein = ESMProtein(sequence=masked_sdk_sequence, coordinates=torch.from_numpy(atom37))
             if seed is not None:
+                self.model.get_structure_encoder()
                 torch.manual_seed(int(seed))
         # no_grad, not inference_mode: generate() tokenizes the structure internally, and the VQ-VAE encoder
         # feeds inference-mode tensors into autograd-tracked ops, which inference_mode forbids.
