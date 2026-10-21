@@ -607,8 +607,12 @@ def test_esm3_inverse_generate_forces_the_structure_encoder_before_seeding(
 @pytest.mark.parametrize(
     ("kwargs", "match"),
     [
-        ({"temperature": 0.0}, "temperature must be positive"),
-        ({"temperature": -1.0}, "temperature must be positive"),
+        ({"temperature": 0.0}, "temperature must be finite and positive"),
+        ({"temperature": -1.0}, "temperature must be finite and positive"),
+        # NaN and infinity survive a bare `<= 0` check; infinity would silently sample uniformly.
+        ({"temperature": float("nan")}, "temperature must be finite and positive"),
+        ({"temperature": float("inf")}, "temperature must be finite and positive"),
+        ({"temperature": float("-inf")}, "temperature must be finite and positive"),
         ({"num_steps": 0}, "num_steps must be at least 1"),
     ],
 )

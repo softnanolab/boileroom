@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import importlib.metadata
 import logging
+import math
 import os
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -613,8 +614,9 @@ class ESM3Core(_BaseESM3EmbeddingCore):
             take more steps than there are masked tokens. ``None`` uses one step per masked
             position. There is little gain beyond about 20 steps.
         temperature : float
-            Sampling temperature. ESM3 advises staying at or below 0.1 for sequence design: above
-            that the distribution flattens and the residues are close to randomly chosen.
+            Sampling temperature, which must be finite and positive. ESM3 advises staying at or below
+            0.1 for sequence design: above that the distribution flattens and the residues are close to
+            randomly chosen.
         seed : int | None
             Seeds the global ``torch`` RNG before decoding, making the call reproducible. ``None``
             leaves the RNG untouched.
@@ -631,15 +633,18 @@ class ESM3Core(_BaseESM3EmbeddingCore):
         Raises
         ------
         ValueError
-            If ``temperature`` is not positive, ``num_steps`` is below 1, ``excluded_amino_acids``
+            If ``temperature`` is not finite and positive, ``num_steps`` is below 1, ``excluded_amino_acids``
             holds an unknown or every amino acid, or the inputs fail the checks in
             :meth:`_prepare_masked_protein`.
         RuntimeError
             If the SDK reports an error, leaves a masked residue undecoded, decodes a non-standard
             residue, or changes a residue that was meant to stay fixed.
         """
-        if temperature <= 0.0:
-            raise ValueError(f"temperature must be positive, got {temperature}.")
+        # NaN and infinity both survive a bare ``<= 0`` check, since every NaN comparison is False. NaN
+        # reaches the sampler as a NaN logit scale, and infinity flattens the distribution to uniform, so a
+        # caller computing a temperature schedule can silently get random residues instead of designed ones.
+        if not math.isfinite(temperature) or temperature <= 0.0:
+            raise ValueError(f"temperature must be finite and positive, got {temperature}.")
         if num_steps is not None and num_steps < 1:
             raise ValueError(f"num_steps must be at least 1, got {num_steps}.")
         excluded = sorted(set(excluded_amino_acids))
