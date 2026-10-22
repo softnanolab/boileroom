@@ -269,3 +269,38 @@ def test_every_served_output_records_the_gpu_memory(stubs: Path, tmp_path: Path)
     assert [call["call"] for call in calls] == ["fold", "embed", "inverse_fold"]
     for call in calls:
         assert call["runtime"] == {"python": "3.12", "gpu.mem.used_mib": "2048", "gpu.mem.total_mib": "81920"}
+
+
+@pytest.mark.parametrize(
+    "device,config,expected,visible",
+    [
+        ("cpu", {}, "cpu", None),
+        ("cpu", {"device": None}, "cpu", None),
+        ("cuda:3", {"device": None}, "cuda:0", "3"),
+        ("cuda:3", {}, "cuda:0", "3"),
+        ("cuda:2", {"device": "cuda:0"}, "cuda:0", "2"),
+        ("cuda:1", {"device": "cpu"}, "cpu", "1"),
+    ],
+)
+def test_minifold_effective_device_through_actual_server(stubs, tmp_path, device, config, expected, visible):
+    """Exercise server config/visibility plus real core resolution, without acquiring weights."""
+    script = """
+import json, os
+from boileroom.models.minifold.core import MiniFoldCore
+MiniFoldCore._initialize = lambda self: None
+from boileroom.backend import server
+server._load_model()
+print(json.dumps({"device": str(server._model_instance._resolve_device()), "visible": os.environ.get("CUDA_VISIBLE_DEVICES")}))
+"""
+    env = _env(
+        stubs,
+        tmp_path,
+        "LoadsCore",
+        MODEL_CLASS="boileroom.models.minifold.core.MiniFoldCore",
+        DEVICE=device,
+        MODEL_CONFIG=json.dumps(config),
+    )
+    env.pop("CUDA_VISIBLE_DEVICES", None)
+    result = subprocess.run([sys.executable, "-c", script], env=env, capture_output=True, text=True, timeout=120)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout.strip().splitlines()[-1]) == {"device": expected, "visible": visible}
