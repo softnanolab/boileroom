@@ -193,11 +193,11 @@ class Chai1Core(FoldingAlgorithm):
         cache_enabled = bool(config["msa_cache_enabled"])
         alignments = provided_alignments(config.get("msa"), len(chains))
         provided = stage_provided_alignments(alignments, chains, buffer_path / "provided_msa")
-        cache = self._msa_cache()
         sources: dict[int, str] = {}
         fetched_count = 0
 
         def lookup(sequences: Any) -> dict[str, Path]:
+            cache = self._msa_cache()  # built when used: the constructor creates the cache directory
             found: dict[str, Path] = {}
             for sequence in sequences:
                 path = cache.get(cache_key(sequence, str(config["msa_server_url"])))
@@ -212,7 +212,7 @@ class Chai1Core(FoldingAlgorithm):
 
         def store(sequence: str, path: Path) -> None:
             try:
-                cache.put(cache_key(sequence, str(config["msa_server_url"])), path)
+                self._msa_cache().put(cache_key(sequence, str(config["msa_server_url"])), path)
             except Exception as e:
                 logger.warning(f"Error saving the MSA to the cache: {e}. Continuing without caching.")
 
