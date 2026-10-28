@@ -15,7 +15,10 @@ from biotite.structure import AtomArray
 from biotite.structure.io.pdbx import CIFFile, get_structure
 
 from ...base import FoldingAlgorithm, PredictionMetadata
+from ...msa_cache import MSACache
+from ...msa_sources import AUTO, provided_alignments, resolve_chain_msas
 from ...utils import MODAL_MODEL_DIR, Timer
+from .msa import assemble_msa_directory, cache_key, expected_basename, stage_provided_alignments
 from .types import Chai1Output
 
 if TYPE_CHECKING:
@@ -36,10 +39,15 @@ class Chai1Core(FoldingAlgorithm):
         "seed": None,
         "use_esm_embeddings": False,
         "use_msa_server": False,
+        "msa_server_url": "https://api.colabfold.com",
+        "msa_cache_enabled": True,  # cache the MSA fetched from the server for each chain, by sequence
+        "msa": None,  # caller-supplied alignments: one A3M text (or None) per chain, used for the sequence each is of
         "use_templates_server": False,
         "constraint_path": None,  # optional per-call restraints: a CSV path or a sequence of restraint mappings
         "include_fields": None,  # Optional[List[str]] - controls which fields to include in output
     }
+    #: ``options["msa"]`` is one A3M text (or ``None``) per chain; see :mod:`boileroom.models.chai.msa`.
+    SUPPORTS_USER_MSA: ClassVar[bool] = True
     # Static config keys that can only be set at initialization
     STATIC_CONFIG_KEYS: ClassVar[frozenset[str]] = frozenset({"device"})
 
@@ -80,7 +88,6 @@ class Chai1Core(FoldingAlgorithm):
         self.ready = True
 
     def fold(self, sequences: str | Sequence[str], options: dict | None = None) -> Chai1Output:
-        # TODO: ADD msa_directory: Path | None = None,
         # TODO: constraint path not tested properly
         # TODO: ADD template_hits_path: Path | None = None,
 
@@ -120,6 +127,7 @@ class Chai1Core(FoldingAlgorithm):
             buffer_path = Path(buffer_dir)
             with Timer("Chai-1 preprocessing") as preprocess_timer:
                 fasta_path = self._write_fasta(validated_sequences, buffer_path)
+                msa_directory, chai_server = self._prepare_msas(validated_sequences[0], effective_config, buffer_path)
                 constraint_path = self._write_constraint(buffer_path, effective_config)
                 output_dir = buffer_path / "outputs"
                 output_dir.mkdir(parents=True, exist_ok=True)
@@ -136,7 +144,8 @@ class Chai1Core(FoldingAlgorithm):
                     num_diffn_samples=effective_config["num_diffn_samples"],
                     seed=effective_config["seed"],
                     use_esm_embeddings=effective_config["use_esm_embeddings"],
-                    use_msa_server=effective_config["use_msa_server"],
+                    msa_directory=msa_directory,
+                    use_msa_server=chai_server,
                     use_templates_server=effective_config["use_templates_server"],
                     device=str(self._device),
                     low_memory=False,
@@ -152,6 +161,77 @@ class Chai1Core(FoldingAlgorithm):
                 )
 
         return output
+
+    def _msa_cache(self) -> MSACache:
+        """The shared content-addressed cache of the alignments fetched from the MSA server."""
+        base = Path(os.environ.get("MODAL_MODEL_DIR") or self.model_dir or MODAL_MODEL_DIR) / "chai"
+        return MSACache(base, suffix=".pqt")
+
+    def _fetch_chain_msa(self, sequence: str, directory: Path, config: dict[str, Any]) -> Path:
+        """Fetch the alignment of one chain on its own (unpaired) from the MSA server and return its file."""
+        from chai_lab.data.dataset.msas.colabfold import generate_colabfold_msas
+
+        directory.mkdir(parents=True, exist_ok=True)  # chai-lab needs an existing, empty directory
+        generate_colabfold_msas(
+            protein_seqs=[sequence],
+            msa_dir=directory,
+            msa_server_url=str(config["msa_server_url"]),
+        )
+        files = list(directory.glob("*.aligned.pqt"))
+        if len(files) != 1:
+            raise RuntimeError(f"The MSA server returned no alignment for a chain of {len(sequence)} residues")
+        return files[0]
+
+    def _prepare_msas(self, entry: str, config: dict[str, Any], buffer_path: Path) -> tuple[Path | None, bool]:
+        """The ``msa_directory`` for chai-lab and whether chai-lab itself should call the MSA server.
+
+        Each chain gets one source (see :func:`boileroom.msa_sources.resolve_chain_msas`); chai-lab only ever reads
+        files, except when nothing is cached or provided and it is left to generate all MSAs, together with pairing.
+        """
+        chains = entry.split(":")
+        use_server = bool(config["use_msa_server"])
+        cache_enabled = bool(config["msa_cache_enabled"])
+        alignments = provided_alignments(config.get("msa"), len(chains))
+        provided = stage_provided_alignments(alignments, chains, buffer_path / "provided_msa")
+        cache = self._msa_cache()
+        sources: dict[int, str] = {}
+        fetched_count = 0
+
+        def lookup(sequences: Any) -> dict[str, Path]:
+            found: dict[str, Path] = {}
+            for sequence in sequences:
+                path = cache.get(cache_key(sequence, str(config["msa_server_url"])))
+                if path is not None:
+                    found[sequence] = path
+            return found
+
+        def fetch(sequence: str) -> Path:
+            nonlocal fetched_count
+            fetched_count += 1
+            return self._fetch_chain_msa(sequence, buffer_path / f"fetched_msa_{fetched_count}", config)
+
+        def store(sequence: str, path: Path) -> None:
+            try:
+                cache.put(cache_key(sequence, str(config["msa_server_url"])), path)
+            except Exception as e:
+                logger.warning(f"Error saving the MSA to the cache: {e}. Continuing without caching.")
+
+        fields = resolve_chain_msas(
+            chains,
+            provided=provided,
+            use_msa_server=use_server,
+            cache_enabled=cache_enabled,
+            lookup=lookup,
+            fetch=fetch,
+            store=store,
+            sources=sources,
+        )
+        logger.info(
+            "Chai-1 MSA source per chain: " + ", ".join(f"{chr(65 + i)}={s}" for i, s in sorted(sources.items()))
+        )
+        if all(field == AUTO for field in fields.values()):
+            return None, True  # nothing cached or provided and the cache is off: chai-lab generates and pairs the MSAs
+        return assemble_msa_directory(chains, fields, buffer_path / "msas", expected_basename), False
 
     def _write_constraint(self, buffer_path: Path, config: dict) -> Path | None:
         """Write a constraint CSV file into buffer_path when constraint definitions are present in config.

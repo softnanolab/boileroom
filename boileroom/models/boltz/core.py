@@ -18,6 +18,7 @@ from boltz.main import (
     BoltzSteeringParams,
     MSAModuleArgs,
     PairformerArgsV2,
+    compute_msa,
     download_boltz2,
     process_inputs,
 )
@@ -27,6 +28,14 @@ from pytorch_lightning import Trainer, seed_everything
 from ...base import FoldingAlgorithm
 from ...msa_cache import MSACache
 from ...utils import MODAL_MODEL_DIR, Timer, safe_mkdir
+from .msa import (
+    cache_key,
+    chains_to_fasta,
+    provided_alignments,
+    resolve_chain_msas,
+    split_chains,
+    stage_provided_alignments,
+)
 from .types import Boltz2Output
 
 logger = logging.getLogger(__name__)
@@ -56,10 +65,13 @@ class Boltz2Core(FoldingAlgorithm):
         "max_msa_seqs": 8192,
         "subsample_msa": True,
         "num_subsampled_msa": 1024,
-        "msa_cache_enabled": True,  # Enable/disable MSA caching
+        "msa_cache_enabled": True,  # cache the MSA fetched from the server for each chain, by sequence
+        "msa": None,  # caller-supplied alignments: one A3M text (or None) per chain, used for the sequence each is of
         # Paths
         "cache_dir": None,  # defaults to Path(MODAL_MODEL_DIR)/"boltz"
     }
+    #: ``options["msa"]`` is one A3M text (or ``None``) per chain; see :mod:`boileroom.models.boltz.msa`.
+    SUPPORTS_USER_MSA: ClassVar[bool] = True
     # Static config keys that can only be set at initialization
     STATIC_CONFIG_KEYS: ClassVar[frozenset[str]] = frozenset(
         {
@@ -222,7 +234,18 @@ class Boltz2Core(FoldingAlgorithm):
         """Return the shared content-addressed cache for Boltz ``.csv`` MSAs."""
         return MSACache(self._msa_cache_base_dir(), suffix=".csv")
 
-    def _check_msa_cache(self, sequences: list[str], *, cache_enabled: bool) -> dict[str, Path]:
+    def _msa_cache_key(self, sequence: str, config: dict[str, Any] | None = None) -> str:
+        """Cache key of the MSA of ``sequence`` under ``config`` (the effective configuration of the call)."""
+        config = self.config if config is None else config
+        return cache_key(
+            sequence,
+            str(config.get("msa_server_url", "https://api.colabfold.com")),
+            int(config.get("max_msa_seqs", 8192)),
+        )
+
+    def _check_msa_cache(
+        self, sequences: list[str], *, cache_enabled: bool, config: dict[str, Any] | None = None
+    ) -> dict[str, Path]:
         """Return cached MSA paths for the sequences present in the cache.
 
         Parameters
@@ -231,6 +254,8 @@ class Boltz2Core(FoldingAlgorithm):
             Individual protein sequences (after splitting multimers on ``:``).
         cache_enabled : bool
             When ``False`` the cache is bypassed and an empty mapping is returned.
+        config : dict, optional
+            The effective configuration of the call, which keys the cache entries (default: the instance config).
 
         Returns
         -------
@@ -242,81 +267,56 @@ class Boltz2Core(FoldingAlgorithm):
         cache = self._msa_cache()
         cached_paths: dict[str, Path] = {}
         for sequence in sequences:
-            path = cache.get(MSACache.hash_key(sequence))
+            path = cache.get(self._msa_cache_key(sequence, config))
             if path is not None:
                 cached_paths[sequence] = path
         return cached_paths
 
-    def _save_msa_to_cache(self, sequence: str, msa_source_path: Path, *, cache_enabled: bool) -> None:
-        """Copy a single generated ``.csv`` MSA into the shared cache."""
-        if not cache_enabled:
-            return
-        self._msa_cache().put(MSACache.hash_key(sequence), msa_source_path)
-
-    def _save_msas_to_cache(
-        self,
-        processed: dict[str, Any],
-        individual_chains: list[str],
-        out_dir: Path,
-        cached_sequences: dict[str, Path] | None = None,
-        *,
-        cache_enabled: bool,
+    def _save_msa_to_cache(
+        self, sequence: str, msa_source_path: Path, *, cache_enabled: bool, config: dict[str, Any] | None = None
     ) -> None:
-        """Extract and save MSAs from preprocessing output to cache.
-
-        Parameters
-        ----------
-        processed : Dict[str, Any]
-            Dictionary returned by _prepare_inputs containing manifest and directory paths.
-        individual_chains : List[str]
-            List of individual protein sequences (after splitting by colon for multimers).
-            Order matches entity_id assignment (entity 0 = chains[0], entity 1 = chains[1], etc.).
-        out_dir : Path
-            Output directory where preprocessing wrote MSA files. Should contain msa/ subdirectory.
-        cached_sequences : Optional[Dict[str, Path]]
-            Optional dictionary of sequences that were already cached. These will be skipped.
-        """
+        """Copy the ``.csv`` MSA fetched for ``sequence`` into the shared cache."""
         if not cache_enabled:
             return
+        self._msa_cache().put(self._msa_cache_key(sequence, config), msa_source_path)
 
-        cached_sequences = cached_sequences or {}
-
+    def _lookup_cached_msas(self, chains: Sequence[str], config: dict[str, Any]) -> dict[str, Path]:
+        """Cached MSA files of ``chains``; a broken cache is reported and treated as empty."""
         try:
-            manifest = processed.get("manifest")
-            if not manifest or not manifest.records:
-                return
-
-            # Get the target record
-            record = manifest.records[0]
-            target_id = record.id
-
-            # Find MSA files in out_dir/msa/ directory
-            msa_raw_dir = out_dir / "msa"
-            if not msa_raw_dir.exists():
-                return
-
-            # Find all protein chains and their entity IDs
-            # Entity IDs are assigned sequentially: first chain gets entity 0, second gets entity 1, etc.
-            protein_chains = [chain for chain in record.chains if hasattr(chain, "entity_id")]
-            protein_chains.sort(key=lambda c: c.entity_id)
-
-            # Match sequences to entity IDs by order
-            # Only cache MSAs for sequences that were actually generated (not from cache)
-            for idx, chain in enumerate(protein_chains):
-                entity_id = chain.entity_id
-                if idx < len(individual_chains):
-                    sequence = individual_chains[idx]
-                    # Skip if this sequence was already cached
-                    if sequence in cached_sequences:
-                        continue
-
-                    msa_filename = f"{target_id}_{entity_id}.csv"
-                    msa_source_path = msa_raw_dir / msa_filename
-
-                    if msa_source_path.exists() and msa_source_path.is_file():
-                        self._save_msa_to_cache(sequence, msa_source_path, cache_enabled=cache_enabled)
+            cached = self._check_msa_cache(list(chains), cache_enabled=True, config=config)
         except Exception as e:
-            logger.warning(f"Error saving MSAs to cache: {e}. Continuing without caching.")
+            logger.warning(f"Error checking MSA cache: {e}. Continuing without cache.")
+            return {}
+        if cached:
+            logger.info(f"Found {len(cached)} cached MSA(s) out of {len(chains)} sequence(s)")
+        return cached
+
+    def _store_msa(self, sequence: str, path: Path, config: dict[str, Any]) -> None:
+        """Cache a fetched MSA; a failure to cache is reported and does not fail the fold."""
+        try:
+            self._save_msa_to_cache(sequence, path, cache_enabled=True, config=config)
+        except Exception as e:
+            logger.warning(f"Error saving the MSA to the cache: {e}. Continuing without caching.")
+
+    def _fetch_chain_msa(self, sequence: str, directory: Path, config: dict[str, Any]) -> Path:
+        """Fetch the MSA of one chain on its own (unpaired) from the MSA server and return its ``.csv`` file.
+
+        This is the function Boltz itself uses to generate MSAs, called for a single sequence, so that the result
+        depends on the sequence alone and can be cached.
+        """
+        directory.mkdir(parents=True, exist_ok=True)
+        name = MSACache.hash_key(sequence)[:16]
+        compute_msa(
+            data={name: sequence},
+            target_id=name,
+            msa_dir=directory,
+            msa_server_url=str(config.get("msa_server_url", "https://api.colabfold.com")),
+            msa_pairing_strategy=str(config.get("msa_pairing_strategy", "greedy")),
+        )
+        path = directory / f"{name}.csv"
+        if not path.is_file():
+            raise RuntimeError(f"The MSA server returned no MSA for a chain of {len(sequence)} residues")
+        return path
 
     def _sequences_to_fasta(
         self, sequences: list[str], msa_paths: dict[str, Path] | None = None, config: dict | None = None
@@ -326,54 +326,33 @@ class Boltz2Core(FoldingAlgorithm):
         Accepts a list of sequence entries where each entry is either a single sequence (e.g., "SEQ")
         or a colon-separated multimer entry (e.g., "A:B"). Whitespace is trimmed and empty parts are ignored.
         Chain identifiers are assigned sequentially as A, B, C, ... and used as FASTA headers.
-        If msa_paths is provided, MSA paths are injected into FASTA headers as the third field.
-        When use_msa_server=False and no MSA paths are provided, uses "empty" to enable single-sequence mode.
+        A chain whose sequence is in ``msa_paths`` gets that MSA file as the third header field; otherwise it gets
+        ``empty`` (a single-sequence run) if ``use_msa_server=False`` and nothing (Boltz generates its MSA) if not.
+        :meth:`fold` assigns the MSA of every chain with :func:`~boileroom.models.boltz.msa.resolve_chain_msas`
+        instead, which also handles caller alignments and never mixes custom and generated MSAs.
 
         Parameters
         ----------
         sequences : List[str]
             Sequence entries or colon-separated multimer entries.
         msa_paths : Optional[Dict[str, Path]]
-            Optional dictionary mapping sequence string to cached MSA Path. If provided, paths are injected
-            into FASTA headers as the third field: `>X|protein|{msa_path}`.
+            Optional mapping from sequence to the MSA file of that sequence.
         config : Optional[dict]
-            Optional configuration dictionary. If provided and `use_msa_server=False`, sequences without
-            MSA paths will use "empty" in the FASTA header to enable single-sequence mode.
+            Optional configuration dictionary; ``use_msa_server`` selects ``empty`` for chains without an MSA file.
 
         Returns
         -------
         str
-            FASTA-formatted text where each chain has a header of the form `>X|protein|` (or `>X|protein|{msa_path}`
-            if msa_paths is provided, or `>X|protein|empty` if use_msa_server=False and no MSA paths) followed
-            by the corresponding sequence on the next line.
+            FASTA-formatted text where each chain has a header of the form ``>X|protein|<msa field>`` followed by the
+            corresponding sequence on the next line.
         """
-        chains: list[str] = []
-        for entry in sequences:
-            parts = entry.split(":") if ":" in entry else [entry]
-            chains.extend([p.strip() for p in parts if p.strip()])
-
-        headers = []
-        msa_paths_dict = msa_paths or {}
-        use_msa_server = True
-        if config is not None:
-            use_msa_server = bool(config.get("use_msa_server", True))
-
-        for idx, seq in enumerate(chains):
-            chain_name = chr(65 + idx)  # A, B, C...
-            # If MSA path is provided for this sequence, inject it into the header
-            if seq in msa_paths_dict:
-                msa_path = msa_paths_dict[seq]
-                # Use absolute path to ensure Boltz2 can resolve it
-                msa_path_abs = msa_path.resolve() if isinstance(msa_path, Path) else Path(msa_path).resolve()
-                headers.append(f">{chain_name}|protein|{msa_path_abs}")
-            else:
-                # If use_msa_server=False and no MSA path, use "empty" for single-sequence mode
-                if not use_msa_server:
-                    headers.append(f">{chain_name}|protein|empty")
-                else:
-                    headers.append(f">{chain_name}|protein|")
-            headers.append(seq)
-        return "\n".join(headers)
+        chains = split_chains(sequences)
+        use_msa_server = True if config is None else bool(config.get("use_msa_server", True))
+        paths = msa_paths or {}
+        fields: dict[int, Any] = {
+            index: paths.get(sequence, "" if use_msa_server else "empty") for index, sequence in enumerate(chains)
+        }
+        return chains_to_fasta(chains, fields)
 
     def _prepare_inputs(self, fasta_text: str, work_dir: Path, cache_dir: Path, config: dict) -> dict[str, Any]:
         """Prepare input files and run Boltz-2 preprocessing to produce a processed manifest and standard input/output directories.
@@ -779,24 +758,10 @@ class Boltz2Core(FoldingAlgorithm):
         metadata = dataclasses.replace(self._metadata_template)
         metadata.sequence_lengths = self._compute_sequence_lengths(validated_sequences)
 
-        # Split sequences into individual chains for cache checking
-        individual_chains: list[str] = []
-        for entry in validated_sequences:
-            parts = entry.split(":") if ":" in entry else [entry]
-            individual_chains.extend([p.strip() for p in parts if p.strip()])
-
-        # Check MSA cache before preprocessing
-        cached_msa_paths: dict[str, Path] = {}
+        # Individual chains: the MSA of each one is decided on its own
+        individual_chains = split_chains(validated_sequences)
+        use_msa_server = bool(effective_config.get("use_msa_server", True))
         msa_cache_enabled = bool(effective_config.get("msa_cache_enabled", True))
-        if msa_cache_enabled:
-            try:
-                cached_msa_paths = self._check_msa_cache(individual_chains, cache_enabled=msa_cache_enabled)
-                if cached_msa_paths:
-                    logger.info(
-                        f"Found {len(cached_msa_paths)} cached MSA(s) out of {len(individual_chains)} sequence(s)"
-                    )
-            except Exception as e:
-                logger.warning(f"Error checking MSA cache: {e}. Continuing without cache.")
 
         # Always use a temporary working directory on the machine
         cache_dir_str = effective_config.get("cache_dir")
@@ -811,31 +776,23 @@ class Boltz2Core(FoldingAlgorithm):
             work_path = Path(tmp).resolve()
 
             with Timer("Boltz-2 preprocessing") as preprocess_timer:
-                # Pass cached MSA paths to FASTA generation
-                fasta_text = self._sequences_to_fasta(
-                    validated_sequences,
-                    msa_paths=cached_msa_paths if cached_msa_paths else None,
-                    config=effective_config,
+                alignments = provided_alignments(effective_config.get("msa"), len(individual_chains))
+                provided = stage_provided_alignments(alignments, individual_chains, work_path / "provided_msa")
+                sources: dict[int, str] = {}
+                fields = resolve_chain_msas(
+                    individual_chains,
+                    provided=provided,
+                    use_msa_server=use_msa_server,
+                    cache_enabled=msa_cache_enabled,
+                    lookup=lambda chains: self._lookup_cached_msas(chains, effective_config),
+                    fetch=lambda sequence: self._fetch_chain_msa(sequence, work_path / "fetched_msa", effective_config),
+                    store=lambda sequence, path: self._store_msa(sequence, path, effective_config),
+                    sources=sources,
                 )
+                msa_report = ", ".join(f"{chr(65 + index)}={source}" for index, source in sorted(sources.items()))
+                logger.info(f"Boltz-2 MSA source per chain: {msa_report}")
+                fasta_text = chains_to_fasta(individual_chains, fields)
                 processed = self._prepare_inputs(fasta_text, work_path, cache_dir, effective_config)
-
-                # Save newly generated MSAs to cache (before temp cleanup)
-                if msa_cache_enabled:
-                    try:
-                        # Extract out_dir from processed dict (targets_dir is out_dir/processed/structures)
-                        targets_dir = processed.get("targets_dir")
-                        if targets_dir:
-                            # out_dir is the parent of "processed" directory
-                            out_dir = targets_dir.parent.parent
-                            self._save_msas_to_cache(
-                                processed,
-                                individual_chains,
-                                out_dir,
-                                cached_sequences=cached_msa_paths,
-                                cache_enabled=msa_cache_enabled,
-                            )
-                    except Exception as e:
-                        logger.warning(f"Error saving MSAs to cache: {e}. Continuing without caching.")
 
             datamodule = self._build_datamodule(processed, int(effective_config.get("num_workers", 2)), cache_dir)
 

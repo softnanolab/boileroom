@@ -11,12 +11,17 @@ from biotite.structure.io.pdbx import CIFFile, get_structure
 
 from boileroom import Boltz2
 from boileroom.constants import restype_3to1
+from boileroom.models.boltz.msa import cache_key
 from boileroom.models.boltz.types import Boltz2Output
-from boileroom.msa_cache import MSACache
 
 pytestmark = [pytest.mark.integration, pytest.mark.slow, pytest.mark.gpu, pytest.mark.xdist_group("boltz2")]
 
 nipah_virus_sequence = "ICLQKTSNQILKPKLISYTLGQSGTCITDPLLAMDEGYFAYSHLERIGSCSRGVSKQRIIGVGEVLDRGDEVPSLFMTNVWTPPNPNTVYHCSAVYNNEFYYVLCAVSTVGDPILNSTYWSGSLMMTRLAVKPKSNGGGYNQHQLALRSIEKGRYDKVMPYGPSGIKQGDTLYFPAVGFLVRTEFKYNDSNCPITKCQYSKPENCRLSMGIRPNSHYILRSGLLKYNLSDGENPKVVFIEISDQRLSIGSPSKIYDSLGQPVFYQASFSWDTMIKFGDVLTVNPLVVNWRNNTVISRPGQSQCPRFNTCPEICWEGVYNDAFLIDRINWISAGVFLDSNQTAENPVFTVFKDNEILYRAQLASEDTNAQKTITNCFLLKNKIWCISLVEIYDTGDNVIRPKLFAVKIPEQCTH"
+
+
+def _msa_key(sequence: str) -> str:
+    """Key of the cached MSA of ``sequence`` under the default server settings."""
+    return cache_key(sequence, "https://api.colabfold.com", 8192)
 
 
 @pytest.fixture(scope="module")
@@ -153,12 +158,10 @@ def test_boltz2_msa_cache_hit(test_sequences: dict[str, str]):
     """
     pytest.importorskip("pytorch_lightning", reason="requires pytorch_lightning (backend dependency)")
     pytest.importorskip("boltz", reason="requires boltz (backend dependency)")
-    import hashlib
-
     from boileroom.models.boltz.core import Boltz2Core
 
     sequence = test_sequences["short"]
-    seq_hash = hashlib.sha256(sequence.encode()).hexdigest()
+    seq_hash = _msa_key(sequence)
 
     # Create temporary cache directory
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -251,9 +254,9 @@ def test_boltz2_msa_cache_per_chain_multimer_reuse(test_sequences: dict[str, str
         core._initialize()
 
         # Compute hashes using the shared cache's key function
-        hash_aaaa = MSACache.hash_key(sequence_aaaa)
-        hash_bbbb = MSACache.hash_key(sequence_bbbb)
-        hash_cccc = MSACache.hash_key(sequence_cccc)
+        hash_aaaa = _msa_key(sequence_aaaa)
+        hash_bbbb = _msa_key(sequence_bbbb)
+        hash_cccc = _msa_key(sequence_cccc)
 
         msa_cache_dir = cache_dir / "msa_cache"
         index_path = msa_cache_dir / "msa_index.json"
@@ -369,7 +372,7 @@ def test_boltz2_msa_cache_integration(test_sequences: dict[str, str]):
         core = Boltz2Core(config={"device": "cpu", "cache_dir": str(cache_dir)})
         core._initialize()
 
-        seq_hash = MSACache.hash_key(sequence)
+        seq_hash = _msa_key(sequence)
         msa_cache_dir = cache_dir / "msa_cache"
         index_path = msa_cache_dir / "msa_index.json"
 
@@ -510,19 +513,28 @@ def _make_stubbed_boltz_core(monkeypatch: pytest.MonkeyPatch, preds: list[dict[s
     from boileroom.models.boltz.core import Boltz2Core
 
     core = Boltz2Core(config={"device": "cpu", "cache_dir": tempfile.mkdtemp(), "msa_cache_enabled": True})
-    records: dict[str, Any] = {"cache_calls": [], "save_calls": [], "convert_plddt": None}
+    records: dict[str, Any] = {"cache_calls": [], "fetch_calls": [], "save_calls": [], "convert_plddt": None}
 
     monkeypatch.setattr(
         core,
         "_check_msa_cache",
-        lambda sequences, *, cache_enabled: records["cache_calls"].append((list(sequences), cache_enabled)) or {},
+        lambda sequences, *, cache_enabled, config=None: (
+            records["cache_calls"].append((list(sequences), cache_enabled)) or {}
+        ),
     )
+
+    def fake_fetch(sequence, directory, config):
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / f"{len(records['fetch_calls'])}.csv"
+        path.write_text(f"key,sequence\n-1,{sequence}\n")
+        records["fetch_calls"].append(sequence)
+        return path
+
+    monkeypatch.setattr(core, "_fetch_chain_msa", fake_fetch)
     monkeypatch.setattr(
         core,
-        "_save_msas_to_cache",
-        lambda processed, individual_chains, out_dir, cached_sequences=None, *, cache_enabled: records[
-            "save_calls"
-        ].append((list(individual_chains), cache_enabled)),
+        "_save_msa_to_cache",
+        lambda sequence, path, *, cache_enabled, config=None: records["save_calls"].append((sequence, cache_enabled)),
     )
     monkeypatch.setattr(
         core,
@@ -574,8 +586,11 @@ def test_boltz2_fold_uses_fresh_metadata_and_runtime_cache_toggle(monkeypatch: p
     out1 = core.fold("ACDE", options={"msa_cache_enabled": False})
     out2 = core.fold("ACDE:FG", options={"msa_cache_enabled": True})
 
+    # the first call has the cache off: Boltz generates the MSAs, nothing is looked up, fetched or cached
+    # the second has it on: each chain is looked up, fetched on its own and cached by sequence
     assert records["cache_calls"] == [(["ACDE", "FG"], True)]
-    assert records["save_calls"] == [(["ACDE", "FG"], True)]
+    assert records["fetch_calls"] == ["ACDE", "FG"]
+    assert records["save_calls"] == [("ACDE", True), ("FG", True)]
     assert out1.metadata is not out2.metadata
     assert out1.metadata.sequence_lengths == [4]
     assert out2.metadata.sequence_lengths == [6]
