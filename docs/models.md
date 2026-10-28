@@ -36,10 +36,39 @@ result.pae
 
 ```
 
+MSA handling (shared with Chai-1; each chain gets one source, in this order):
+- **A provided MSA** (`options={"msa": [a3m_chain_a, None, ...]}`, one A3M string or `None` per chain): an alignment is the
+  alignment of the sequence in its first row, and is used for that sequence wherever it occurs. It is never searched for,
+  fetched again, cached or overwritten, so the server is not called for that sequence. If the chain's sequence changes, the
+  alignment no longer applies to it and the new sequence gets an MSA by the rules below (an alignment of a sequence that no
+  chain has is ignored, not an error).
+- **No MSA server** (`use_msa_server=False`): every other chain is folded from its sequence alone (`empty`). The cache is not
+  consulted, so a cached MSA is never used when no MSA is wanted.
+- **MSA server with the cache on** (default): the MSA of each chain is fetched on its own (unpaired) the first time, cached by
+  sequence (and by `msa_server_url` / `max_msa_seqs`) and not requested again unless the sequence changes. A fixed target next
+  to a new binder at every step only fetches the binder. Cross-chain pairing is not used.
+- **MSA server with `msa_cache_enabled=False`** and nothing provided: Boltz generates the MSAs of all chains together, with
+  pairing, and nothing is cached. (Boltz refuses an input that mixes custom and generated MSAs, so with a provided alignment
+  the other chains are fetched one by one instead.)
+- A provided alignment and a fetched one behave the same after the first call. The log (`INFO`) of each fold lists the source
+  of every chain: `provided`, `cache`, `fetched`, `empty` or `auto`. Cache entries made by earlier versions (keyed by the
+  sequence alone, with MSAs paired with whichever chains the first fold had) are not reused.
+
 Structure-wrapper confidence metrics use a shared output contract. `plddt` is returned as one unit-scale
 per-residue array on `[0, 1]` per sample, while scalar scores such as `ptm` and `iptm` are shape-`(1,)` arrays.
 In `0.3.1`, this replaces ESMFold's old padded pLDDT batch array and moves Boltz `ptm`/`iptm` from nested
 `confidence` dictionaries to top-level fields.
+
+### Chai-1
+- **MSAs** follow the same rules as Boltz-2 (see above): `options={"msa": [a3m_chain_a, None, ...]}` provides the alignment of
+  the sequence in each A3M's first row; with `use_msa_server=True` (default `False`) chains without one are fetched one at a
+  time from `msa_server_url` and cached by sequence (`msa_cache_enabled`, default `True`); with `use_msa_server=False` they
+  are folded from their sequence alone. With the cache off and nothing provided, chai-lab generates and pairs all MSAs itself,
+  as before.
+- chai-lab only ever reads alignment files from an `msa_directory` (`<hash of the sequence>.aligned.pqt`), so provided and
+  fetched alignments are put there; chains of the same sequence share one file.
+- Writing and reading those files needs a working parquet engine: the Chai-1 image pins `pyarrow<21`, because the unpinned
+  `pyarrow` needs NumPy 2 and does not import next to the image's `numpy<2`.
 
 ### Protenix
 `Protenix` loads the official Python inference runner (`protenix==2.0.0`, default checkpoint `protenix-v2`) once per backend instance and reuses its weights across calls. A single

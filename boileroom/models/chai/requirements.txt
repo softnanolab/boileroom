@@ -2,6 +2,9 @@ numpy<2.0
 rdkit
 torch>=2.5.1,<2.7.0
 chai_lab==0.6.1
+# parquet engine for the alignments handed to chai-lab (.aligned.pqt). pyarrow>=21 needs NumPy 2 and does not
+# import next to numpy<2, so the one that comes in unpinned is unusable
+pyarrow<21
 hf_transfer==0.1.8
 biotite>=1.0.1
 fastapi
